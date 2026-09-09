@@ -151,7 +151,6 @@ add_to_cache() {
 }
 
 while IFS= read -r -d '' -u 9 src_file; do
-    # Doppelte Zählung bei Resume verhindern
     if [[ "${BATCH_MAP["$src_file"]:-0}" -eq 1 ]]; then continue; fi
     BATCH_MAP["$src_file"]=1
 
@@ -262,10 +261,22 @@ while IFS= read -r -d '' -u 9 src_file; do
         rm -f "$err_log"
 
         if (( diff_bytes <= 0 )); then
+            inc_bytes=$(( dest_size - src_size ))
+            inc_h=$(format_bytes "$inc_bytes")
+            inc_pct=$(awk "BEGIN {printf \"%.1f\", ($dest_size / $src_size - 1) * 100}")
+            src_h=$(format_bytes "$src_size")
+            dest_h=$(format_bytes "$dest_size")
+
             if [[ "$is_salvaged" == true && "$KEEP_SALVAGED_CORRUPT" == true ]]; then
                 mv "$temp_file" "$dest_file"; touch -r "$src_file" "$dest_file"
                 add_to_cache "$src_file"; add_to_cache "$dest_file"
-                echo -e "\033[1;35m[GERETTET]\033[0m $filename (beschädigtes Original)"
+                
+                echo -e "${C_MAGENTA}┌──────────────────────────────────────────────────────────────┐${C_RESET}"
+                echo -e "${C_MAGENTA}│${C_RESET}  ${C_BOLD}DATEI GERETTET / REPARIERT:${C_RESET} $filename"
+                echo -e "${C_MAGENTA}│${C_RESET}  Original: $src_h (war beschädigt)"
+                echo -e "${C_MAGENTA}│${C_RESET}  Neu:      $dest_h (+${inc_pct}%, +${inc_h})"
+                echo -e "${C_MAGENTA}│${C_RESET}  Status:   Behalten (lesbare Segmente gesichert)."
+                echo -e "${C_MAGENTA}└──────────────────────────────────────────────────────────────┘${C_RESET}"
                 
                 COUNT_PROCESSED=$(( COUNT_PROCESSED + 1 ))
                 COUNT_SALVAGED=$(( COUNT_SALVAGED + 1 ))
@@ -278,7 +289,13 @@ while IFS= read -r -d '' -u 9 src_file; do
                 continue
             elif [[ "$DISCARD_IF_LARGER" == true ]]; then
                 rm -f "$temp_file"; add_to_cache "$src_file"
-                echo -e "\033[1;33m[VERWORFEN]\033[0m $filename (größer als Original)"
+                
+                echo -e "${C_YELLOW}┌──────────────────────────────────────────────────────────────┐${C_RESET}"
+                echo -e "${C_YELLOW}│${C_RESET}  ${C_BOLD}DATEI VERWORFEN:${C_RESET} $filename"
+                echo -e "${C_YELLOW}│${C_RESET}  Original: $src_h -> Neu: $dest_h"
+                echo -e "${C_YELLOW}│${C_RESET}  Status:   Verworfen, da (+${inc_pct}%, +${inc_h}) größer."
+                echo -e "${C_YELLOW}└──────────────────────────────────────────────────────────────┘${C_RESET}"
+                
                 COUNT_DISCARDED=$(( COUNT_DISCARDED + 1 ))
                 save_stats
                 continue
@@ -368,5 +385,4 @@ fi
 
 echo -e "${C_BLUE}╚══════════════════════════════════════════════════════════════╝${C_RESET}"
 
-# Räumt die Statistiken auf, da der Gesamtvorgang abgeschlossen ist
 rm -f "$STATS_FILE"
