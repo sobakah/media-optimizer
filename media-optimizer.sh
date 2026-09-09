@@ -10,9 +10,9 @@ C_RESET='\033[0m'; C_BOLD='\033[1m'; C_GREEN='\033[1;32m'; C_RED='\033[1;31m'
 C_YELLOW='\033[1;33m'; C_CYAN='\033[1;36m'; C_BLUE='\033[1;34m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_IMG="$SCRIPT_DIR/img-to-jxl.sh"
-SCRIPT_GIF="$SCRIPT_DIR/gif-to-webp.sh"
-SCRIPT_VIDEO="$SCRIPT_DIR/h264-to-h265.sh"
+SCRIPT_IMG="$SCRIPT_DIR/scripts/img-to-jxl.sh"
+SCRIPT_GIF="$SCRIPT_DIR/scripts//gif-to-webp.sh"
+SCRIPT_VIDEO="$SCRIPT_DIR/scripts//h264-to-h265.sh"
 STATE_FILE="$SCRIPT_DIR/.media_optimizer_state.env"
 
 for s in "$SCRIPT_IMG" "$SCRIPT_GIF" "$SCRIPT_VIDEO"; do
