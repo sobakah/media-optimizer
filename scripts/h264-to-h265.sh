@@ -259,8 +259,12 @@ else
 fi
 
 COUNT_PROCESSED=${COUNT_PROCESSED:-0}; COUNT_SALVAGED=${COUNT_SALVAGED:-0}
-COUNT_SKIPPED=${COUNT_SKIPPED:-0};     COUNT_CACHE_SKIPPED=${COUNT_CACHE_SKIPPED:-0}
+COUNT_SKIPPED=${COUNT_SKIPPED:-0}
 COUNT_PROBE_SKIPPED=${COUNT_PROBE_SKIPPED:-0}; COUNT_DISCARDED=${COUNT_DISCARDED:-0}
+# Cache-Treffer beschreiben den aktuellen Scan, nicht die geleistete Arbeit.
+# Bei jeder Fortsetzung werden dieselben Dateien erneut eingelesen, ein
+# Fortschreiben ueber Laeufe hinweg wuerde also immer weiter aufaddieren.
+COUNT_CACHE_SKIPPED=0
 COUNT_FAILED=${COUNT_FAILED:-0}; COUNT_GPU=${COUNT_GPU:-0}; COUNT_CPU=${COUNT_CPU:-0}
 COUNT_UNVERIFIED=${COUNT_UNVERIFIED:-0}; COUNT_DRY=${COUNT_DRY:-0}
 TOTAL_ORIG_BYTES=${TOTAL_ORIG_BYTES:-0}; TOTAL_NEW_BYTES=${TOTAL_NEW_BYTES:-0}
@@ -273,7 +277,6 @@ save_stats() {
 COUNT_PROCESSED=$COUNT_PROCESSED
 COUNT_SALVAGED=$COUNT_SALVAGED
 COUNT_SKIPPED=$COUNT_SKIPPED
-COUNT_CACHE_SKIPPED=$COUNT_CACHE_SKIPPED
 COUNT_PROBE_SKIPPED=$COUNT_PROBE_SKIPPED
 COUNT_DISCARDED=$COUNT_DISCARDED
 COUNT_FAILED=$COUNT_FAILED
@@ -460,7 +463,7 @@ while IFS= read -r -d '' -u 9 src_file; do
                         probe_verdict="nur ${probe_delta#-}% kleiner, Schwelle ${gain_needed}%"
                     fi
                     printf "%b[UEBERSPRUNGEN]%b %s (Probe %s vs. Original %s kb/s: %s)\n" \
-                        "$C_YELLOW" "$C_RESET" "$src_file" "$probe_kbps" "$ref_kbps" "$probe_verdict"
+                        "$C_YELLOW" "$C_RESET" "$filename" "$probe_kbps" "$ref_kbps" "$probe_verdict"
                     COUNT_PROBE_SKIPPED=$(( COUNT_PROBE_SKIPPED + 1 ))
                     add_to_cache "$src_file"
                     continue
@@ -636,7 +639,7 @@ printf "%b║%b  Gesamtlaufzeit:       %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$(
 printf "%b║%b  Neu kodiert:          %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$COUNT_PROCESSED Datei(en) (GPU: $COUNT_GPU | CPU: $COUNT_CPU)" "$C_BLUE" "$C_RESET"
 (( COUNT_SALVAGED > 0 )) && \
 printf "%b║%b  %bGerettet (repariert):%b %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$C_MAGENTA" "$C_RESET" "$COUNT_SALVAGED Datei(en)" "$C_BLUE" "$C_RESET"
-printf "%b║%b  Cache (abgeschlossen):%-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$COUNT_CACHE_SKIPPED Datei(en)" "$C_BLUE" "$C_RESET"
+printf "%b║%b  Cache (dieser Scan):  %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$COUNT_CACHE_SKIPPED Datei(en)" "$C_BLUE" "$C_RESET"
 printf "%b║%b  Uebersprungen:        %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$COUNT_SKIPPED Datei(en)" "$C_BLUE" "$C_RESET"
 printf "%b║%b  Probe (kein Gewinn):  %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$COUNT_PROBE_SKIPPED Datei(en)" "$C_BLUE" "$C_RESET"
 printf "%b║%b  Verworfen (groesser): %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$COUNT_DISCARDED Datei(en)" "$C_BLUE" "$C_RESET"
