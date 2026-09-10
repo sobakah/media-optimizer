@@ -39,6 +39,7 @@ media-optimizer.conf        Einstellungen (optional)
 scripts/img-to-jxl.sh       JPG/PNG -> JXL, WebP als Fallback
 scripts/gif-to-webp.sh      GIF -> animiertes WebP
 scripts/h264-to-h265.sh     H.264-MP4 -> HEVC
+scripts/verify-output.sh    Zielverzeichnis gegen die Originale prüfen
 scripts/lib/common.sh       gemeinsame Helfer, wird gesourct
 ```
 
@@ -107,6 +108,8 @@ Re-Encoder für AVC/H.264-Videos zu HEVC/H.265.
 * **Fehlertoleranz:** Erkennt Abbruchfehler durch beschädigte Quelldateien. Intakte Frames werden in eine lesbare Zieldatei gerettet. Bei geretteten Dateien bleibt das Original erhalten, auch mit `--delete`.
 * **Größenprüfung:** Resultierende Dateien, die größer als das Original sind, werden automatisch verworfen.
 * **Kompatibilität:** `-tag:v hvc1` und `-movflags +faststart` für Abspielbarkeit in Apple-Playern und beim Streaming.
+* **Bildkontrolle:** Nach dem Encoding werden an mehreren Stellen Einzelbilder aus Quelle und Ziel per PSNR verglichen, denn die Laufzeitprüfung allein erkennt zerstörte Farbformate nicht (ein grünes Bild hat die korrekte Dauer). Bewertet wird die **beste** Stichprobe: einzelne schlechte Werte entstehen durch Zeitversatz beim Suchen und sind kein Defekt. Standardmäßig wird nur gewarnt und die Datei behalten, die Liste landet in `.video_verdaechtig.txt`. `--strict-visual` verwirft stattdessen, `--no-verify-visual` schaltet die Prüfung ab.
+* **Pixelformat:** Auf der GPU wird fest mit `format=nv12` gearbeitet, also 8 Bit. 10-Bit-Quellen werden reduziert. `--gpu-10bit` schaltet auf `p010` plus `-profile:v main10` um; beides gehört zwingend zusammen, sonst entsteht ein grünes Bild.
 
 ```
       --encoder <mode>     auto | gpu | cpu   (Default: auto)
@@ -125,8 +128,24 @@ Re-Encoder für AVC/H.264-Videos zu HEVC/H.265.
       --x265-params <s>    x265-Parameter (Default: aq-mode=3:no-sao=1)
       --no-faststart       moov-Atom nicht nach vorn schreiben
       --rename-inplace     _h265-Suffix nach dem Löschen des Originals entfernen
+      --from-list <datei>  Nur die dort aufgeführten Quelldateien verarbeiten
       --no-cache           Cache-Datei ignorieren
 ```
+
+`--from-list auto` nimmt `.defekte_videos.txt` aus dem Zielverzeichnis, falls
+vorhanden, und läuft sonst normal durch. Liegt eine Liste vor, ohne dass sie
+angefordert wurde, weist das Skript darauf hin, wechselt aber nicht von
+selbst auf die Teilmenge: eine veraltete Liste würde den restlichen Bestand
+stillschweigend ausblenden. Wer das trotzdem als Standard will, setzt
+`AUTO_FIX_LIST=true` in der Konfig.
+
+Damit die Liste nicht veralten kann, verschiebt `verify-output.sh --run` sie
+nach der Reparatur nach `.defekte_videos.erledigt-<zeitstempel>.txt`.
+
+`--from-list` erwartet eine Datei mit einem Quellpfad pro Zeile (`#` ist
+Kommentar). Cache und vorhandene Ausgaben werden dabei ignoriert, weil die
+Auswahl ausdrücklich getroffen wurde: die genannten Dateien werden neu
+erzeugt und überschrieben. Fehlende Pfade werden gemeldet und übersprungen.
 
 Im In-Place-Modus heißt die Ausgabe `name_h265.mp4`, weil Quelle und Ziel
 sonst denselben Pfad hätten. Der Suffix bleibt standardmäßig stehen, auch
@@ -138,6 +157,65 @@ bei geretteten Dateien und wenn der Papierkorb fehlschlug, bleibt das
 Original liegen und der Suffix wird beibehalten, statt die Quelldatei zu
 überschreiben. Nachteil der Option: nach dem Umbenennen ist am Dateinamen
 nicht mehr erkennbar, welche Videos konvertiert wurden.
+
+### 5. `verify-output.sh` (Kontrolle und Reparatur)
+
+Prüft ein Zielverzeichnis gegen das Quellverzeichnis. Die Zuordnung ist der
+relative Pfad, weil die Ordnerstruktur gespiegelt und der Dateiname
+beibehalten wird. Geprüft wird in drei Stufen: ist die Datei lesbar, stimmt
+die Laufzeit, passt der Bildinhalt (PSNR-Stichproben).
+
+```
+  -i, --input   <dir>   Quellverzeichnis (die Originale)
+  -o, --output  <dir>   Zielverzeichnis (die konvertierten Dateien)
+  -j, --workers <n>     Parallele Prüfungen (Default: nproc)
+      --psnr-min <db>   Schwelle für „zerstört" (Default: 20)
+      --samples <n>     Stichproben pro Datei (Default: 3)
+      --duration-tol <p> Erlaubte Laufzeitabweichung in Prozent (Default: 2)
+      --fix             Defekte Ausgaben löschen und aus dem Cache nehmen
+      --run             Nach --fix h264-to-h265.sh neu starten
+```
+
+Die drei Meldungen bedeuten:
+
+| Status | Bedeutung |
+|---|---|
+| `[UNLESBAR]` | `ffprobe` findet keinen Videostream, die Datei ist unbrauchbar |
+| `[DAUER]` | Die Laufzeit weicht um mehr als die Toleranz vom Original ab, oder die Ausgabe meldet gar keine Dauer |
+| `[BILD?]` | Laufzeit stimmt, aber der Bildvergleich liegt unter der PSNR-Schwelle |
+
+`[DAUER]` deutet meist auf eine abgeschnittene Datei hin, etwa bei voller
+Platte. Es trifft aber auch **gerettete Dateien**: wenn der Encoder eine
+beschädigte Quelle nur teilweise lesen konnte, ist die Ausgabe legitim
+kürzer. Solche Dateien sind kein Defekt und würden bei `--fix` unnötig
+gelöscht und neu erzeugt, mit demselben Ergebnis. Die Meldung nennt deshalb
+beide Laufzeiten, und `--duration-tol` hebt die Grenze an.
+
+Ein niedriger PSNR ist ein **Verdacht, kein Beweis**. Mit `--keep-samples <dir>`
+werden die verglichenen Einzelbilder abgelegt, sodass sich die Meldung selbst
+beurteilen lässt. Ohne `--fix` wird nur berichtet und nichts verändert. Mit `--fix` werden die
+defekten Ausgaben gelöscht und die zugehörigen Quelldateien aus
+`.video_conversion_cache.txt` entfernt (mit `.bak`-Sicherung), sodass ein
+normaler Lauf genau diese Dateien neu erzeugt und die intakten überspringt.
+`--run` startet ihn direkt, und zwar mit `--from-list` auf der Defektliste.
+Es wird also nur wiederholt, was gemeldet wurde, statt den ganzen Baum
+erneut abzugehen.
+
+Bei vorhandenem Cache ist der Zeitgewinn gering, weil gecachte Dateien
+ohnehin kein `ffprobe` auslösen. Fehlt der Cache, ist er deutlich: in einem
+Test mit 30 Dateien und 2 Defekten 14 statt 70 `ffprobe`-Aufrufe und
+2,8 statt 5,8 Sekunden. Der eigentliche Vorteil ist aber, dass ausschließlich
+die gemeldeten Dateien angefasst werden und die Reparatur auch dann greift,
+wenn die defekte Ausgabe noch an ihrem Platz liegt.
+
+Ausgaben ohne passendes Original werden nur gezählt und nicht angetastet.
+Ein identisches Quell- und Zielverzeichnis wird abgelehnt, das Skript ist
+nicht für den In-Place-Modus gedacht.
+
+```bash
+./scripts/verify-output.sh -i ~/Videos -o /mnt/archiv             # nur prüfen
+./scripts/verify-output.sh -i ~/Videos -o /mnt/archiv --fix --run # reparieren
+```
 
 ## Nutzung
 
@@ -271,11 +349,44 @@ Beim Start über `media-optimizer.sh` wartet nur der Orchestrator am Ende,
 nicht jede der drei Stufen einzeln. Standalone aufgerufene Unter-Skripte
 halten das Fenster dagegen selbst offen.
 
+## Grünes Bild mit Artefakten (behoben)
+
+Symptom: Das Video ist überwiegend einfarbig dunkelgrün, nur im oberen
+Bereich bewegen sich Pixel, der Ton ist einwandfrei.
+
+Ursache war **`-tag:v hvc1`**, nachgewiesen per Bisektion mit
+`--gpu-selftest` auf einer RX 9070 XT: der Originalbefehl und alle anderen
+Varianten lieferten 42 dB, allein die Variante mit `hvc1` fiel auf 8 dB.
+
+Der Tag `hvc1` verlangt, dass die Parametersätze (VPS/SPS/PPS)
+ausschließlich im `hvcC`-Kasten der Sample-Beschreibung stehen und nicht im
+Datenstrom. Liefert der Hardware-Encoder sie in-band, baut der Muxer ein
+unvollständiges `hvcC`. Die Datei ist dann korrekt kodiert, aber nicht mehr
+korrekt dekodierbar: der Decoder beginnt mit falschen Parametern, füllt nur
+einen Teil des Bildpuffers und lässt den Rest auf Null. Ein YUV-Puffer aus
+Nullen (Y=0, U=0, V=0) erscheint als Dunkelgrün. Der Ton ist nicht betroffen,
+weil er per `-c:a copy` durchkopiert wird.
+
+Es war also kein Encoder- und kein Treiberfehler, sondern falsche
+Container-Signalisierung. Deshalb ist `HEVC_TAG` jetzt leer (ffmpeg-Vorgabe
+`hev1`) und `hvc1` nur noch über `--hevc-tag hvc1` erreichbar.
+
+Bereits erzeugte Dateien lassen sich finden und neu erzeugen:
+
+```bash
+./scripts/verify-output.sh -i ~/Videos -o /mnt/archiv --keep-samples /tmp/proben
+./scripts/verify-output.sh -i ~/Videos -o /mnt/archiv --fix --run
+```
+
+Dieses Fehlerbild liegt im Test bei 4 bis 7 dB PSNR und wird damit
+zuverlässig erkannt, weit unterhalb der Schwelle von 15 dB.
+
 ## Bekannte Grenzen
 
 * Die Kollisionswarnung im Orchestrator nutzt `sort | uniq`. Dateinamen mit Zeilenumbrüchen werden dort nicht erkannt, die Sperre im Worker greift trotzdem.
 * Videos laufen sequenziell. Bei CPU-Encoding lastet x265 die Kerne selbst aus, bei GPU ist Parallelität ohnehin nicht sinnvoll.
 * `--verify-deep` dekodiert jede Bildausgabe komplett und kostet spürbar Zeit. Ohne das Flag wird nur auf nicht-leere Ausgabe geprüft.
+* Der PSNR-Bildvergleich ist eine Heuristik. Einzelne Stichproben können durch Zeitversatz beim Suchen deutlich einbrechen; bei variabler Bildrate wurden an einem einwandfreien Video 13, 15 und 24 dB gemessen. Deshalb zählt nur die beste Stichprobe und die Schwelle liegt bei 15 dB, während echte Zerstörung bei 3 bis 7 dB liegt. Trotzdem: gemeldete Dateien selbst ansehen, bevor etwas gelöscht wird.
 * Kurze Probe-Slices überschätzen die neue Bitrate leicht, weil der erste Keyframe anteilig stark ins Gewicht fällt. Bei Grenzfällen hilft `--probe-duration 30` mehr als eine gelockerte Schwelle.
 
 ## Entstehung

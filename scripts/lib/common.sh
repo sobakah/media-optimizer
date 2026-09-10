@@ -70,7 +70,7 @@ MO_CONFIG_VARS=(
     ENCODER_MODE BITRATE_THRESHOLD_KBPS GPU_QP CPU_CRF CPU_PRESET
     CPU_X265_PARAMS VAAPI_DEVICE ENABLE_PROBE PROBE_MARGIN_PCT
     DISCARD_IF_LARGER KEEP_SALVAGED_CORRUPT MIN_SIZE_MB FASTSTART USE_CACHE
-    DURATION_TOLERANCE_PCT PROBE_DURATION RENAME_INPLACE
+    DURATION_TOLERANCE_PCT PROBE_DURATION RENAME_INPLACE GPU_ALLOW_10BIT VERIFY_VISUAL VISUAL_PSNR_MIN VISUAL_SAMPLES VISUAL_STRICT AUTO_FIX_LIST HEVC_TAG GPU_CODEC VULKAN_DEVICE GPU_RC_MODE GPU_BF GPU_LOW_POWER GPU_ASYNC_DEPTH GPU_BITRATE
 )
 
 load_config() {
@@ -369,4 +369,69 @@ mo_install_exit_handler() {
     set -E
     trap '_mo_rc=$?; [[ -z "$_MO_ERR_INFO" ]] && _MO_ERR_INFO="Zeile $LINENO: \`$BASH_COMMAND\` (Code $_mo_rc)"' ERR
     trap 'mo_hold_open $?' EXIT
+}
+
+# ------------------------------------------------------------------------------
+# Bildinhalt gegenpruefen
+#
+# Die Laufzeitpruefung erkennt abgeschnittene Dateien, aber keine inhaltliche
+# Zerstoerung: ein gruenes Bild mit Artefakten hat die korrekte Dauer. Deshalb
+# werden an drei Stellen Einzelbilder aus Quelle und Ziel verglichen. Ein
+# echtes Reencoding liegt bei 35-45 dB PSNR, kaputte Farbformate darunter.
+#
+# verify_visual <quelle> <ziel> [min_psnr]
+#   0 = in Ordnung oder nicht messbar, 1 = zerstoert (VISUAL_PSNR gesetzt)
+# ------------------------------------------------------------------------------
+VISUAL_PSNR=""        # bester Messwert
+VISUAL_PSNR_ALL=""    # alle Stichproben, zum Nachvollziehen
+verify_visual() {
+    local src="$1" dst="$2" minp="${3:-20}"
+    VISUAL_PSNR=""; VISUAL_PSNR_ALL=""
+    local dur; dur=$(media_duration "$src")
+    [[ -n "$dur" && "$dur" != "N/A" ]] || return 0
+
+    local samples="${VISUAL_SAMPLES:-3}"
+    local keep="${VISUAL_KEEP_DIR:-}"
+    [[ -n "$keep" ]] && mkdir -p "$keep" 2>/dev/null
+
+    local i frac t a b p best="" measured=0
+    for (( i = 1; i <= samples; i++ )); do
+        frac=$(( 100 * i / (samples + 1) ))
+        t=$(awk -v d="$dur" -v f="$frac" 'BEGIN { printf "%.2f", d * f / 100 }')
+        a=$(mktemp --suffix=.png /tmp/mo_vv_a_XXXXXX) || return 0
+        b=$(mktemp --suffix=.png /tmp/mo_vv_b_XXXXXX) || { rm -f "$a"; return 0; }
+
+        # -map 0:v:0 pinnt den echten Videostream (nicht ein eingebettetes
+        # Vorschaubild), -noautorotate haelt beide Seiten gleich orientiert.
+        if ffmpeg -nostdin -y -v error -noautorotate -ss "$t" -i "$src" \
+                  -map 0:v:0 -frames:v 1 "$a" </dev/null 2>/dev/null \
+        && ffmpeg -nostdin -y -v error -noautorotate -ss "$t" -i "$dst" \
+                  -map 0:v:0 -frames:v 1 "$b" </dev/null 2>/dev/null; then
+            p=$(ffmpeg -nostdin -hide_banner -i "$b" -i "$a" \
+                -lavfi "scale2ref=flags=bilinear[x][y];[x][y]psnr" -f null - 2>&1 \
+                | grep -oE 'average:[0-9]+\.[0-9]+' | head -1 | cut -d: -f2)
+            if [[ "$p" =~ ^[0-9]+\.[0-9]+$ ]]; then
+                measured=1
+                VISUAL_PSNR_ALL="${VISUAL_PSNR_ALL:+$VISUAL_PSNR_ALL, }${t}s=${p%.*} dB"
+                if [[ -z "$best" ]] || awk -v n="$p" -v o="$best" 'BEGIN { exit (n > o) ? 0 : 1 }'; then
+                    best="$p"
+                fi
+            fi
+        fi
+        if [[ -n "$keep" ]]; then
+            mv "$a" "$keep/$(basename "$dst" .mp4)_${t}s_quelle.png" 2>/dev/null || rm -f "$a"
+            mv "$b" "$keep/$(basename "$dst" .mp4)_${t}s_ziel.png"   2>/dev/null || rm -f "$b"
+        else
+            rm -f "$a" "$b"
+        fi
+    done
+
+    (( measured == 1 )) || return 0
+    VISUAL_PSNR="${best%.*}"
+
+    # Entscheidend ist die BESTE Stichprobe. Eine einzelne schlechte Messung
+    # kann von einem Zeitversatz beim Suchen kommen; ein wirklich zerstoertes
+    # Bild ist an JEDER Stelle schlecht. Das vermeidet Falschalarme.
+    awk -v p="$best" -v m="$minp" 'BEGIN { exit (p < m) ? 0 : 1 }' && return 1
+    return 0
 }
