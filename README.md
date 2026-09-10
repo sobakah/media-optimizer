@@ -124,8 +124,20 @@ Re-Encoder für AVC/H.264-Videos zu HEVC/H.265.
       --force-gpu          Startprüfung überspringen
       --x265-params <s>    x265-Parameter (Default: aq-mode=3:no-sao=1)
       --no-faststart       moov-Atom nicht nach vorn schreiben
+      --rename-inplace     _h265-Suffix nach dem Löschen des Originals entfernen
       --no-cache           Cache-Datei ignorieren
 ```
+
+Im In-Place-Modus heißt die Ausgabe `name_h265.mp4`, weil Quelle und Ziel
+sonst denselben Pfad hätten. Der Suffix bleibt standardmäßig stehen, auch
+wenn das Original gelöscht wurde. `--rename-inplace` bzw.
+`RENAME_INPLACE=true` benennt die Datei danach zurück auf `name.mp4`.
+
+Umbenannt wird nur, wenn der Pfad des Originals frei ist. Ohne `--delete`,
+bei geretteten Dateien und wenn der Papierkorb fehlschlug, bleibt das
+Original liegen und der Suffix wird beibehalten, statt die Quelldatei zu
+überschreiben. Nachteil der Option: nach dem Umbenennen ist am Dateinamen
+nicht mehr erkennbar, welche Videos konvertiert wurden.
 
 ## Nutzung
 
@@ -185,6 +197,7 @@ Die mitgelieferte Konfiguration ist auf einen Ryzen 7 9700X (8C/16T, Zen 5) mit 
 * **Papierkorb nicht verfügbar:** Bei Dateien auf anderen Mounts oder ohne `gio` und `trash-cli` schlägt das Verschieben fehl. Dann wird nichts gelöscht. Die betroffenen Pfade sammeln sich in `.<typ>_pending_deletes.txt`, und am Ende des Laufs kommt eine einmalige Rückfrage. Ohne Terminal bleiben die Originale erhalten.
 * **Reste aufräumen:** `.part`-Dateien und Lock-Verzeichnisse aus hart abgebrochenen Läufen werden beim nächsten Start entfernt.
 * **Statusdateien:** `.img_stats.env`, `.gif_stats.env`, `.h265_stats.env`, `.video_conversion_cache.txt` und die Pending-Listen liegen versteckt im Quellverzeichnis.
+* **Video-Cache:** `.video_conversion_cache.txt` merkt sich abgeschlossene Dateien, damit ein späterer Lauf nicht erneut `ffprobe` über jede Datei laufen lässt. Eingetragen werden Quelldateien sowie, nur im In-Place-Modus, die erzeugten `_h265.mp4`, weil `find` diese im nächsten Lauf wieder einsammelt. Bei separatem Zielordner werden keine Ausgabepfade vermerkt. Verwaiste Einträge, deren Datei nicht mehr existiert, werden beim Start entfernt. Der Cache ist eine reine Beschleunigung: `--no-cache` oder Löschen der Datei ändert nur die Laufzeit, nicht das Ergebnis. Da absolute Pfade gespeichert werden, greift er nach einem Verschieben des Ordners nicht mehr.
 
 ## GPU-Encoding funktioniert nicht
 

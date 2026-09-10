@@ -34,6 +34,8 @@ h264-to-h265.sh - reencodiert H.264-MP4s nach HEVC
       --force-gpu        Startpruefung ueberspringen, GPU direkt verwenden
       --x265-params <s>  x265-Parameter (Default: aq-mode=3:no-sao=1)
       --no-faststart     moov-Atom nicht nach vorn schreiben (spart 1 Pass)
+      --rename-inplace   Nach dem Loeschen des Originals das _h265-Suffix
+                         entfernen (nur In-Place, nur wenn Original weg ist)
       --no-cache         Cache-Datei ignorieren
   -n, --dry-run          Nur anzeigen, nichts schreiben
       --hold             Fenster am Ende offen halten (fuer Doppelklick-Start)
@@ -69,6 +71,7 @@ VAAPI_DEVICE="${VAAPI_DEVICE:-auto}"   # auto = alle Render-Nodes durchprobieren
 # Ueber die Konfigdatei oder --x265-params gezielt wieder aktivierbar.
 CPU_X265_PARAMS="${CPU_X265_PARAMS:-aq-mode=3:no-sao=1}"
 FORCE_GPU="${FORCE_GPU:-false}"
+RENAME_INPLACE="${RENAME_INPLACE:-false}"
 GPU_FELL_BACK=false
 FASTSTART="${FASTSTART:-true}"
 RECURSIVE=true
@@ -99,6 +102,7 @@ while (( $# > 0 )); do
         --force-gpu)     FORCE_GPU=true; ENCODER_MODE=gpu; shift ;;
         --x265-params)   CPU_X265_PARAMS="$2"; shift 2 ;;
         --no-faststart)  FASTSTART=false; shift ;;
+        --rename-inplace) RENAME_INPLACE=true; shift ;;
         --no-cache)      USE_CACHE=false; shift ;;
         -n|--dry-run)    DRY_RUN=true; shift ;;
         --hold)          MO_HOLD=1; shift ;;
@@ -298,11 +302,24 @@ trap on_interrupt SIGINT SIGTERM
 # wenn sie fertig verarbeitet (oder bewusst uebersprungen) wurde.
 # ------------------------------------------------------------------------------
 declare -A CACHE_MAP=()
+CACHE_PRUNED=0
 if [[ "$USE_CACHE" == true && -f "$CACHE_FILE" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
         [[ -z "$line" || "$line" == \#* ]] && continue
-        CACHE_MAP["$line"]=1
+        # Eintraege ohne Datei sind tot: find kann sie nie zurueckliefern.
+        if [[ -e "$line" ]]; then
+            CACHE_MAP["$line"]=1
+        else
+            CACHE_PRUNED=$(( CACHE_PRUNED + 1 ))
+        fi
     done < "$CACHE_FILE"
+
+    # Datei einmal neu schreiben, damit sie nicht unbegrenzt waechst
+    if (( CACHE_PRUNED > 0 )) && [[ "$DRY_RUN" != true ]]; then
+        printf '%s\n' "${!CACHE_MAP[@]}" > "$CACHE_FILE" 2>/dev/null || true
+        printf "%b[CACHE]%b %d verwaiste Eintraege entfernt.\n" \
+            "$C_CYAN" "$C_RESET" "$CACHE_PRUNED"
+    fi
 fi
 
 add_to_cache() {
@@ -312,6 +329,16 @@ add_to_cache() {
         CACHE_MAP["$target"]=1
         echo "$target" >> "$CACHE_FILE"
     fi
+}
+
+# Zieldateien nur vormerken, wenn sie im durchsuchten Baum liegen. Im
+# In-Place-Modus findet der naechste Lauf "name_h265.mp4" wieder und spart
+# durch den Eintrag ein ffprobe. Bei separatem Zielordner sieht find dort
+# nie hin, der Eintrag waere nur Ballast im Cache.
+add_dest_to_cache() {
+    local dest="$1"
+    [[ -z "$OUTPUT_DIR" ]] || return 0
+    add_to_cache "$dest"
 }
 
 # slice_kbps <datei> <startsekunde> -> Bitrate eines Video-only-Ausschnitts
@@ -369,7 +396,7 @@ while IFS= read -r -d '' -u 9 src_file; do
 
     if [[ "$SKIP_EXISTING" == true && -s "$dest_file" ]]; then
         COUNT_SKIPPED=$(( COUNT_SKIPPED + 1 ))
-        add_to_cache "$src_file"; add_to_cache "$dest_file"; continue
+        add_to_cache "$src_file"; add_dest_to_cache "$dest_file"; continue
     fi
 
     # ---------- Encoder-Wahl ----------
@@ -393,7 +420,7 @@ while IFS= read -r -d '' -u 9 src_file; do
 
     if [[ "$DRY_RUN" == true ]]; then
         printf "%b[DRY-RUN]%b '%s' (%s, %s kb/s) -> '%s'\n" \
-            "$C_CYAN" "$C_RESET" "$src_file" "${active_encoder^^}" "$bitrate_kbps" "$(basename "$dest_file")"
+            "$C_CYAN" "$C_RESET" "$filename" "${active_encoder^^}" "$bitrate_kbps" "$(basename "$dest_file")"
         COUNT_DRY=$(( COUNT_DRY + 1 ))
         continue
     fi
@@ -433,7 +460,7 @@ while IFS= read -r -d '' -u 9 src_file; do
                         probe_verdict="nur ${probe_delta#-}% kleiner, Schwelle ${gain_needed}%"
                     fi
                     printf "%b[UEBERSPRUNGEN]%b %s (Probe %s vs. Original %s kb/s: %s)\n" \
-                        "$C_YELLOW" "$C_RESET" "$filename" "$probe_kbps" "$ref_kbps" "$probe_verdict"
+                        "$C_YELLOW" "$C_RESET" "$src_file" "$probe_kbps" "$ref_kbps" "$probe_verdict"
                     COUNT_PROBE_SKIPPED=$(( COUNT_PROBE_SKIPPED + 1 ))
                     add_to_cache "$src_file"
                     continue
@@ -518,7 +545,7 @@ while IFS= read -r -d '' -u 9 src_file; do
 
             if [[ "$is_salvaged" == true && "$KEEP_SALVAGED_CORRUPT" == true ]]; then
                 mv "$temp_file" "$dest_file"; touch -r "$src_file" "$dest_file"
-                add_to_cache "$src_file"; add_to_cache "$dest_file"
+                add_to_cache "$src_file"; add_dest_to_cache "$dest_file"
                 printf "%b┌──────────────────────────────────────────────────────────────┐%b\n" "$C_MAGENTA" "$C_RESET"
                 printf "%b│%b  %bDATEI GERETTET / REPARIERT:%b %s\n" "$C_MAGENTA" "$C_RESET" "$C_BOLD" "$C_RESET" "$filename"
                 printf "%b│%b  Original: %s (war beschaedigt)\n" "$C_MAGENTA" "$C_RESET" "$src_h"
@@ -546,7 +573,6 @@ while IFS= read -r -d '' -u 9 src_file; do
         fi
 
         mv "$temp_file" "$dest_file"; touch -r "$src_file" "$dest_file"
-        add_to_cache "$src_file"; add_to_cache "$dest_file"
 
         COUNT_PROCESSED=$(( COUNT_PROCESSED + 1 ))
         [[ "$active_encoder" == "gpu" ]] && COUNT_GPU=$(( COUNT_GPU + 1 )) || COUNT_CPU=$(( COUNT_CPU + 1 ))
@@ -562,6 +588,25 @@ while IFS= read -r -d '' -u 9 src_file; do
         printf "%b└──────────────────────────────────────────────────────────────┘%b\n" "$C_GREEN" "$C_RESET"
 
         [[ "$DELETE_ORIGINAL" == true ]] && safe_remove "$src_file"
+
+        # Optionales Umbenennen im In-Place-Modus: "urlaub_h265.mp4" wird
+        # wieder zu "urlaub.mp4". Nur wenn das Original tatsaechlich weg ist,
+        # sonst wuerde eine noch vorhandene Quelldatei ueberschrieben.
+        if [[ "$RENAME_INPLACE" == true && -z "$OUTPUT_DIR" ]]; then
+            if [[ -e "$src_file" ]]; then
+                printf "%b[UMBENENNEN]%b uebersprungen: '%s' existiert noch.\n" \
+                    "$C_YELLOW" "$C_RESET" "$filename" >&2
+            elif mv -n "$dest_file" "$src_file" 2>/dev/null && [[ ! -e "$dest_file" ]]; then
+                printf "%b[UMBENENNEN]%b '%s' -> '%s'\n" \
+                    "$C_CYAN" "$C_RESET" "$(basename "$dest_file")" "$filename"
+                dest_file="$src_file"
+            else
+                printf "%b[UMBENENNEN]%b fehlgeschlagen, '%s' bleibt bestehen.\n" \
+                    "$C_YELLOW" "$C_RESET" "$(basename "$dest_file")" >&2
+            fi
+        fi
+
+        add_to_cache "$src_file"; add_dest_to_cache "$dest_file"
         save_stats
     else
         printf "%b[FEHLER]%b '%s'\n" "$C_RED" "$C_RESET" "$src_file" >&2

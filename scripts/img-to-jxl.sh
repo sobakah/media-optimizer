@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 _MO_ROOT="$(dirname "$SCRIPT_DIR")"; load_config
+mo_install_exit_handler
 
 usage() {
     cat <<'EOF'
@@ -25,6 +26,8 @@ img-to-jxl.sh - konvertiert JPG/PNG nach JPEG XL (WebP als Fallback)
       --cjxl-threads <n> Threads pro cjxl-Prozess (Default: 1, da parallel)
       --verify-deep     Ausgabe vollstaendig dekodieren (langsamer, sicherer)
   -n, --dry-run         Nur anzeigen, nichts schreiben
+      --hold            Fenster am Ende offen halten (fuer Doppelklick-Start)
+      --no-hold         Fenster nie offen halten
   -h, --help            Diese Hilfe
 
 Positionsargumente werden weiterhin akzeptiert: img-to-jxl.sh <input> [output]
@@ -66,6 +69,8 @@ while (( $# > 0 )); do
         --cjxl-threads)   CJXL_THREADS="$2"; shift 2 ;;
         --verify-deep)    VERIFY_DEEP=true; shift ;;
         -n|--dry-run)     DRY_RUN=true; shift ;;
+        --hold)           MO_HOLD=1; shift ;;
+        --no-hold)        MO_HOLD=0; shift ;;
         -h|--help)        usage; exit 0 ;;
         --)               shift; while (( $# > 0 )); do POSITIONAL+=("$1"); shift; done ;;
         -*)               echo "Unbekannte Option: $1" >&2; usage >&2; exit 2 ;;
@@ -380,4 +385,9 @@ exit_code=0
 find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) -print0 |
     xargs -0 -r -n 1 -P "$MAX_WORKERS" bash -c 'convert_image "$1"' _ || exit_code=$?
 
-if (( exit_code >= 124 )); then finalize_stats 130; else finalize_stats 0; fi
+# xargs meldet 124/125 bei Abbruch, 123 bei Worker-Fehlern (nicht Abbruch)
+if (( exit_code == 124 || exit_code == 125 || exit_code == 130 )); then
+    finalize_stats 130
+else
+    finalize_stats 0
+fi
