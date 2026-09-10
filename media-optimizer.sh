@@ -270,7 +270,6 @@ command -v gio >/dev/null 2>&1 || command -v trash-put >/dev/null 2>&1 || \
 # EXPORT FUER UNTERSKRIPTE
 # ------------------------------------------------------------------------------
 export NON_INTERACTIVE=true
-export MO_HOLD=0        # nur der Orchestrator haelt das Fenster offen
 export MAX_WORKERS DELETE_ORIGINAL FORCE_DELETE
 export JXL_EFFORT PNG_MODE PNG_QUALITY COMPRESSION_METHOD
 export ENCODER_MODE BITRATE_THRESHOLD_KBPS GPU_QP CPU_CRF CPU_PRESET CPU_X265_PARAMS CJXL_THREADS
@@ -340,7 +339,9 @@ STAGE_ARGS=(--input "$INPUT_DIR")
 run_stage() {
     local label="$1"; shift
     local e=0
-    "$@" || e=$?
+    # MO_HOLD=0 nur fuer das Unterskript: sonst wartet jede Stufe einzeln.
+    # Das Offenhalten am Ende uebernimmt der Orchestrator.
+    env MO_HOLD=0 "$@" || e=$?
     # 130 = SIGINT, 124/125 = timeout bzw. xargs-Abbruch.
     # 126/127 sind Ausfuehrungsfehler (nicht ausfuehrbar / nicht gefunden)
     # und duerfen NICHT als Benutzerabbruch gelten.

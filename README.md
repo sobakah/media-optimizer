@@ -217,9 +217,20 @@ Scheitert die GPU erst an einer echten Datei, wird diese sofort auf der CPU wied
 
 Wird ein Skript aus einem Dateimanager oder über eine `.desktop`-Datei
 gestartet, schließt der Terminal-Emulator das Fenster, sobald das Skript
-endet. Bei einem Abbruch durch `set -e` ist die Fehlermeldung dann nicht mehr
-lesbar. Deshalb hält ein Exit-Handler das Fenster in diesem Fall offen und
-nennt Exit-Code, Zeilennummer und den fehlgeschlagenen Befehl:
+endet. Weder die Auswertung noch eine Fehlermeldung wären dann lesbar.
+Deshalb hält ein Exit-Handler das Fenster in diesem Fall offen, **auch bei
+erfolgreichem Durchlauf**, damit die Statistiken geprüft werden können:
+
+```
+║  GESAMTER VORGANG ERFOLGREICH BEENDET                         ║
+╚══════════════════════════════════════════════════════════════╝
+
+[FERTIG] Ohne Fehler beendet.
+Fenster bleibt offen. Enter zum Schliessen.
+```
+
+Bei einem Abbruch nennt der Handler zusätzlich Exit-Code, Zeilennummer und
+den fehlgeschlagenen Befehl:
 
 ```
 [ABBRUCH] Skript endete mit Code 1.
@@ -255,6 +266,10 @@ Terminal=true
 
 Ohne Terminal, etwa bei „Als Programm ausführen" in GNOME Files, wird nicht
 gewartet, weil dort niemand die Meldung sehen könnte.
+
+Beim Start über `media-optimizer.sh` wartet nur der Orchestrator am Ende,
+nicht jede der drei Stufen einzeln. Standalone aufgerufene Unter-Skripte
+halten das Fenster dagegen selbst offen.
 
 ## Bekannte Grenzen
 
