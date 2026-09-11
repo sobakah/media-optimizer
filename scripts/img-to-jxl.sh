@@ -64,6 +64,12 @@ if [[ -n "${DELETE_ORIGINAL+x}" ]]; then DELETE_ORIGINAL_EXPLICIT=true; fi
 DELETE_ORIGINAL="${DELETE_ORIGINAL:-false}"
 FORCE_DELETE="${FORCE_DELETE:-false}"
 JXL_EFFORT="${JXL_EFFORT:-7}"
+# Zielformat fuer JPG und PNG. "webp" wandelt alles nach WebP statt JXL.
+# JPEG wird dabei zwangslaeufig verlustbehaftet neu kodiert, weil verlustfreies
+# WebP aus einem bereits DCT-komprimierten JPEG groesser als die Quelle waere.
+IMG_TARGET="${IMG_TARGET:-jxl}"
+IMG_WEBP_QUALITY="${IMG_WEBP_QUALITY:-85}"
+IMG_DISCARD_IF_LARGER="${IMG_DISCARD_IF_LARGER:-false}"
 PNG_MODE="${PNG_MODE:-lossless}"
 PNG_QUALITY="${PNG_QUALITY:-90}"
 DRY_RUN="${DRY_RUN:-false}"
@@ -82,6 +88,9 @@ while (( $# > 0 )); do
         -o|--output)      OUTPUT_DIR="$2"; shift 2 ;;
         -j|--workers)     MAX_WORKERS="$2"; shift 2 ;;
         -e|--effort)      JXL_EFFORT="$2"; shift 2 ;;
+        --target)         IMG_TARGET="$2"; shift 2 ;;
+        --webp-quality)   IMG_WEBP_QUALITY="$2"; shift 2 ;;
+        --discard-larger) IMG_DISCARD_IF_LARGER=true; shift ;;
         --png-mode)       PNG_MODE="$2"; shift 2 ;;
         --png-quality)    PNG_QUALITY="$2"; shift 2 ;;
         --delete)         DELETE_ORIGINAL=true; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
@@ -133,6 +142,10 @@ mo_log_init "img-to-jxl.sh" "$SOURCE_DIR" "$OUTPUT_DIR"
 require_cmds cjxl cwebp file || exit 1
 [[ "$PNG_MODE" == "lossless" || "$PNG_MODE" == "lossy" ]] || {
     echo "--png-mode muss 'lossless' oder 'lossy' sein." >&2; exit 2; }
+[[ "$IMG_TARGET" == "jxl" || "$IMG_TARGET" == "webp" ]] || {
+    echo "--target muss 'jxl' oder 'webp' sein." >&2; exit 2; }
+[[ "$IMG_TARGET" == "webp" ]] && printf "%b[BILDER]%b Ziel: WebP (JPEG verlustbehaftet mit q%s, PNG %s)\n" \
+    "$C_CYAN" "$C_RESET" "$IMG_WEBP_QUALITY" "$PNG_MODE"
 
 [[ "$DRY_RUN" == true ]] && printf "%b[DRY-RUN]%b Es wird nichts geschrieben oder geloescht.\n" "$C_CYAN" "$C_RESET"
 
@@ -154,6 +167,7 @@ fi
 
 TOTAL_PROCESSED=${TOTAL_PROCESSED:-0}; TOTAL_SKIPPED=${TOTAL_SKIPPED:-0}
 TOTAL_FAILED=${TOTAL_FAILED:-0};       TOTAL_COLLISION=${TOTAL_COLLISION:-0}
+TOTAL_DISCARDED=${TOTAL_DISCARDED:-0}
 TOTAL_ORIG_BYTES=${TOTAL_ORIG_BYTES:-0}; TOTAL_NEW_BYTES=${TOTAL_NEW_BYTES:-0}
 PREV_ELAPSED=${PREV_ELAPSED:-0}
 START_TIME=$(date +%s)
@@ -162,12 +176,13 @@ finalize_stats() {
     local exit_code="$1"
     local tot_elapsed=$(( PREV_ELAPSED + $(date +%s) - START_TIME ))
 
-    local c_proc=0 c_skip=0 c_fail=0 c_coll=0 c_orig=0 c_new=0 c_dry=0
+    local c_proc=0 c_skip=0 c_fail=0 c_coll=0 c_disc=0 c_orig=0 c_new=0 c_dry=0
     if [[ -f "$CURRENT_RUN_LOG" ]]; then
         c_proc=$(grep -c "^SUCCESS"   "$CURRENT_RUN_LOG" || true)
         c_skip=$(grep -c "^SKIP"      "$CURRENT_RUN_LOG" || true)
         c_fail=$(grep -c "^FAIL"      "$CURRENT_RUN_LOG" || true)
         c_coll=$(grep -c "^COLLISION" "$CURRENT_RUN_LOG" || true)
+        c_disc=$(grep -c "^DISCARD"   "$CURRENT_RUN_LOG" || true)
         c_dry=$(grep -c "^DRY"        "$CURRENT_RUN_LOG" || true)
         c_orig=$(awk '/^SUCCESS/ {s += $2} END {print s+0}' "$CURRENT_RUN_LOG")
         c_new=$(awk  '/^SUCCESS/ {s += $3} END {print s+0}' "$CURRENT_RUN_LOG")
@@ -178,6 +193,7 @@ finalize_stats() {
     TOTAL_SKIPPED=$(( TOTAL_SKIPPED + c_skip ))
     TOTAL_FAILED=$(( TOTAL_FAILED + c_fail ))
     TOTAL_COLLISION=$(( TOTAL_COLLISION + c_coll ))
+    TOTAL_DISCARDED=$(( TOTAL_DISCARDED + c_disc ))
     TOTAL_ORIG_BYTES=$(( TOTAL_ORIG_BYTES + c_orig ))
     TOTAL_NEW_BYTES=$(( TOTAL_NEW_BYTES + c_new ))
 
@@ -187,6 +203,7 @@ TOTAL_PROCESSED=$TOTAL_PROCESSED
 TOTAL_SKIPPED=$TOTAL_SKIPPED
 TOTAL_FAILED=$TOTAL_FAILED
 TOTAL_COLLISION=$TOTAL_COLLISION
+TOTAL_DISCARDED=$TOTAL_DISCARDED
 TOTAL_ORIG_BYTES=$TOTAL_ORIG_BYTES
 TOTAL_NEW_BYTES=$TOTAL_NEW_BYTES
 PREV_ELAPSED=$tot_elapsed
@@ -209,6 +226,8 @@ EOF
     printf "%b║%b  Gesamtlaufzeit:       %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$(format_duration "$tot_elapsed")" "$C_BLUE" "$C_RESET"
     printf "%b║%b  Konvertiert:          %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_PROCESSED Datei(en)" "$C_BLUE" "$C_RESET"
     printf "%b║%b  Uebersprungen:        %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_SKIPPED Datei(en)" "$C_BLUE" "$C_RESET"
+    (( TOTAL_DISCARDED > 0 )) && \
+    printf "%b║%b  Verworfen (groesser): %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_DISCARDED Datei(en)" "$C_BLUE" "$C_RESET"
     (( TOTAL_COLLISION > 0 )) && \
     printf "%b║%b  Namenskonflikt:       %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_COLLISION Datei(en)" "$C_BLUE" "$C_RESET"
     printf "%b║%b  Fehlgeschlagen:       %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_FAILED Datei(en)" "$C_BLUE" "$C_RESET"
@@ -352,15 +371,64 @@ _convert_image_locked() {
                 "$C_RED" "$C_RESET" "$file" >&2
             return 1
         fi
+        new_size=$(stat -c%s "$tmp" 2>/dev/null || echo 0)
+        if [[ "$IMG_DISCARD_IF_LARGER" == true ]] && (( orig_size > 0 && new_size >= orig_size )); then
+            rm -f "$tmp"
+            echo "DISCARD" >> "$CURRENT_RUN_LOG"
+            mo_log_file "$MO_LOG_TAG" "VERWORFEN" "$src" "" "$orig_size" "$new_size"
+            printf "%b[VERWORFEN]%b '%s': Ergebnis waere groesser, Original bleibt.\n" \
+                "$C_YELLOW" "$C_RESET" "$file"
+            return 1
+        fi
         mv "$tmp" "$dest"
         touch -r "$src" "$dest"
-        new_size=$(stat -c%s "$dest" 2>/dev/null || echo 0)
         echo "SUCCESS $orig_size $new_size" >> "$CURRENT_RUN_LOG"
         [[ "$DELETE_ORIGINAL" == true ]] && safe_remove "$src"
         mo_log_file "$MO_LOG_TAG" "OK" "$src" "$(basename "$dest")" "$orig_size" "$new_size"
         printf "%b%s%b '%s' -> '%s'\n" "$C_GREEN" "$label" "$C_RESET" "$file" "$(basename "$dest")"
         return 0
     }
+
+    # ---------------- Zielformat WebP ----------------
+    if [[ "$IMG_TARGET" == "webp" ]]; then
+        local -a webp_args=(-quiet -m "$WEBP_FALLBACK_METHOD" -metadata all)
+        local label
+        if [[ "$ext" == "png" && "$PNG_MODE" == "lossless" ]]; then
+            webp_args+=(-lossless -z 9); label="[PNG->WEBP-LOSSLESS]"
+        elif [[ "$ext" == "png" ]]; then
+            webp_args+=(-q "$IMG_WEBP_QUALITY"); label="[PNG->WEBP-q${IMG_WEBP_QUALITY}]"
+        else
+            # JPEG: verlustfrei waere groesser als die Quelle, daher immer -q.
+            webp_args+=(-q "$IMG_WEBP_QUALITY"); label="[JPG->WEBP-q${IMG_WEBP_QUALITY}]"
+        fi
+        if cwebp "${webp_args[@]}" "$src" -o "$temp_webp" 2>/dev/null && [[ -s "$temp_webp" ]]; then
+            _commit "$temp_webp" "$dest_webp" "$label" && return 0
+            return 1
+        fi
+        rm -f "$temp_webp"
+        # Fehlgeschlagen: meist eine falsche Endung.
+        local real_mime; real_mime=$(file -b --mime-type "$src" 2>/dev/null || echo unknown)
+        local correct_ext=""
+        case "$real_mime" in
+            image/webp) correct_ext="webp" ;; image/png)  correct_ext="png" ;;
+            image/jxl)  correct_ext="jxl"  ;; image/gif)  correct_ext="gif" ;;
+            image/jpeg) correct_ext="jpg"  ;;
+        esac
+        if [[ -n "$correct_ext" && "$correct_ext" != "$ext" ]]; then
+            _handle_wrong_extension "$real_mime" "$correct_ext" && return 0
+            if cwebp -quiet -m "$WEBP_FALLBACK_METHOD" -metadata all \
+                     -q "$IMG_WEBP_QUALITY" "$src" -o "$temp_webp" 2>/dev/null \
+               && [[ -s "$temp_webp" ]]; then
+                _commit "$temp_webp" "$dest_webp" "[WEBP-q${IMG_WEBP_QUALITY}]" && return 0
+                return 1
+            fi
+            rm -f "$temp_webp"
+        fi
+        printf "%b[FEHLER]%b Konvertierung fehlgeschlagen: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
+        mo_log_file "$MO_LOG_TAG" "FEHLER" "$src"
+        echo "FAIL" >> "$CURRENT_RUN_LOG"; return 1
+    fi
+
 
     # ---------------- JPEG: verlustfreies JXL-Recompress ----------------
     if [[ "$ext" == "jpg" || "$ext" == "jpeg" ]]; then
@@ -445,6 +513,7 @@ _convert_image_locked() {
 
 export SOURCE_DIR OUTPUT_DIR SKIP_EXISTING DELETE_ORIGINAL
 export JXL_EFFORT PNG_MODE PNG_QUALITY WEBP_FALLBACK_METHOD CJXL_THREADS
+export IMG_TARGET IMG_WEBP_QUALITY IMG_DISCARD_IF_LARGER
 export -f convert_image _convert_image_locked _handle_wrong_extension
 
 exit_code=0

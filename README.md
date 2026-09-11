@@ -125,6 +125,24 @@ JPEG wird bit-exakt verlustfrei nach JXL transcodiert. PNG wird verlustfrei
 oder mit einstellbarer Qualität konvertiert; schlägt das fehl, greift ein
 verlustfreier WebP-Fallback.
 
+Mit `--target webp` bzw. `IMG_TARGET="webp"` wird stattdessen alles nach WebP
+gewandelt. JPEG wird dabei zwangsläufig verlustbehaftet neu kodiert, weil
+verlustfreies WebP aus einem bereits DCT-komprimierten JPEG größer als die
+Quelle wäre. `PNG_MODE` steuert auch hier, ob PNG verlustfrei oder mit
+Qualität kodiert wird.
+
+Messwerte an 1280×960-Quellen:
+
+| Quelle | WebP `-q 85` | JXL verlustfrei |
+|---|---|---|
+| Foto-JPEG | 42 % / 44,7 dB | 72 % |
+| kantenreiches JPEG | 55 % / 40,8 dB | 65 % |
+| PNG (verlustfrei beide) | 51 % | 53 % |
+
+WebP spart also deutlich, gibt dafür die Verlustfreiheit auf. Bei PNG nehmen
+sich beide Formate kaum etwas. `--discard-larger` behält das Original, falls
+das Ergebnis doch größer ausfällt.
+
 Passt die Endung nicht zum Inhalt (etwa ein WebP mit `.jpg`), hängt die
 Behandlung vom Modus ab. **Mit Zielverzeichnis bleibt die Quelle
 unangetastet**: die Datei landet unter dem richtigen Namen im Ziel. In-Place
@@ -133,6 +151,9 @@ gilt für `--preflight` im Orchestrator, der mit Zielverzeichnis nur meldet
 statt umzubenennen.
 
 ```
+      --target <f>       jxl | webp (Default: jxl)
+      --webp-quality <q> Qualität für verlustbehaftetes WebP (Default: 85)
+      --discard-larger   Ergebnis verwerfen, wenn es größer als das Original ist
   -e, --effort <1-9>     JXL Effort (Default: 7)
       --png-mode <m>     lossless | lossy (Default: lossless)
       --png-quality <q>  nur bei lossy (Default: 90)
