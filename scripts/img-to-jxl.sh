@@ -1,21 +1,21 @@
 #!/bin/bash
 # ==============================================================================
-# img-to-jxl.sh  -  JPG/PNG -> JPEG XL (WebP als Fallback)
+# img-to-jxl.sh  -  JPG/PNG -> JPEG XL (WebP as fallback)
 #
 # AUFBAU: KONFIGURATION -> STATISTIK -> WORKER -> xargs-Aufruf am Dateiende.
 #
-# Die Konvertierung laeuft parallel: find liefert die Dateien, xargs startet
-# pro Datei eine eigene Shell und ruft convert_image auf. Alles, was der
-# Worker braucht, muss deshalb exportiert sein (Variablen mit "export",
-# Funktionen mit "export -f") - sonst ist es dort schlicht nicht vorhanden.
+# Conversion runs in parallel: find supplies the files, xargs starts
+# one shell per file and calls convert_image. Everything the
+# worker needs must therefore be exported (variables with "export",
+# functions with "export -f"), otherwise it is simply not present there.
 #
-# WICHTIGE INVARIANTEN beim Aendern:
-#   - Zielnamen werden per Lock-Verzeichnis beansprucht. "foto.jpg" und
-#     "foto.png" zeigen beide auf "foto.jxl"; ohne Lock wuerden zwei Worker
-#     dieselbe Datei schreiben.
-#   - Temp-Dateien tragen PID und Zufallszahl im Namen, damit sich parallele
-#     Worker nicht in die Quere kommen.
-#   - JPEG wird bit-exakt verlustfrei transcodiert. PNG_MODE betrifft nur PNG.
+# IMPORTANT INVARIANTS when changing this:
+# - Target names are claimed with a lock directory. "foto.jpg" and
+# "foto.png" both map to "foto.jxl"; without a lock two workers would
+# write the same file.
+# - Temp files carry PID and a random number so that parallel
+# workers do not collide.
+# - JPEG is transcoded bit-exactly lossless. PNG_MODE only affects PNG.
 # ==============================================================================
 set -euo pipefail
 
@@ -27,27 +27,30 @@ mo_install_exit_handler
 
 usage() {
     cat <<'EOF'
-img-to-jxl.sh - konvertiert JPG/PNG nach JPEG XL (WebP als Fallback)
+img-to-jxl.sh - converts JPG/PNG to JPEG XL or WebP
 
-  -i, --input   <dir>   Quellverzeichnis
-  -o, --output  <dir>   Zielverzeichnis (leer = In-Place)
-  -j, --workers <n>     Parallele Worker (Default: nproc)
-  -e, --effort  <1-9>   JXL Effort (Default: 7)
-      --png-mode  <m>   lossless | lossy   (Default: lossless)
-      --png-quality <q> Nur bei --png-mode lossy (Default: 90)
-      --delete          Originale nach Erfolg in den Papierkorb
-      --no-delete       Originale behalten (Default)
-      --force-delete    Falls Papierkorb fehlschlaegt: ohne Rueckfrage rm
-      --cjxl-threads <n> Threads pro cjxl-Prozess (Default: 1, da parallel)
-      --verify-deep     Ausgabe vollstaendig dekodieren (langsamer, sicherer)
-  -n, --dry-run         Nur anzeigen, nichts schreiben
-      --log <datei>      Protokolldatei
-      --no-log           Kein Protokoll schreiben
-      --hold            Fenster am Ende offen halten (fuer Doppelklick-Start)
-      --no-hold         Fenster nie offen halten
-  -h, --help            Diese Hilfe
+  -i, --input   <dir>    source directory
+  -o, --output  <dir>    target directory (empty = in place)
+  -j, --workers <n>      parallel workers (default: nproc)
+      --target <f>       jxl | webp (default: jxl)
+      --webp-quality <q> quality for lossy WebP (default: 85)
+      --discard-larger   discard the result if larger than the original
+  -e, --effort  <1-9>    JXL effort (default: 7)
+      --png-mode  <m>    lossless | lossy (default: lossless)
+      --png-quality <q>  only with --png-mode lossy (default: 90)
+      --cjxl-threads <n> threads per cjxl process (default: 1)
+      --delete           move originals to the trash after success
+      --no-delete        keep originals
+      --force-delete     if the trash fails, rm without asking
+      --verify-deep      fully decode the output (slower, safer)
+      --log <file>       log file
+      --no-log           do not write a log
+      --hold             keep the window open at the end
+      --no-hold          never keep the window open
+  -n, --dry-run          preview only, write nothing
+  -h, --help             this help
 
-Positionsargumente werden weiterhin akzeptiert: img-to-jxl.sh <input> [output]
+Positional arguments are still accepted: img-to-jxl.sh <input> [output]
 EOF
 }
 
@@ -57,16 +60,16 @@ EOF
 SOURCE_DIR="${SOURCE_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 MAX_WORKERS="${MAX_WORKERS:-$(nproc)}"
-# Kein fester Default: die Vorbelegung haengt davon ab, ob ein
+# No fixed default: the preset depends on whether a target
 # Zielverzeichnis angegeben wurde (siehe mo_apply_inplace_defaults).
-# Ein Wert aus Umgebung oder Konfigdatei gilt als ausdrueckliche Angabe.
+# A value from the environment or config file counts as explicit.
 if [[ -n "${DELETE_ORIGINAL+x}" ]]; then DELETE_ORIGINAL_EXPLICIT=true; fi
 DELETE_ORIGINAL="${DELETE_ORIGINAL:-false}"
 FORCE_DELETE="${FORCE_DELETE:-false}"
 JXL_EFFORT="${JXL_EFFORT:-7}"
-# Zielformat fuer JPG und PNG. "webp" wandelt alles nach WebP statt JXL.
-# JPEG wird dabei zwangslaeufig verlustbehaftet neu kodiert, weil verlustfreies
-# WebP aus einem bereits DCT-komprimierten JPEG groesser als die Quelle waere.
+# Target format for JPG and PNG. "webp" converts everything to WebP.
+# JPEG is necessarily re-encoded lossily, because lossless
+# WebP from an already DCT-compressed JPEG would be larger than the source.
 IMG_TARGET="${IMG_TARGET:-jxl}"
 IMG_WEBP_QUALITY="${IMG_WEBP_QUALITY:-85}"
 IMG_DISCARD_IF_LARGER="${IMG_DISCARD_IF_LARGER:-false}"
@@ -74,9 +77,9 @@ PNG_MODE="${PNG_MODE:-lossless}"
 PNG_QUALITY="${PNG_QUALITY:-90}"
 DRY_RUN="${DRY_RUN:-false}"
 VERIFY_DEEP="${VERIFY_DEEP:-false}"
-# Jeder Worker ist ein eigener cjxl-Prozess. cjxl wuerde per Default nochmal
-# so viele Threads starten wie Kerne vorhanden sind (16 Worker x 16 Threads
-# auf einem 8C/16T-Chip). 1 Thread pro Prozess vermeidet die Ueberbuchung.
+# Each worker is its own cjxl process. By default cjxl would start as
+# many threads as there are cores (16 workers x 16 threads
+# on an 8C/16T chip). One thread per process avoids the oversubscription.
 CJXL_THREADS="${CJXL_THREADS:-1}"
 SKIP_EXISTING=true
 WEBP_FALLBACK_METHOD=6
@@ -105,7 +108,7 @@ while (( $# > 0 )); do
         --no-hold)        MO_HOLD=0; shift ;;
         -h|--help)        usage; exit 0 ;;
         --)               shift; while (( $# > 0 )); do POSITIONAL+=("$1"); shift; done ;;
-        -*)               echo "Unbekannte Option: $1" >&2; usage >&2; exit 2 ;;
+        -*)               echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
         *)                POSITIONAL+=("$1"); shift ;;
     esac
 done
@@ -114,21 +117,21 @@ done
 
 if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" ]]; then
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
-    printf "%bBildkonverter: JPG/PNG -> JXL (mit WebP-Fallback)%b\n" "$C_BOLD" "$C_RESET"
+    printf "%bImage converter: JPG/PNG -> JXL (with WebP fallback)%b\n" "$C_BOLD" "$C_RESET"
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
-    read -rp "Mit Standardeinstellungen ausfuehren? [J/n]: " start_choice || start_choice=""
+    read -rp "Run with default settings? [Y/n]: " start_choice || start_choice=""
     if [[ "${start_choice,,}" =~ ^(n|nein|no)$ ]]; then
-        read -rp "  Quellverzeichnis [$SOURCE_DIR]: " x && SOURCE_DIR="${x:-$SOURCE_DIR}"
-        read -rp "  Zielverzeichnis (leer = In-Place) [$OUTPUT_DIR]: " x && OUTPUT_DIR="${x:-$OUTPUT_DIR}"
-        read -rp "  Originale in den Papierkorb? [j/N]: " x
+        read -rp "  Source directory [$SOURCE_DIR]: " x && SOURCE_DIR="${x:-$SOURCE_DIR}"
+        read -rp "  Target directory (empty = in place) [$OUTPUT_DIR]: " x && OUTPUT_DIR="${x:-$OUTPUT_DIR}"
+        read -rp "  Move originals to trash? [y/N]: " x
         [[ "${x,,}" =~ ^(j|ja|y|yes)$ ]] && DELETE_ORIGINAL=true || DELETE_ORIGINAL=false
-        read -rp "  JXL Effort (1-9) [$JXL_EFFORT]: " x && JXL_EFFORT="${x:-$JXL_EFFORT}"
-        read -rp "  PNG-Modus (lossless/lossy) [$PNG_MODE]: " x && PNG_MODE="${x:-$PNG_MODE}"
+        read -rp "  JXL effort (1-9) [$JXL_EFFORT]: " x && JXL_EFFORT="${x:-$JXL_EFFORT}"
+        read -rp "  PNG mode (lossless/lossy) [$PNG_MODE]: " x && PNG_MODE="${x:-$PNG_MODE}"
     fi
 fi
 
-[[ -z "$SOURCE_DIR" ]] && { echo "Kein Quellverzeichnis." >&2; exit 1; }
-[[ -d "$SOURCE_DIR" ]] || { echo "Quellverzeichnis fehlt: $SOURCE_DIR" >&2; exit 1; }
+[[ -z "$SOURCE_DIR" ]] && { echo "No source directory given." >&2; exit 1; }
+[[ -d "$SOURCE_DIR" ]] || { echo "Source directory not found: $SOURCE_DIR" >&2; exit 1; }
 SOURCE_DIR="${SOURCE_DIR%/}"
 if [[ -n "$OUTPUT_DIR" ]]; then
     OUTPUT_DIR="${OUTPUT_DIR%/}"
@@ -144,10 +147,10 @@ require_cmds cjxl cwebp file || exit 1
     echo "--png-mode muss 'lossless' oder 'lossy' sein." >&2; exit 2; }
 [[ "$IMG_TARGET" == "jxl" || "$IMG_TARGET" == "webp" ]] || {
     echo "--target muss 'jxl' oder 'webp' sein." >&2; exit 2; }
-[[ "$IMG_TARGET" == "webp" ]] && printf "%b[BILDER]%b Ziel: WebP (JPEG verlustbehaftet mit q%s, PNG %s)\n" \
+[[ "$IMG_TARGET" == "webp" ]] && printf "%b[IMAGES]%b target: WebP (JPEG lossy at q%s, PNG %s)\n" \
     "$C_CYAN" "$C_RESET" "$IMG_WEBP_QUALITY" "$PNG_MODE"
 
-[[ "$DRY_RUN" == true ]] && printf "%b[DRY-RUN]%b Es wird nichts geschrieben oder geloescht.\n" "$C_CYAN" "$C_RESET"
+[[ "$DRY_RUN" == true ]] && printf "%b[DRY-RUN]%b Nothing will be written or deleted.\n" "$C_CYAN" "$C_RESET"
 
 cleanup_stale_parts "${OUTPUT_DIR:-$SOURCE_DIR}" "*.part.*.jxl" "*.part.*.webp"
 
@@ -214,49 +217,49 @@ EOF
     rm -f "$STATS_FILE"
 
     if [[ "$DRY_RUN" == true ]]; then
-        printf "\n%b[DRY-RUN]%b %s Datei(en) wuerden konvertiert, %s uebersprungen.\n" \
+        printf "\n%b[DRY-RUN]%b %s file(s) would be converted, %s skipped.\n" \
             "$C_CYAN" "$C_RESET" "$c_dry" "$TOTAL_SKIPPED"
         return 0
     fi
 
     local saved=$(( TOTAL_ORIG_BYTES - TOTAL_NEW_BYTES ))
     printf "\n%b╔══════════════════════════════════════════════════════════════╗%b\n" "$C_BLUE" "$C_RESET"
-    printf "%b║%b                  %bBILDER-AUSWERTUNG%b                           %b║%b\n" "$C_BLUE" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_BLUE" "$C_RESET"
+    printf "%b║%b                        %bIMAGE SUMMARY%b                         %b║%b\n" "$C_BLUE" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_BLUE" "$C_RESET"
     printf "%b╠══════════════════════════════════════════════════════════════╣%b\n" "$C_BLUE" "$C_RESET"
-    printf "%b║%b  Gesamtlaufzeit:       %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$(format_duration "$tot_elapsed")" "$C_BLUE" "$C_RESET"
-    printf "%b║%b  Konvertiert:          %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_PROCESSED Datei(en)" "$C_BLUE" "$C_RESET"
-    printf "%b║%b  Uebersprungen:        %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_SKIPPED Datei(en)" "$C_BLUE" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Total runtime:" "$(format_duration "$tot_elapsed")" "$C_BLUE" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Converted:" "$TOTAL_PROCESSED file(s)" "$C_BLUE" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Skipped:" "$TOTAL_SKIPPED file(s)" "$C_BLUE" "$C_RESET"
     (( TOTAL_DISCARDED > 0 )) && \
-    printf "%b║%b  Verworfen (groesser): %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_DISCARDED Datei(en)" "$C_BLUE" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Discarded (larger):" "$TOTAL_DISCARDED file(s)" "$C_BLUE" "$C_RESET"
     (( TOTAL_COLLISION > 0 )) && \
-    printf "%b║%b  Namenskonflikt:       %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_COLLISION Datei(en)" "$C_BLUE" "$C_RESET"
-    printf "%b║%b  Fehlgeschlagen:       %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_FAILED Datei(en)" "$C_BLUE" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Name conflict:" "$TOTAL_COLLISION file(s)" "$C_BLUE" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Failed:" "$TOTAL_FAILED file(s)" "$C_BLUE" "$C_RESET"
     printf "%b╟──────────────────────────────────────────────────────────────╢%b\n" "$C_BLUE" "$C_RESET"
 
     if (( TOTAL_PROCESSED > 0 && TOTAL_ORIG_BYTES > 0 )); then
-        printf "%b║%b  Speicher vorher:      %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$(format_bytes "$TOTAL_ORIG_BYTES")" "$C_BLUE" "$C_RESET"
-        printf "%b║%b  Speicher nachher:     %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$(format_bytes "$TOTAL_NEW_BYTES")" "$C_BLUE" "$C_RESET"
+        printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Size before:" "$(format_bytes "$TOTAL_ORIG_BYTES")" "$C_BLUE" "$C_RESET"
+        printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Size after:" "$(format_bytes "$TOTAL_NEW_BYTES")" "$C_BLUE" "$C_RESET"
         local pct; pct=$(pct_change "$TOTAL_ORIG_BYTES" "$TOTAL_NEW_BYTES")
         if (( saved > 0 )); then
-            printf "%b║%b  %bGesamtersparnis:%b      %b%-38s%b %b║%b\n" "$C_BLUE" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_GREEN" "-$(format_bytes "$saved") (${pct}%)" "$C_RESET" "$C_BLUE" "$C_RESET"
+            printf "%b║%b  %-21s %b%-37s%b %b║%b\n" "$C_BLUE" "$C_RESET" "Total saved:" "$C_GREEN" "-$(format_bytes "$saved") (${pct}%)" "$C_RESET" "$C_BLUE" "$C_RESET"
         else
-            printf "%b║%b  %bZuwachs:%b              %b%-38s%b %b║%b\n" "$C_BLUE" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_YELLOW" "+$(format_bytes $(( -saved ))) (+${pct}%)" "$C_RESET" "$C_BLUE" "$C_RESET"
+            printf "%b║%b  %-21s %b%-37s%b %b║%b\n" "$C_BLUE" "$C_RESET" "Increase:" "$C_YELLOW" "+$(format_bytes $(( -saved ))) (+${pct}%)" "$C_RESET" "$C_BLUE" "$C_RESET"
         fi
     fi
     printf "%b╚══════════════════════════════════════════════════════════════╝%b\n" "$C_BLUE" "$C_RESET"
 
-    mo_log "img" "Auswertung: $TOTAL_PROCESSED konvertiert, $TOTAL_SKIPPED uebersprungen, $TOTAL_FAILED fehlgeschlagen, $(format_bytes "$TOTAL_ORIG_BYTES") -> $(format_bytes "$TOTAL_NEW_BYTES")"
+    mo_log "img" "summary: $TOTAL_PROCESSED converted, $TOTAL_SKIPPED skipped, $TOTAL_FAILED failed, $(format_bytes "$TOTAL_ORIG_BYTES") -> $(format_bytes "$TOTAL_NEW_BYTES")"
     resolve_pending_deletes
 }
 
-trap 'printf "\n%b[ABBRUCH]%b Bild-Konvertierung gestoppt.\n" "$C_RED" "$C_RESET"; finalize_stats 130' SIGINT SIGTERM
+trap 'printf "\n%b[ABORT]%b image conversion stopped.\n" "$C_RED" "$C_RESET"; finalize_stats 130' SIGINT SIGTERM
 
 # ------------------------------------------------------------------------------
 # WORKER
 # ------------------------------------------------------------------------------
-# Aussenhuelle: berechnet Zielnamen, sichert sie per Lock-Verzeichnis gegen
-# gleichzeitigen Zugriff durch einen zweiten Worker (z.B. foo.jpg + foo.png,
-# die beide auf foo.jxl zeigen wuerden).
+# Wrapper: computes the target names and claims them with a lock directory
+# concurrent access by a second worker (e.g. foo.jpg + foo.png,
+# which would both map to foo.jxl).
 convert_image() {
     local src="$1"
     local orig_size; orig_size=$(stat -c%s "$src" 2>/dev/null || echo 0)
@@ -286,7 +289,7 @@ convert_image() {
         return 0
     fi
 
-    # Eindeutige Temp-Namen: zwei Worker duerfen sich nie dieselbe .part-Datei teilen
+    # Unique temp names: two workers must never share the same .part file
     local uniq="$$.${RANDOM}"
     local temp_jxl="${dest_jxl}.part.${uniq}.jxl"
     local temp_webp="${dest_webp}.part.${uniq}.webp"
@@ -295,8 +298,8 @@ convert_image() {
     local lockdir="$target_folder/.${stem}.molock"
     if ! mkdir "$lockdir" 2>/dev/null; then
         echo "COLLISION" >> "$CURRENT_RUN_LOG"
-        mo_log_file "$MO_LOG_TAG" "KONFLIKT" "$src"
-        printf "%b[KONFLIKT]%b '%s': Zielname '%s' wird bereits belegt, Original bleibt.\n" \
+        mo_log_file "$MO_LOG_TAG" "CONFLICT" "$src"
+        printf "%b[CONFLICT]%b '%s': target name '%s' already claimed, original kept.\n" \
             "$C_YELLOW" "$C_RESET" "$file" "$(basename "$dest_jxl")" >&2
         return 0
     fi
@@ -307,15 +310,15 @@ convert_image() {
     return $rc
 }
 
-# Behandelt eine Datei, deren Endung nicht zum tatsaechlichen Inhalt passt.
+# Handles a file whose extension does not match its actual content.
 #
-# In-Place: die Quelldatei wird umbenannt, das ist ja der Zweck.
-# Mit Zielverzeichnis: die QUELLE BLEIBT UNANGETASTET. Alles, was korrigiert
-# werden soll, landet unter dem richtigen Namen im Zielverzeichnis. Sonst
-# waere ein getrenntes Zielverzeichnis wirkungslos, weil die Quelle doch
+# In place: the source file is renamed, which is the whole point.
+# With a target directory: THE SOURCE STAYS UNTOUCHED. Everything that
+# should be corrected lands under the correct name in the target. Otherwise
+# a separate target directory would be pointless, because the source
 # veraendert wuerde.
 #
-# Rueckgabe: 0 = erledigt (Aufrufer soll zurueckkehren)
+# Returns: 0 = handled (caller should return)
 #            1 = weiterverarbeiten, Variablen src/file/ext wurden angepasst
 _handle_wrong_extension() {
     local real_mime="$1" correct_ext="$2"
@@ -324,18 +327,18 @@ _handle_wrong_extension() {
     if [[ -n "${OUTPUT_DIR:-}" ]]; then
         cand="$target_folder/${stem}.${correct_ext}"
         while [[ -e "$cand" ]]; do cand="$target_folder/${stem}_${n}.${correct_ext}"; n=$(( n + 1 )); done
-        printf "%b[KORREKTUR]%b '%s' (%s) -> Ziel '%s', Quelle unveraendert\n" \
+        printf "%b[CORRECTED]%b '%s' (%s) -> target '%s', source unchanged\n" \
             "$C_MAGENTA" "$C_RESET" "$file" "$real_mime" "$(basename "$cand")"
 
         case "$correct_ext" in
             webp|jxl|gif)
                 # Bereits ein modernes Format: unveraendert uebernehmen.
                 cp -p "$src" "$cand"
-                mo_log_file "$MO_LOG_TAG" "KORREKTUR" "$src" "$(basename "$cand")"
+                mo_log_file "$MO_LOG_TAG" "CORRECTED" "$src" "$(basename "$cand")"
                 echo "SKIP" >> "$CURRENT_RUN_LOG"
                 return 0 ;;
             png|jpg)
-                # Weiterverarbeiten, aber aus der unveraenderten Quelle.
+                # Keep processing, but from the unchanged source.
                 ext="$correct_ext"
                 return 1 ;;
         esac
@@ -347,9 +350,9 @@ _handle_wrong_extension() {
     cand="$dir/${stem}.${correct_ext}"
     while [[ -e "$cand" ]]; do cand="$dir/${stem}_${n}.${correct_ext}"; n=$(( n + 1 )); done
     mv "$src" "$cand"
-    printf "%b[KORREKTUR]%b '%s' (%s) -> '%s'\n" \
+    printf "%b[CORRECTED]%b '%s' (%s) -> '%s'\n" \
         "$C_MAGENTA" "$C_RESET" "$file" "$real_mime" "$(basename "$cand")"
-    mo_log_file "$MO_LOG_TAG" "KORREKTUR" "$src" "$(basename "$cand")"
+    mo_log_file "$MO_LOG_TAG" "CORRECTED" "$src" "$(basename "$cand")"
 
     case "$correct_ext" in
         webp|jxl|gif) echo "SKIP" >> "$CURRENT_RUN_LOG"; return 0 ;;
@@ -358,7 +361,7 @@ _handle_wrong_extension() {
     return 1
 }
 
-# Innere Funktion: nutzt die lokalen Variablen der Huelle (dynamic scoping).
+# Inner function: uses the wrapper's locals (dynamic scoping).
 _convert_image_locked() {
     local new_size
 
@@ -367,7 +370,7 @@ _convert_image_locked() {
         if ! verify_output_image "$tmp"; then
             rm -f "$tmp"
             echo "FAIL" >> "$CURRENT_RUN_LOG"
-            printf "%b[FEHLER]%b Ausgabe nicht verifizierbar: '%s' (Original bleibt)\n" \
+            printf "%b[ERROR]%b output not verifiable: '%s' (original kept)\n" \
                 "$C_RED" "$C_RESET" "$file" >&2
             return 1
         fi
@@ -375,8 +378,8 @@ _convert_image_locked() {
         if [[ "$IMG_DISCARD_IF_LARGER" == true ]] && (( orig_size > 0 && new_size >= orig_size )); then
             rm -f "$tmp"
             echo "DISCARD" >> "$CURRENT_RUN_LOG"
-            mo_log_file "$MO_LOG_TAG" "VERWORFEN" "$src" "" "$orig_size" "$new_size"
-            printf "%b[VERWORFEN]%b '%s': Ergebnis waere groesser, Original bleibt.\n" \
+            mo_log_file "$MO_LOG_TAG" "DISCARDED" "$src" "" "$orig_size" "$new_size"
+            printf "%b[DISCARDED]%b '%s': result would be larger, original kept.\n" \
                 "$C_YELLOW" "$C_RESET" "$file"
             return 1
         fi
@@ -398,7 +401,7 @@ _convert_image_locked() {
         elif [[ "$ext" == "png" ]]; then
             webp_args+=(-q "$IMG_WEBP_QUALITY"); label="[PNG->WEBP-q${IMG_WEBP_QUALITY}]"
         else
-            # JPEG: verlustfrei waere groesser als die Quelle, daher immer -q.
+            # JPEG: lossless would be larger than the source, so always -q.
             webp_args+=(-q "$IMG_WEBP_QUALITY"); label="[JPG->WEBP-q${IMG_WEBP_QUALITY}]"
         fi
         if cwebp "${webp_args[@]}" "$src" -o "$temp_webp" 2>/dev/null && [[ -s "$temp_webp" ]]; then
@@ -406,7 +409,7 @@ _convert_image_locked() {
             return 1
         fi
         rm -f "$temp_webp"
-        # Fehlgeschlagen: meist eine falsche Endung.
+        # Failed: usually a wrong extension.
         local real_mime; real_mime=$(file -b --mime-type "$src" 2>/dev/null || echo unknown)
         local correct_ext=""
         case "$real_mime" in
@@ -424,8 +427,8 @@ _convert_image_locked() {
             fi
             rm -f "$temp_webp"
         fi
-        printf "%b[FEHLER]%b Konvertierung fehlgeschlagen: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
-        mo_log_file "$MO_LOG_TAG" "FEHLER" "$src"
+        printf "%b[ERROR]%b Konvertierung failed: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
+        mo_log_file "$MO_LOG_TAG" "ERROR" "$src"
         echo "FAIL" >> "$CURRENT_RUN_LOG"; return 1
     fi
 
@@ -438,7 +441,7 @@ _convert_image_locked() {
         fi
         rm -f "$temp_jxl"
 
-        # Falsche Endung? MIME pruefen und korrigieren.
+        # Wrong extension? Check the MIME type and correct it.
         local real_mime; real_mime=$(file -b --mime-type "$src" 2>/dev/null || echo unknown)
         if [[ "$real_mime" != "image/jpeg" ]]; then
             local correct_ext=""
@@ -451,7 +454,7 @@ _convert_image_locked() {
             fi
         fi
         if [[ "$ext" != "png" ]]; then
-            printf "%b[FEHLER]%b JXL-Transcoding fehlgeschlagen: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
+            printf "%b[ERROR]%b JXL-Transcoding failed: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
             echo "FAIL" >> "$CURRENT_RUN_LOG"; return 1
         fi
     fi
@@ -481,7 +484,7 @@ _convert_image_locked() {
             esac
             if [[ -n "$correct_ext" ]]; then
                 _handle_wrong_extension "$real_mime" "$correct_ext" && return 0
-                # Es ist in Wahrheit ein JPEG: verlustfrei transcodieren.
+                # It is actually a JPEG: transcode losslessly.
                 if [[ "$ext" == "jpg" ]]; then
                     if cjxl "$src" "$temp_jxl" -e "$JXL_EFFORT" \
                             --num_threads="$CJXL_THREADS" --quiet 2>/dev/null \
@@ -496,15 +499,15 @@ _convert_image_locked() {
         fi
 
         # Fallback: verlustfreies WebP inkl. Metadaten
-        printf "%b[FALLBACK]%b '%s' schlug fehl -> versuche WebP...\n" "$C_YELLOW" "$C_RESET" "$file"
+        printf "%b[FALLBACK]%b '%s' failed -> trying WebP...\n" "$C_YELLOW" "$C_RESET" "$file"
         if cwebp -quiet -lossless -z 9 -m "$WEBP_FALLBACK_METHOD" -metadata all \
                  "$src" -o "$temp_webp" 2>/dev/null && [[ -s "$temp_webp" ]]; then
             _commit "$temp_webp" "$dest_webp" "[PNG->WEBP]" && return 0
             return 1
         fi
         rm -f "$temp_webp"
-        printf "%b[FEHLER]%b Konvertierung fehlgeschlagen: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
-        mo_log_file "$MO_LOG_TAG" "FEHLER" "$src"
+        printf "%b[ERROR]%b Konvertierung failed: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
+        mo_log_file "$MO_LOG_TAG" "ERROR" "$src"
         echo "FAIL" >> "$CURRENT_RUN_LOG"; return 1
     fi
 
@@ -520,7 +523,7 @@ exit_code=0
 find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) -print0 |
     xargs -0 -r -n 1 -P "$MAX_WORKERS" bash -c 'convert_image "$1"' _ || exit_code=$?
 
-# xargs meldet 124/125 bei Abbruch, 123 bei Worker-Fehlern (nicht Abbruch)
+# xargs reports 124/125 on abort, 123 on worker errors (not an abort)
 if (( exit_code == 124 || exit_code == 125 || exit_code == 130 )); then
     finalize_stats 130
 else

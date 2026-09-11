@@ -1,16 +1,16 @@
 #!/bin/bash
 # ==============================================================================
-# gif-to-webp.sh  -  GIF -> animiertes WebP oder AVIF
+# gif-to-webp.sh  -  GIF -> animated WebP or AVIF
 #
 # AUFBAU: KONFIGURATION -> STATISTIK -> WORKER -> xargs-Aufruf am Dateiende.
-# Parallelisierung und Exportregeln wie in img-to-jxl.sh.
+# Parallelisation and export rules as in img-to-jxl.sh.
 #
-# WICHTIGE INVARIANTEN beim Aendern:
-#   - gif2webp kodiert per Default verlustfrei. Ein Flag "-lossless" gibt es
-#     NICHT; wird es gesetzt, schlaegt der gesamte Aufruf fehl.
-#   - Bei GIF_TARGET=avif uebernimmt ffmpeg mit einem AV1-Encoder. Das ist
-#     verlustbehaftet, anders als der WebP-Pfad.
-#   - Ergebnisse, die groesser als das Original sind, werden verworfen.
+# IMPORTANT INVARIANTS when changing this:
+#   - gif2webp encoded per Default verlustfrei. Ein Flag "-lossless" gibt es
+# NOT exist; setting it makes the whole call fail.
+# - With GIF_TARGET=avif ffmpeg takes over with an AV1 encoder. That is
+# lossy, unlike the WebP path.
+# - Results larger than the original are discarded.
 # ==============================================================================
 set -euo pipefail
 
@@ -22,43 +22,45 @@ mo_install_exit_handler
 
 usage() {
     cat <<'EOF'
-gif-to-webp.sh - konvertiert GIF nach verlustfreiem WebP (gif2webp)
+gif-to-webp.sh - converts GIF to animated WebP or AVIF
 
-  -i, --input   <dir>   Quellverzeichnis
-  -o, --output  <dir>   Zielverzeichnis (leer = In-Place)
-  -j, --workers <n>     Parallele Worker (Default: nproc)
-  -m, --method  <0-6>   Kompressionsstufe (Default: 6)
-      --delete          Originale nach Erfolg in den Papierkorb
-      --no-delete       Originale behalten (Default)
-      --force-delete    Falls Papierkorb fehlschlaegt: ohne Rueckfrage rm
-      --keep-larger     Ergebnis auch behalten, wenn es groesser ist
-      --verify-deep     Ausgabe mit webpinfo pruefen
-  -n, --dry-run         Nur anzeigen, nichts schreiben
-      --log <datei>      Protokolldatei
-      --no-log           Kein Protokoll schreiben
-      --hold            Fenster am Ende offen halten (fuer Doppelklick-Start)
-      --no-hold         Fenster nie offen halten
-  -h, --help            Diese Hilfe
+  -i, --input   <dir>   source directory
+  -o, --output  <dir>   target directory (empty = in place)
+  -j, --workers <n>     parallel workers (default: nproc)
+  -m, --method  <0-6>   WebP compression level (default: 6)
+      --target <f>      webp | avif (default: webp)
+      --avif-crf <n>    AV1 quality with --target avif (default: 20)
+      --delete          move originals to the trash after success
+      --no-delete       keep originals
+      --force-delete    if the trash fails, rm without asking
+      --keep-larger     keep the result even when it is larger
+      --verify-deep     check the output with webpinfo
+      --log <file>      log file
+      --no-log          do not write a log
+      --hold            keep the window open at the end
+      --no-hold         never keep the window open
+  -n, --dry-run         preview only, write nothing
+  -h, --help            this help
 EOF
 }
 
 SOURCE_DIR="${SOURCE_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 MAX_WORKERS="${MAX_WORKERS:-$(nproc)}"
-# Kein fester Default: die Vorbelegung haengt davon ab, ob ein
+# No fixed default: the preset depends on whether a target
 # Zielverzeichnis angegeben wurde (siehe mo_apply_inplace_defaults).
-# Ein Wert aus Umgebung oder Konfigdatei gilt als ausdrueckliche Angabe.
+# A value from the environment or config file counts as explicit.
 if [[ -n "${DELETE_ORIGINAL+x}" ]]; then DELETE_ORIGINAL_EXPLICIT=true; fi
 DELETE_ORIGINAL="${DELETE_ORIGINAL:-false}"
 FORCE_DELETE="${FORCE_DELETE:-false}"
 COMPRESSION_METHOD="${COMPRESSION_METHOD:-6}"
 DISCARD_IF_LARGER="${DISCARD_IF_LARGER:-true}"
-# Abstand zwischen Keyframes im WebP. 0 = keine Keyframes, beste Kompression,
-# dafuer langsameres Spulen innerhalb der Animation.
+# Keyframe distance in WebP. 0 = no keyframes, best compression,
+# at the cost of slower seeking inside the animation.
 GIF_KMIN="${GIF_KMIN:-0}"
 
-# Zielformat: webp verlustfrei und breit unterstuetzt, avif rund halb so gross,
-# aber verlustbehaftet. Groessenvergleich im README.
+# Target format: webp is lossless and widely supported, avif about half
+# the size but lossy. Size comparison in the CHANGELOG.
 GIF_TARGET="${GIF_TARGET:-webp}"
 GIF_AVIF_CRF="${GIF_AVIF_CRF:-20}"
 DRY_RUN="${DRY_RUN:-false}"
@@ -86,7 +88,7 @@ while (( $# > 0 )); do
         --no-hold)      MO_HOLD=0; shift ;;
         -h|--help)      usage; exit 0 ;;
         --)             shift; while (( $# > 0 )); do POSITIONAL+=("$1"); shift; done ;;
-        -*)             echo "Unbekannte Option: $1" >&2; usage >&2; exit 2 ;;
+        -*)             echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
         *)              POSITIONAL+=("$1"); shift ;;
     esac
 done
@@ -95,21 +97,21 @@ done
 
 if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" ]]; then
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
-    printf "%bBatch GIF zu WebP Konverter (via gif2webp)%b\n" "$C_BOLD" "$C_RESET"
+    printf "%bBatch GIF to WebP converter (via gif2webp)%b\n" "$C_BOLD" "$C_RESET"
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
-    read -rp "Mit Standardeinstellungen ausfuehren? [J/n]: " start_choice || start_choice=""
+    read -rp "Run with default settings? [Y/n]: " start_choice || start_choice=""
     if [[ "${start_choice,,}" =~ ^(n|nein|no)$ ]]; then
-        read -rp "  Quellordner [$SOURCE_DIR]: " x && SOURCE_DIR="${x:-$SOURCE_DIR}"
-        read -rp "  Zielordner (leer = In-Place) [$OUTPUT_DIR]: " x && OUTPUT_DIR="${x:-$OUTPUT_DIR}"
-        read -rp "  Originale in den Papierkorb? [j/N]: " x
+        read -rp "  Source folder [$SOURCE_DIR]: " x && SOURCE_DIR="${x:-$SOURCE_DIR}"
+        read -rp "  Target folder (empty = in place) [$OUTPUT_DIR]: " x && OUTPUT_DIR="${x:-$OUTPUT_DIR}"
+        read -rp "  Move originals to trash? [y/N]: " x
         [[ "${x,,}" =~ ^(j|ja|y|yes)$ ]] && DELETE_ORIGINAL=true || DELETE_ORIGINAL=false
-        read -rp "  Parallele Worker [$MAX_WORKERS]: " x && MAX_WORKERS="${x:-$MAX_WORKERS}"
-        read -rp "  Kompressionsstufe (0-6) [$COMPRESSION_METHOD]: " x && COMPRESSION_METHOD="${x:-$COMPRESSION_METHOD}"
+        read -rp "  Parallel workers [$MAX_WORKERS]: " x && MAX_WORKERS="${x:-$MAX_WORKERS}"
+        read -rp "  Compression level (0-6) [$COMPRESSION_METHOD]: " x && COMPRESSION_METHOD="${x:-$COMPRESSION_METHOD}"
     fi
 fi
 
-[[ -z "$SOURCE_DIR" ]] && { echo "Kein Quellverzeichnis." >&2; exit 1; }
-[[ -d "$SOURCE_DIR" ]] || { echo "Quellverzeichnis fehlt: $SOURCE_DIR" >&2; exit 1; }
+[[ -z "$SOURCE_DIR" ]] && { echo "No source directory given." >&2; exit 1; }
+[[ -d "$SOURCE_DIR" ]] || { echo "Source directory not found: $SOURCE_DIR" >&2; exit 1; }
 SOURCE_DIR="${SOURCE_DIR%/}"
 if [[ -n "$OUTPUT_DIR" ]]; then
     OUTPUT_DIR="${OUTPUT_DIR%/}"
@@ -128,15 +130,15 @@ if [[ "$GIF_TARGET" == "avif" ]]; then
     elif [[ "$_enc" == *" libaom-av1 "* ]]; then
         GIF_AV1_ENCODER=libaom-av1; GIF_AV1_SPEED=(-cpu-used 6)
     else
-        printf "%b[FEHLT]%b Kein AV1-Encoder fuer --target avif.\n" "$C_RED" "$C_RESET" >&2
+        printf "%b[MISSING]%b No AV1 encoder for --target avif.\n" "$C_RED" "$C_RESET" >&2
         exit 1
     fi
-    printf "%b[GIF]%b Ziel: AVIF (%s, CRF %s) - verlustbehaftet!\n" \
+    printf "%b[GIF]%b target: AVIF (%s, CRF %s) - lossy!\n" \
         "$C_CYAN" "$C_RESET" "$GIF_AV1_ENCODER" "$GIF_AVIF_CRF"
 else
     require_cmds gif2webp || exit 1
 fi
-[[ "$DRY_RUN" == true ]] && printf "%b[DRY-RUN]%b Es wird nichts geschrieben oder geloescht.\n" "$C_CYAN" "$C_RESET"
+[[ "$DRY_RUN" == true ]] && printf "%b[DRY-RUN]%b Nothing will be written or deleted.\n" "$C_CYAN" "$C_RESET"
 
 cleanup_stale_parts "${OUTPUT_DIR:-$SOURCE_DIR}" "*.part.*.webp" "*.part.*.avif"
 
@@ -203,41 +205,41 @@ EOF
     rm -f "$STATS_FILE"
 
     if [[ "$DRY_RUN" == true ]]; then
-        printf "\n%b[DRY-RUN]%b %s GIF(s) wuerden konvertiert, %s uebersprungen.\n" \
+        printf "\n%b[DRY-RUN]%b %s GIF(s) would be converted, %s skipped.\n" \
             "$C_CYAN" "$C_RESET" "$c_dry" "$TOTAL_SKIPPED"
         return 0
     fi
 
     local saved=$(( TOTAL_ORIG_BYTES - TOTAL_NEW_BYTES ))
     printf "\n%b╔══════════════════════════════════════════════════════════════╗%b\n" "$C_BLUE" "$C_RESET"
-    printf "%b║%b                  %bGIF-AUSWERTUNG%b                              %b║%b\n" "$C_BLUE" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_BLUE" "$C_RESET"
+    printf "%b║%b                         %bGIF SUMMARY%b                          %b║%b\n" "$C_BLUE" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_BLUE" "$C_RESET"
     printf "%b╠══════════════════════════════════════════════════════════════╣%b\n" "$C_BLUE" "$C_RESET"
-    printf "%b║%b  Gesamtlaufzeit:       %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$(format_duration "$tot_elapsed")" "$C_BLUE" "$C_RESET"
-    printf "%b║%b  Konvertiert:          %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_PROCESSED Datei(en)" "$C_BLUE" "$C_RESET"
-    printf "%b║%b  Uebersprungen:        %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_SKIPPED Datei(en)" "$C_BLUE" "$C_RESET"
-    printf "%b║%b  Verworfen (groesser): %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_DISCARDED Datei(en)" "$C_BLUE" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Total runtime:" "$(format_duration "$tot_elapsed")" "$C_BLUE" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Converted:" "$TOTAL_PROCESSED file(s)" "$C_BLUE" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Skipped:" "$TOTAL_SKIPPED file(s)" "$C_BLUE" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Discarded (larger):" "$TOTAL_DISCARDED file(s)" "$C_BLUE" "$C_RESET"
     (( TOTAL_COLLISION > 0 )) && \
-    printf "%b║%b  Namenskonflikt:       %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_COLLISION Datei(en)" "$C_BLUE" "$C_RESET"
-    printf "%b║%b  Fehlgeschlagen:       %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$TOTAL_FAILED Datei(en)" "$C_BLUE" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Name conflict:" "$TOTAL_COLLISION file(s)" "$C_BLUE" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Failed:" "$TOTAL_FAILED file(s)" "$C_BLUE" "$C_RESET"
     printf "%b╟──────────────────────────────────────────────────────────────╢%b\n" "$C_BLUE" "$C_RESET"
 
     if (( TOTAL_PROCESSED > 0 && TOTAL_ORIG_BYTES > 0 )); then
-        printf "%b║%b  Speicher vorher:      %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$(format_bytes "$TOTAL_ORIG_BYTES")" "$C_BLUE" "$C_RESET"
-        printf "%b║%b  Speicher nachher:     %-38s %b║%b\n" "$C_BLUE" "$C_RESET" "$(format_bytes "$TOTAL_NEW_BYTES")" "$C_BLUE" "$C_RESET"
+        printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Size before:" "$(format_bytes "$TOTAL_ORIG_BYTES")" "$C_BLUE" "$C_RESET"
+        printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Size after:" "$(format_bytes "$TOTAL_NEW_BYTES")" "$C_BLUE" "$C_RESET"
         local pct; pct=$(pct_change "$TOTAL_ORIG_BYTES" "$TOTAL_NEW_BYTES")
         if (( saved > 0 )); then
-            printf "%b║%b  %bGesamtersparnis:%b      %b%-38s%b %b║%b\n" "$C_BLUE" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_GREEN" "-$(format_bytes "$saved") (${pct}%)" "$C_RESET" "$C_BLUE" "$C_RESET"
+            printf "%b║%b  %-21s %b%-37s%b %b║%b\n" "$C_BLUE" "$C_RESET" "Total saved:" "$C_GREEN" "-$(format_bytes "$saved") (${pct}%)" "$C_RESET" "$C_BLUE" "$C_RESET"
         else
-            printf "%b║%b  %bZuwachs:%b              %b%-38s%b %b║%b\n" "$C_BLUE" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_YELLOW" "+$(format_bytes $(( -saved ))) (+${pct}%)" "$C_RESET" "$C_BLUE" "$C_RESET"
+            printf "%b║%b  %-21s %b%-37s%b %b║%b\n" "$C_BLUE" "$C_RESET" "Increase:" "$C_YELLOW" "+$(format_bytes $(( -saved ))) (+${pct}%)" "$C_RESET" "$C_BLUE" "$C_RESET"
         fi
     fi
     printf "%b╚══════════════════════════════════════════════════════════════╝%b\n" "$C_BLUE" "$C_RESET"
 
-    mo_log "gif" "Auswertung: $TOTAL_PROCESSED konvertiert, $TOTAL_SKIPPED uebersprungen, $TOTAL_DISCARDED verworfen, $TOTAL_FAILED fehlgeschlagen"
+    mo_log "gif" "summary: $TOTAL_PROCESSED converted, $TOTAL_SKIPPED skipped, $TOTAL_DISCARDED discarded, $TOTAL_FAILED failed"
     resolve_pending_deletes
 }
 
-trap 'printf "\n%b[ABBRUCH]%b GIF-Konvertierung gestoppt.\n" "$C_RED" "$C_RESET"; finalize_stats 130' SIGINT SIGTERM
+trap 'printf "\n%b[ABORT]%b GIF conversion stopped.\n" "$C_RED" "$C_RESET"; finalize_stats 130' SIGINT SIGTERM
 
 # ------------------------------------------------------------------------------
 # WORKER
@@ -272,7 +274,7 @@ convert_gif() {
     local lockdir="$target_folder/.${stem}.molock"
     if ! mkdir "$lockdir" 2>/dev/null; then
         echo "COLLISION" >> "$CURRENT_RUN_LOG"
-        printf "%b[KONFLIKT]%b '%s': Zielname bereits belegt, Original bleibt.\n" \
+        printf "%b[CONFLICT]%b '%s': target name already claimed, original kept.\n" \
             "$C_YELLOW" "$C_RESET" "$filename" >&2
         return 0
     fi
@@ -280,8 +282,8 @@ convert_gif() {
     local temp_dest="${final_dest}.part.$$.${RANDOM}.${ext}"
     local rc=0
 
-    # Hinweis: gif2webp kodiert per Default verlustfrei. Ein Flag "-lossless"
-    # existiert nicht und laesst den Aufruf komplett fehlschlagen.
+    # Hinweis: gif2webp encoded per Default verlustfrei. Ein Flag "-lossless"
+    # does not exist and makes the whole call fail.
     encode_gif() {
         if [[ "$GIF_TARGET" == "avif" ]]; then
             ffmpeg -nostdin -y -v error -i "$src" -c:v "$GIF_AV1_ENCODER" \
@@ -301,8 +303,8 @@ convert_gif() {
         if [[ "$DISCARD_IF_LARGER" == true ]] && (( new_size >= orig_size )); then
             rm -f "$temp_dest"
             echo "DISCARD" >> "$CURRENT_RUN_LOG"
-            mo_log_file "$MO_LOG_TAG" "VERWORFEN" "$src" "" "$orig_size" "$new_size"
-            printf "%b[VERWORFEN]%b '%s': WebP waere %s groesser, Original bleibt.\n" \
+            mo_log_file "$MO_LOG_TAG" "DISCARDED" "$src" "" "$orig_size" "$new_size"
+            printf "%b[DISCARDED]%b '%s': WebP would be %s larger, original kept.\n" \
                 "$C_YELLOW" "$C_RESET" "$filename" "$(format_bytes $(( new_size - orig_size )))"
         else
             mv "$temp_dest" "$final_dest"
@@ -315,8 +317,8 @@ convert_gif() {
     else
         rm -f "$temp_dest"
         echo "FAIL" >> "$CURRENT_RUN_LOG"
-        mo_log_file "$MO_LOG_TAG" "FEHLER" "$src"
-        printf "%b[FEHLER]%b '%s' (Original bleibt)\n" "$C_RED" "$C_RESET" "$filename" >&2
+        mo_log_file "$MO_LOG_TAG" "ERROR" "$src"
+        printf "%b[ERROR]%b '%s' (original kept)\n" "$C_RED" "$C_RESET" "$filename" >&2
         rc=1
     fi
 
@@ -333,7 +335,7 @@ exit_code=0
 find "$SOURCE_DIR" -type f -iname "*.gif" -print0 |
     xargs -0 -r -n 1 -P "$MAX_WORKERS" bash -c 'read -r -a GIF_AV1_SPEED <<< "$GIF_AV1_SPEED_STR"; convert_gif "$1"' _ || exit_code=$?
 
-# xargs meldet 124/125 bei Abbruch, 123 bei Worker-Fehlern (nicht Abbruch)
+# xargs reports 124/125 on abort, 123 on worker errors (not an abort)
 if (( exit_code == 124 || exit_code == 125 || exit_code == 130 )); then
     finalize_stats 130
 else

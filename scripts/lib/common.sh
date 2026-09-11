@@ -2,12 +2,12 @@
 # ==============================================================================
 # lib/common.sh  -  gemeinsame Hilfsfunktionen
 #
-# Wird von allen Skripten gesourct, nie direkt ausgefuehrt.
+# Sourced by all scripts, never executed directly.
 #
 # INHALT:
-#   Farben              C_* Variablen, leer wenn stdout kein Terminal ist
+# colours             C_* variables, empty when stdout is not a terminal
 #   Formatierung        format_bytes, format_duration, pct_change
-#   Konfigurationsdatei load_config und MO_CONFIG_VARS
+# config file         load_config and MO_CONFIG_VARS
 #   Abhaengigkeiten     require_cmds
 #   Loeschen            safe_remove, resolve_pending_deletes
 #   Aufraeumen          cleanup_stale_parts
@@ -15,20 +15,20 @@
 #   Fenster offen       mo_install_exit_handler, mo_hold_open
 #
 # BEIM ERWEITERN BEACHTEN:
-#   - Neue Konfigurationsvariablen gehoeren in MO_CONFIG_VARS, sonst kann die
-#     Konfigdatei sie nicht setzen.
-#   - Funktionen, die in parallelen xargs-Workern laufen, brauchen
-#     "export -f". Fehlt der Export, ist der Aufruf dort "command not found"
-#     und wird je nach Kontext als fehlgeschlagene Pruefung gewertet.
+# - New configuration variables belong in MO_CONFIG_VARS, otherwise
+# the config file cannot set them.
+# - Functions running in parallel xargs workers need
+# "export -f". Without it the call is simply "command not found" there
+# and, depending on context, counted as a failed check.
 # ==============================================================================
 
 [[ -n "${_MO_COMMON_LOADED:-}" ]] && return 0
 _MO_COMMON_LOADED=1
 
 # ------------------------------------------------------------------------------
-# Farben (werden deaktiviert, wenn stdout kein Terminal ist oder NO_COLOR gesetzt)
+# Colours (disabled when stdout is not a terminal or NO_COLOR is set)
 # ------------------------------------------------------------------------------
-# TTY-Zustand festhalten, solange noch nichts umgeleitet wurde
+# Capture the TTY state while nothing has been redirected yet
 _MO_TTY_IN=false;  [[ -t 0 ]] && _MO_TTY_IN=true
 _MO_TTY_OUT=false; [[ -t 1 ]] && _MO_TTY_OUT=true
 export _MO_TTY_IN _MO_TTY_OUT
@@ -76,16 +76,16 @@ export -f format_bytes format_duration pct_change
 # ------------------------------------------------------------------------------
 # Konfigurationsdatei
 # Reihenfolge: CLI-Flag > Konfigdatei > eingebauter Default.
-# Der Master laedt die Datei einmal und exportiert die Werte an die Worker;
+# The master loads the file once and exports the values to the workers;
 # _MO_CONFIG_APPLIED verhindert doppeltes Laden.
 # ------------------------------------------------------------------------------
-# Variablen, die eine Konfigdatei setzen darf.
+# Variables a config file is allowed to set.
 MO_CONFIG_VARS=(
     MAX_WORKERS DELETE_ORIGINAL FORCE_DELETE VERIFY_DEEP JXL_EFFORT
     IMG_TARGET IMG_WEBP_QUALITY IMG_DISCARD_IF_LARGER PNG_MODE PNG_QUALITY CJXL_THREADS COMPRESSION_METHOD GIF_KMIN
     ENCODER_MODE BITRATE_THRESHOLD_KBPS GPU_QP CPU_CRF CPU_PRESET
     CPU_X265_PARAMS VAAPI_DEVICE ENABLE_PROBE PROBE_MARGIN_PCT
-    DISCARD_IF_LARGER KEEP_SALVAGED_CORRUPT MIN_SIZE_MB FASTSTART USE_CACHE
+    DISCARD_IF_LARGER KEEP_SALVAGED_CORRUPT VIDEO_EXTENSIONS VIDEO_CONTAINER SOURCE_CODECS AVIF_SOURCE_CODECS MIN_SIZE_MB FASTSTART USE_CACHE
     GIF_TARGET GIF_AVIF_CRF AVIF_MAX_SECONDS AVIF_CRF AVIF_CRF_RETRY
     AVIF_PRESET AVIF_PIX_FMT AVIF_REQUIRE_SILENT ENABLE_AVIF_STAGE
     DELETE_ORIGINAL_EXPLICIT RENAME_INPLACE_EXPLICIT MO_LOG MO_LOG_FILE
@@ -107,8 +107,8 @@ load_config() {
     done
     [[ -n "$file" ]] || return 0
 
-    # Bereits gesetzte Werte (Umgebung, oder vom Master exportiert) merken,
-    # damit sie Vorrang vor der Datei behalten: Env/CLI > Konfig > Default.
+    # Remember values already set (environment, or exported by the master)
+    # so they keep precedence over the file: env/CLI > config > default.
     local v saved=()
     for v in "${MO_CONFIG_VARS[@]}"; do
         [[ -n "${!v+x}" ]] && saved+=("$v=${!v}")
@@ -134,7 +134,7 @@ require_cmds() {
     local missing=() c
     for c in "$@"; do command -v "$c" >/dev/null 2>&1 || missing+=("$c"); done
     if (( ${#missing[@]} > 0 )); then
-        printf "%b[FEHLT]%b Benoetigte Programme nicht gefunden: %s\n" \
+        printf "%b[MISSING]%b Required programs not found: %s\n" \
             "$C_RED" "$C_RESET" "${missing[*]}" >&2
         return 1
     fi
@@ -142,18 +142,18 @@ require_cmds() {
 }
 
 # ------------------------------------------------------------------------------
-# Loeschen: Papierkorb, sonst vormerken statt hart loeschen
+# Deletion: trash, otherwise queue instead of deleting outright
 #
-# Schlaegt der Papierkorb fehl (z.B. Datei auf anderem Mount, kein gio/trash-cli),
-# wird die Datei NICHT geloescht, sondern in $PENDING_DELETE_LOG vorgemerkt.
-# resolve_pending_deletes() fragt am Ende des Laufs einmal nach.
+# If the trash fails (file on another mount, no gio/trash-cli),
+# the file is NOT deleted but queued in $PENDING_DELETE_LOG.
+# resolve_pending_deletes() asks once at the end of the run.
 # ------------------------------------------------------------------------------
 safe_remove() {
     local target="$1"
     [[ -e "$target" ]] || return 0
 
     if [[ "${DRY_RUN:-false}" == "true" ]]; then
-        printf "%b[DRY-RUN]%b Original bliebe erhalten: %s\n" \
+        printf "%b[DRY-RUN]%b original would be kept: %s\n" \
             "$C_CYAN" "$C_RESET" "$(basename "$target")"
         return 0
     fi
@@ -168,13 +168,13 @@ safe_remove() {
     if [[ -n "${PENDING_DELETE_LOG:-}" ]]; then
         printf '%s\n' "$target" >> "$PENDING_DELETE_LOG" 2>/dev/null || true
     fi
-    printf "%b[PAPIERKORB]%b fehlgeschlagen, Original bleibt vorerst: %s\n" \
+    printf "%b[TRASH]%b failed, original kept for now: %s\n" \
         "$C_YELLOW" "$C_RESET" "$(basename "$target")"
     return 0
 }
 export -f safe_remove
 
-# Am Ende eines Laufs: einmalige Rueckfrage fuer alles, was nicht in den
+# At the end of a run: one prompt for everything that could not go to
 # Papierkorb konnte.
 resolve_pending_deletes() {
     local log="${PENDING_DELETE_LOG:-}"
@@ -190,26 +190,26 @@ resolve_pending_deletes() {
 
     echo ""
     printf "%b┌──────────────────────────────────────────────────────────────┐%b\n" "$C_YELLOW" "$C_RESET"
-    printf "%b│%b  %bPAPIERKORB NICHT VERFUEGBAR%b\n" "$C_YELLOW" "$C_RESET" "$C_BOLD" "$C_RESET"
-    printf "%b│%b  %d Original(e) konnten nicht in den Papierkorb verschoben\n" \
+    printf "%b│%b  %bTRASH NOT AVAILABLE%b\n" "$C_YELLOW" "$C_RESET" "$C_BOLD" "$C_RESET"
+    printf "%b│%b  %d original(s) could not be moved to the trash.\n" \
         "$C_YELLOW" "$C_RESET" "${#files[@]}"
-    printf "%b│%b  werden. Sie wurden bewusst NICHT geloescht.\n" "$C_YELLOW" "$C_RESET"
+    printf "%b│%b  They were deliberately NOT deleted.\n" "$C_YELLOW" "$C_RESET"
     printf "%b└──────────────────────────────────────────────────────────────┘%b\n" "$C_YELLOW" "$C_RESET"
     for f in "${files[@]:0:15}"; do echo "    $f"; done
-    (( ${#files[@]} > 15 )) && echo "    ... und $(( ${#files[@]} - 15 )) weitere (siehe $log)"
+    (( ${#files[@]} > 15 )) && echo "    ... and $(( ${#files[@]} - 15 )) more (see $log)"
 
     if [[ "${FORCE_DELETE:-false}" == "true" ]]; then
-        echo "  --force-delete gesetzt: loesche endgueltig."
+        echo "  --force-delete given: deleting permanently."
     elif [[ ! -t 0 ]]; then
-        printf "  %bKeine Rueckfrage moeglich (nicht interaktiv).%b Originale bleiben erhalten.\n" \
+        printf "  %bCannot prompt (not interactive).%b Originals are kept.\n" \
             "$C_CYAN" "$C_RESET"
         echo "  Liste: $log"
         return 0
     else
         local ans
-        read -rp "  Diese Datei(en) jetzt endgueltig loeschen (rm, kein Papierkorb)? [j/N]: " ans
+        read -rp "  Delete these file(s) permanently now (rm, no trash)? [y/N]: " ans
         if [[ ! "${ans,,}" =~ ^(j|ja|y|yes)$ ]]; then
-            echo "  Originale bleiben erhalten. Liste: $log"
+            echo "  Originals are kept. List: $log"
             return 0
         fi
     fi
@@ -218,15 +218,15 @@ resolve_pending_deletes() {
     for f in "${files[@]}"; do
         if rm -f -- "$f" 2>/dev/null; then ok=$(( ok + 1 )); else err=$(( err + 1 )); fi
     done
-    printf "  %b%d geloescht%b" "$C_GREEN" "$ok" "$C_RESET"
-    (( err > 0 )) && printf ", %b%d fehlgeschlagen%b" "$C_RED" "$err" "$C_RESET"
+    printf "  %b%d deleted%b" "$C_GREEN" "$ok" "$C_RESET"
+    (( err > 0 )) && printf ", %b%d failed%b" "$C_RED" "$err" "$C_RESET"
     echo ""
     (( err == 0 )) && rm -f "$log"
     return 0
 }
 
 # ------------------------------------------------------------------------------
-# Reste aus abgebrochenen Laeufen (SIGKILL, Stromausfall) aufraeumen
+# Clean up leftovers from aborted runs (SIGKILL, power loss)
 # cleanup_stale_parts <verzeichnis> <glob> [<glob> ...]
 # ------------------------------------------------------------------------------
 cleanup_stale_parts() {
@@ -243,7 +243,7 @@ cleanup_stale_parts() {
         rmdir -- "$f" 2>/dev/null && n=$(( n + 1 ))
     done < <(find "$dir" -type d -name "*.molock" -print0 2>/dev/null)
 
-    (( n > 0 )) && printf "%b[AUFRAEUMEN]%b %d Rest(e) aus einem abgebrochenen Lauf entfernt.\n" \
+    (( n > 0 )) && printf "%b[CLEANUP]%b %d leftover(s) from an aborted run removed.\n" \
         "$C_CYAN" "$C_RESET" "$n"
     return 0
 }
@@ -252,7 +252,7 @@ cleanup_stale_parts() {
 # Ausgabe-Verifikation
 # ------------------------------------------------------------------------------
 # verify_output_image <datei>
-# Leicht: Datei nicht leer. Mit VERIFY_DEEP=true zusaetzlich vollstaendiger Decode.
+# Light: file not empty. With VERIFY_DEEP=true also a full decode.
 verify_output_image() {
     local f="$1"
     [[ -s "$f" ]] || return 1
@@ -274,17 +274,17 @@ verify_output_image() {
 }
 export -f verify_output_image
 
-# Diese Funktionen laufen auch in xargs-Workern, also exportieren.
-# Fehlt der Export, ist der Aufruf dort schlicht "command not found" und
-# wird faelschlich als fehlgeschlagene Pruefung gewertet.
-# media_duration <datei> -> Dauer in Sekunden (float) oder leer
+# These functions also run in xargs workers, so export them.
+# Without the export the call is simply "command not found" there and
+# would wrongly count as a failed check.
+# media_duration <file> -> duration in seconds (float) or empty
 media_duration() {
     ffprobe -v error -show_entries format=duration \
         -of default=noprint_wrappers=1:nokey=1 "$1" 2>/dev/null || true
 }
 
 # verify_video <quelle> <ziel> [toleranz_prozent]
-# Prueft, ob das Ziel decodierbar ist und die Dauer zur Quelle passt.
+# Checks that the target decodes and its duration matches the source.
 verify_video() {
     local src="$1" dst="$2" tol="${3:-2}"
     [[ -s "$dst" ]] || return 1
@@ -292,9 +292,9 @@ verify_video() {
     local sd dd
     sd=$(media_duration "$src"); dd=$(media_duration "$dst")
 
-    # Ziel muss eine plausible Dauer melden, sonst ist es kaputt
+    # target must report a plausible duration, otherwise it is broken
     [[ -z "$dd" || "$dd" == "N/A" ]] && return 1
-    # Quelle unlesbar -> nur Decodierbarkeit des Ziels zaehlt
+    # source unreadable -> only the target's decodability counts
     [[ -z "$sd" || "$sd" == "N/A" ]] && return 0
 
     awk -v a="$sd" -v b="$dd" -v t="$tol" 'BEGIN {
@@ -305,16 +305,16 @@ verify_video() {
 }
 
 # ------------------------------------------------------------------------------
-# Fenster offen halten und Fehlerstelle melden
+# Keep the window open and report where the error occurred
 #
-# Wird ein Skript per Doppelklick oder .desktop-Datei gestartet, schliesst der
-# Terminal-Emulator das Fenster, sobald das Skript endet. Bei einem Abbruch
-# durch "set -e" ist die Fehlermeldung dann nicht mehr lesbar.
+# When a script is started by double-click or a .desktop file, the
+# terminal emulator closes the window as soon as the script ends. After an
+# abort through "set -e" the error message would no longer be readable.
 #
 # MO_HOLD=1     immer offen halten
 # MO_HOLD=0     nie offen halten
-# MO_HOLD=auto  (Default) offen halten, wenn das Elternprozess keine Shell ist
-# MO_HOLD_TIMEOUT=<s>  nach s Sekunden von selbst schliessen (0 = warten)
+# MO_HOLD=auto  (default) keep open when the parent is not a shell
+# MO_HOLD_TIMEOUT=<s>  close by itself after s seconds (0 = wait)
 # ------------------------------------------------------------------------------
 _MO_ERR_INFO=""
 
@@ -324,11 +324,11 @@ _mo_parent_comm() {
     printf '%s' "$c"
 }
 
-# Ist der Elternprozess eine interaktive Shell? Dann wurde das Skript von Hand
-# im Terminal gestartet und das Fenster bleibt ohnehin stehen.
-# Entscheidend ist die Kommandozeile, nicht comm: bei einem Skript steht in
-# comm der Skriptname. Eine interaktive Shell hat kein Skript- und kein
-# -c-Argument, ein Terminal-Emulator oder "sh -c ..." dagegen schon.
+# Is the parent an interactive shell? Then the script was started by hand
+# in a terminal and the window stays open anyway.
+# The command line decides, not comm: for a script, comm holds the
+# script name. An interactive shell has neither a script nor a
+# -c argument, a terminal emulator or "sh -c ..." does.
 _mo_parent_is_interactive_shell() {
     local f="/proc/${PPID}/cmdline"
     [[ -r "$f" ]] || return 1
@@ -359,7 +359,7 @@ mo_should_hold() {
         1|true|yes)  return 0 ;;
         0|false|no)  return 1 ;;
     esac
-    # Ohne Terminal wuerde niemand die Meldung sehen
+    # Without a terminal nobody would see the message
     [[ "$_MO_TTY_IN" == true && "$_MO_TTY_OUT" == true ]] || return 1
     _mo_parent_is_interactive_shell && return 1
     return 0
@@ -368,28 +368,28 @@ mo_should_hold() {
 mo_hold_open() {
     local rc="${1:-0}"
     if (( rc != 0 )); then
-        printf "\n%b[ABBRUCH]%b Skript endete mit Code %d.\n" "$C_RED" "$C_RESET" "$rc" >&2
+        printf "\n%b[ABORT]%b Script exited with code %d.\n" "$C_RED" "$C_RESET" "$rc" >&2
         [[ -n "$_MO_ERR_INFO" ]] && printf "          %s\n" "$_MO_ERR_INFO" >&2
     fi
     mo_should_hold || return 0
     printf "\n"
     if (( rc == 0 )); then
-        printf "%b[FERTIG]%b Ohne Fehler beendet.\n" "$C_GREEN" "$C_RESET"
+        printf "%b[DONE]%b Finished without errors.\n" "$C_GREEN" "$C_RESET"
     fi
     local timeout="${MO_HOLD_TIMEOUT:-0}"
     if (( timeout > 0 )); then
-        printf "Fenster schliesst in %ds, oder Enter druecken. " "$timeout"
+        printf "Window closes in %ds, or press Enter. " "$timeout"
         read -r -t "$timeout" _ < /dev/tty 2>/dev/null || true
     else
-        printf "Fenster bleibt offen. Enter zum Schliessen. "
+        printf "Window stays open. Press Enter to close. "
         read -r _ < /dev/tty 2>/dev/null || true
     fi
     printf "\n"
     return 0
 }
 
-# Merkt sich Zeile und Befehl des ersten Fehlers. Braucht "set -E",
-# damit der Trap auch innerhalb von Funktionen greift.
+# Remembers line and command of the first error. Needs "set -E" so
+# that the trap also fires inside functions.
 mo_install_exit_handler() {
     set -E
     trap '_mo_rc=$?; [[ -z "$_MO_ERR_INFO" ]] && _MO_ERR_INFO="Zeile $LINENO: \`$BASH_COMMAND\` (Code $_mo_rc)"' ERR
@@ -399,13 +399,13 @@ mo_install_exit_handler() {
 # ------------------------------------------------------------------------------
 # Bildinhalt gegenpruefen
 #
-# Die Laufzeitpruefung erkennt abgeschnittene Dateien, aber keine inhaltliche
-# Zerstoerung: ein gruenes Bild mit Artefakten hat die korrekte Dauer. Deshalb
-# werden an drei Stellen Einzelbilder aus Quelle und Ziel verglichen. Ein
-# echtes Reencoding liegt bei 35-45 dB PSNR, kaputte Farbformate darunter.
+# The runtime check catches truncated files but no content
+# damage: a green picture with artefacts has the correct duration. So
+# stills from source and target are compared at three positions.
+# A real re-encode lands at 35-45 dB PSNR, broken colour formats below.
 #
 # verify_visual <quelle> <ziel> [min_psnr]
-#   0 = in Ordnung oder nicht messbar, 1 = zerstoert (VISUAL_PSNR gesetzt)
+# 0 = fine or not measurable, 1 = broken (VISUAL_PSNR set)
 # ------------------------------------------------------------------------------
 VISUAL_PSNR=""        # bester Messwert
 VISUAL_PSNR_ALL=""    # alle Stichproben, zum Nachvollziehen
@@ -426,7 +426,7 @@ verify_visual() {
         a=$(mktemp --suffix=.png /tmp/mo_vv_a_XXXXXX) || return 0
         b=$(mktemp --suffix=.png /tmp/mo_vv_b_XXXXXX) || { rm -f "$a"; return 0; }
 
-        # -map 0:v:0 pinnt den echten Videostream (nicht ein eingebettetes
+        # -map 0:v:0 pins the real video stream (not an embedded
         # Vorschaubild), -noautorotate haelt beide Seiten gleich orientiert.
         if ffmpeg -nostdin -y -v error -noautorotate -ss "$t" -i "$src" \
                   -map 0:v:0 -frames:v 1 "$a" </dev/null 2>/dev/null \
@@ -454,9 +454,9 @@ verify_visual() {
     (( measured == 1 )) || return 0
     VISUAL_PSNR="${best%.*}"
 
-    # Entscheidend ist die BESTE Stichprobe. Eine einzelne schlechte Messung
-    # kann von einem Zeitversatz beim Suchen kommen; ein wirklich zerstoertes
-    # Bild ist an JEDER Stelle schlecht. Das vermeidet Falschalarme.
+    # The BEST sample decides. A single bad measurement can come from a
+    # seek offset; a genuinely broken
+    # picture is bad at EVERY position. This avoids false alarms.
     awk -v p="$best" -v m="$minp" 'BEGIN { exit (p < m) ? 0 : 1 }' && return 1
     return 0
 }
@@ -464,22 +464,22 @@ verify_visual() {
 export -f media_duration verify_video verify_visual
 
 # ------------------------------------------------------------------------------
-# Modusabhaengige Vorbelegung fuer DELETE_ORIGINAL und RENAME_INPLACE
+# Mode-dependent presets for DELETE_ORIGINAL and RENAME_INPLACE
 #
-# In-Place (kein Zielverzeichnis): beide true. Ohne Loeschen lieg das Original
-# neben der Ausgabe, ohne Umbenennen bleibt der _h265-Suffix stehen - in
-# diesem Modus ist das selten gewollt. Weil es destruktiv ist, wird darauf
-# hingewiesen und die Einstellung laesst sich an Ort und Stelle aendern.
+# In place (no target directory): both true. Without deletion the original
+# sits next to the output, without renaming the _h265 suffix stays. In this
+# mode that is rarely wanted. Because it is destructive, a notice is
+# shown and the setting can be changed on the spot.
 #
-# Mit Zielverzeichnis: beide false, ohne Meldung. Das Original wird dort
-# ohnehin nicht angefasst.
+# With a target directory: both false, no message. The original is not
+# touched there anyway.
 #
-# Eine ausdrueckliche Angabe per CLI, Umgebung oder Konfigdatei hat immer
-# Vorrang; dann wird nichts ueberschrieben.
+# An explicit setting via CLI, environment or config file always takes
+# precedence; nothing is overwritten then.
 # ------------------------------------------------------------------------------
 mo_prompt_bool() {
     local question="$1" default="$2" result_var="$3" input
-    local def_str="J/n"; [[ "$default" == false ]] && def_str="j/N"
+    local def_str="Y/n"; [[ "$default" == false ]] && def_str="y/N"
     read -rp "  $question [$def_str]: " input || input=""
     case "${input,,}" in
         j|ja|y|yes) printf -v "$result_var" '%s' true ;;
@@ -500,34 +500,34 @@ mo_apply_inplace_defaults() {
     [[ "${DELETE_ORIGINAL_EXPLICIT:-false}" == true ]] || DELETE_ORIGINAL=true
     [[ "${RENAME_INPLACE_EXPLICIT:-false}" == true ]] || RENAME_INPLACE=true
 
-    # Nur einmal pro Aufrufkette warnen, nicht je Unterskript.
+    # Warn once per call chain, not per sub-script.
     [[ -n "${MO_INPLACE_WARNED:-}" ]] && return 0
     export MO_INPLACE_WARNED=1
 
     printf "\n%b╔══════════════════════════════════════════════════════════════╗%b\n" "$C_YELLOW" "$C_RESET"
-    printf "%b║%b  %bIN-PLACE-MODUS: Originale werden veraendert%b                  %b║%b\n" \
+    printf "%b║%b  %bIN-PLACE MODE: originals will be modified%b                  %b║%b\n" \
         "$C_YELLOW" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_YELLOW" "$C_RESET"
     printf "%b╚══════════════════════════════════════════════════════════════╝%b\n" "$C_YELLOW" "$C_RESET"
-    printf "  Kein Zielverzeichnis angegeben, daher gilt:\n"
-    printf "    Originale in den Papierkorb  : %b%s%b\n" "$C_BOLD" "$DELETE_ORIGINAL" "$C_RESET"
-    printf "    _h265-Suffix danach entfernen: %b%s%b\n" "$C_BOLD" "$RENAME_INPLACE" "$C_RESET"
-    printf "  Originale landen im Papierkorb und sind von dort wiederherstellbar.\n"
+    printf "  No target directory given, so:\n"
+    printf "    Move originals to trash  : %b%s%b\n" "$C_BOLD" "$DELETE_ORIGINAL" "$C_RESET"
+    printf "    Remove _h265 suffix      : %b%s%b\n" "$C_BOLD" "$RENAME_INPLACE" "$C_RESET"
+    printf "  Originals go to the trash and can be restored from there.\n"
 
     if [[ ! -t 0 ]]; then
-        printf "  %bKeine Rueckfrage moeglich (nicht interaktiv).%b\n" "$C_CYAN" "$C_RESET"
+        printf "  %bCannot prompt (not interactive).%b\n" "$C_CYAN" "$C_RESET"
         return 0
     fi
     if [[ "${ASSUME_YES:-false}" == true ]]; then
-        printf "  %b-y gesetzt, Einstellungen werden uebernommen.%b\n" "$C_CYAN" "$C_RESET"
+        printf "  %b-y given, settings are kept.%b\n" "$C_CYAN" "$C_RESET"
         return 0
     fi
 
     local answer
-    read -rp "  Diese Einstellungen uebernehmen? [J/n]: " answer || answer=""
+    read -rp "  Keep these settings? [Y/n]: " answer || answer=""
     if [[ "${answer,,}" =~ ^(n|nein|no)$ ]]; then
-        mo_prompt_bool "Originale nach Erfolg in den Papierkorb verschieben?" \
+        mo_prompt_bool "Move originals to the trash after success?" \
             "$DELETE_ORIGINAL" DELETE_ORIGINAL
-        mo_prompt_bool "_h265-Suffix nach dem Loeschen des Originals entfernen?" \
+        mo_prompt_bool "Remove the _h265 suffix after deleting the original?" \
             "$RENAME_INPLACE" RENAME_INPLACE
         DELETE_ORIGINAL_EXPLICIT=true
         RENAME_INPLACE_EXPLICIT=true
@@ -540,46 +540,46 @@ mo_apply_inplace_defaults() {
 # ------------------------------------------------------------------------------
 # Protokoll
 #
-# Eine fortlaufende Textdatei neben media-optimizer.sh. Jeder Lauf haengt einen
-# Block an: Kopf mit Einstellungen, eine Zeile je bearbeiteter Datei, am Ende
-# die Auswertung. Orchestrator und Unterskripte teilen sich MO_RUN_ID, sodass
+# A continuous text file next to media-optimizer.sh. Every run appends a
+# block: header with settings, one line per processed file, and the
+# summary at the end. Orchestrator and sub-scripts share MO_RUN_ID so
 # zusammengehoerende Zeilen erkennbar bleiben.
 #
-# Die Zeilen werden von parallelen Workern angehaengt. Das ist unkritisch,
-# solange eine Zeile kurz bleibt: Anhaengen unter O_APPEND ist bis zur
-# Puffergroesse des Systems atomar. Deshalb hier keine langen Meldungen.
+# Lines are appended by parallel workers. That is safe as long as a
+# line stays short: appending under O_APPEND is atomic up to the system
+# buffer size. So no long messages here.
 # ------------------------------------------------------------------------------
-# Keine Vorbelegung auf dieser Ebene: common.sh wird VOR load_config gesourct.
-# Ein hier gesetzter Wert gaelte fuer load_config als ausdrueckliche Angabe und
-# wuerde den Eintrag aus der Konfigdatei wieder ueberschreiben. Die Defaults
-# stehen deshalb erst in mo_log_init, also nach dem Laden der Konfiguration.
+# No preset at this level: common.sh is sourced BEFORE load_config.
+# A value set here would count as explicit for load_config and would
+# overwrite the config file entry again. The defaults
+# therefore live in mo_log_init, after the configuration is loaded.
 mo_log_enabled() {
     [[ "${MO_LOG:-true}" == true && -n "${MO_LOG_FILE:-}" ]]
 }
 
 # mo_log_init <skriptname> <quelle> <ziel>
-# Legt Run-ID und Pfad fest, rotiert bei Bedarf und schreibt den Kopf.
-# Der Kopf wird nur vom ersten Aufrufer geschrieben; Unterskripte, die der
-# Orchestrator startet, erben MO_RUN_ID und melden sich nur mit einer Zeile.
+# Sets run ID and path, rotates if needed and writes the header.
+# The header is written by the first caller only; sub-scripts started by
+# the orchestrator inherit MO_RUN_ID and only log one line.
 mo_log_init() {
     local script="$1" src="$2" dst="$3"
     : "${MO_LOG:=true}"
     : "${MO_LOG_MAX_KB:=5120}"
-    # Immer exportieren, auch im abgeschalteten Fall: sonst erben die
-    # Unterskripte die Entscheidung nicht und protokollieren doch.
+    # Always export, even when disabled: otherwise the sub-scripts do not
+    # inherit the decision and would log anyway.
     export MO_LOG MO_LOG_MAX_KB
     [[ "$MO_LOG" == true ]] || return 0
     : "${MO_LOG_FILE:=${_MO_ROOT:-.}/media-optimizer.log}"
     export MO_LOG_FILE
 
     if ! touch "$MO_LOG_FILE" 2>/dev/null; then
-        printf "%b[PROTOKOLL]%b Nicht schreibbar, wird uebersprungen: %s\n" \
+        printf "%b[LOG]%b not writable, skipping: %s\n" \
             "$C_YELLOW" "$C_RESET" "$MO_LOG_FILE" >&2
         MO_LOG=false; export MO_LOG
         return 0
     fi
 
-    # Einmalige Rotation, damit die Datei nicht unbegrenzt waechst.
+    # One-time rotation so the file does not grow without bound.
     local size_kb; size_kb=$(( $(stat -c%s "$MO_LOG_FILE" 2>/dev/null || echo 0) / 1024 ))
     if (( size_kb > MO_LOG_MAX_KB )); then
         mv -f "$MO_LOG_FILE" "${MO_LOG_FILE}.1" 2>/dev/null || true
@@ -587,30 +587,30 @@ mo_log_init() {
     fi
 
     if [[ -z "${MO_RUN_ID:-}" ]]; then
-        # Zufallsanteil noetig: bei einem Neustart per exec bleibt die PID
-        # gleich, und im selben Sekundentakt waere die Kennung sonst doppelt.
+        # A random part is needed: on a restart via exec the PID stays the
+        # same, and within the same second the ID would otherwise repeat.
         MO_RUN_ID=$(date '+%y%m%d-%H%M%S')-$$-$RANDOM
         export MO_RUN_ID
         {
             printf '\n%s\n' "================================================================"
-            printf 'LAUF %s  gestartet %s\n' "$MO_RUN_ID" "$(date '+%F %T')"
-            printf '  Aufruf : %s\n' "$script"
-            printf '  Quelle : %s\n' "$src"
-            printf '  Ziel   : %s\n' "${dst:-(In-Place)}"
+            printf 'RUN %s  started %s\n' "$MO_RUN_ID" "$(date '+%F %T')"
+            printf '  Call   : %s\n' "$script"
+            printf '  Source : %s\n' "$src"
+            printf '  Target : %s\n' "${dst:-(in place)}"
         } >> "$MO_LOG_FILE" 2>/dev/null || true
     else
-        # Unterskript innerhalb eines Orchestrator-Laufs: nur eine Zeile,
-        # der Kopf steht bereits vom Orchestrator im Protokoll.
-        mo_log "${MO_LOG_TAG:-stufe}" "gestartet ($script)"
+        # Sub-script inside an orchestrator run: only one line,
+        # the header is already in the log from the orchestrator.
+        mo_log "${MO_LOG_TAG:-stufe}" "started ($script)"
     fi
     return 0
 }
 
-# mo_log_settings <VAR> [<VAR> ...] - schreibt "NAME=wert" je Zeile
+# mo_log_settings <VAR> [<VAR> ...] - writes "NAME=value" per line
 mo_log_settings() {
     mo_log_enabled || return 0
     local v
-    printf '  Einstellungen:\n' >> "$MO_LOG_FILE" 2>/dev/null || return 0
+    printf '  Settings:\n' >> "$MO_LOG_FILE" 2>/dev/null || return 0
     for v in "$@"; do
         printf '    %-22s %s\n' "$v" "${!v-}" >> "$MO_LOG_FILE" 2>/dev/null || true
     done
@@ -627,8 +627,8 @@ mo_log() {
 }
 
 # mo_log_file <tag> <status> <quelle> [<ziel>] [<bytes_alt>] [<bytes_neu>]
-# Eine Zeile je bearbeiteter Datei. Groessen werden nur angehaengt, wenn beide
-# Werte vorliegen und sinnvoll sind.
+# One line per processed file. Sizes are only appended when both
+# values are present and meaningful.
 mo_log_file() {
     mo_log_enabled || return 0
     local tag="$1" status="$2" src="$3" dst="${4:-}" old="${5:-}" new="${6:-}"
@@ -640,12 +640,12 @@ mo_log_file() {
         "$src" "${dst:+ -> $dst}" "$extra" >> "$MO_LOG_FILE" 2>/dev/null || true
 }
 
-# mo_log_close <exitcode>  - nur vom aeussersten Aufrufer
+# mo_log_close <exitcode>  - only from the outermost caller
 mo_log_close() {
     mo_log_enabled || return 0
     printf '%s\n' "----------------------------------------------------------------" \
         >> "$MO_LOG_FILE" 2>/dev/null || true
-    printf 'LAUF %s  beendet %s  (Code %s)\n' "$MO_RUN_ID" "$(date '+%F %T')" "${1:-0}" \
+    printf 'RUN %s  finished %s  (code %s)\n' "$MO_RUN_ID" "$(date '+%F %T')" "${1:-0}" \
         >> "$MO_LOG_FILE" 2>/dev/null || true
     printf '%s\n' "================================================================" \
         >> "$MO_LOG_FILE" 2>/dev/null || true
