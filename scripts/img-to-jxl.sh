@@ -1,21 +1,24 @@
 #!/bin/bash
 # ==============================================================================
-# img-to-jxl.sh  -  JPG/PNG -> JPEG XL (WebP as fallback)
+# img-to-jxl.sh  -  JPG/PNG -> JPEG XL, or WebP with --target webp
 #
-# AUFBAU: KONFIGURATION -> STATISTIK -> WORKER -> xargs-Aufruf am Dateiende.
+# STRUCTURE: CONFIGURATION -> STATISTICS -> WORKER -> xargs call at the end.
 #
-# Conversion runs in parallel: find supplies the files, xargs starts
-# one shell per file and calls convert_image. Everything the
-# worker needs must therefore be exported (variables with "export",
-# functions with "export -f"), otherwise it is simply not present there.
+# Conversion runs in parallel: find supplies the files and xargs starts one
+# shell per file that calls convert_image. Everything the worker needs must
+# therefore be exported, variables with "export" and functions with
+# "export -f", otherwise it is simply not present in that shell.
 #
-# IMPORTANT INVARIANTS when changing this:
-# - Target names are claimed with a lock directory. "foto.jpg" and
-# "foto.png" both map to "foto.jxl"; without a lock two workers would
-# write the same file.
-# - Temp files carry PID and a random number so that parallel
-# workers do not collide.
-# - JPEG is transcoded bit-exactly lossless. PNG_MODE only affects PNG.
+# INVARIANTS
+#   - Target names are claimed with a lock directory. "foto.jpg" and
+#     "foto.png" both map to "foto.jxl"; without the lock two workers would
+#     write the same file.
+#   - Temp files carry PID and a random number so parallel workers never
+#     share one.
+#   - JPEG is transcoded bit-exactly lossless in the JXL path. PNG_MODE only
+#     affects PNG.
+#   - With a target directory the source directory is never modified, not
+#     even when an extension has to be corrected.
 # ==============================================================================
 set -euo pipefail
 
@@ -55,7 +58,7 @@ EOF
 }
 
 # ------------------------------------------------------------------------------
-# KONFIGURATION
+# CONFIGURATION
 # ------------------------------------------------------------------------------
 SOURCE_DIR="${SOURCE_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
@@ -119,7 +122,7 @@ if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" ]]; then
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
     printf "%bImage converter: JPG/PNG -> JXL (with WebP fallback)%b\n" "$C_BOLD" "$C_RESET"
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
-    read -rp "Run with default settings? [Y/n]: " start_choice || start_choice=""
+    read -rp "Run with the default settings? [Y/n]: " start_choice || start_choice=""
     if [[ "${start_choice,,}" =~ ^(n|nein|no)$ ]]; then
         read -rp "  Source directory [$SOURCE_DIR]: " x && SOURCE_DIR="${x:-$SOURCE_DIR}"
         read -rp "  Target directory (empty = in place) [$OUTPUT_DIR]: " x && OUTPUT_DIR="${x:-$OUTPUT_DIR}"
@@ -155,7 +158,7 @@ require_cmds cjxl cwebp file || exit 1
 cleanup_stale_parts "${OUTPUT_DIR:-$SOURCE_DIR}" "*.part.*.jxl" "*.part.*.webp"
 
 # ------------------------------------------------------------------------------
-# STATISTIK
+# STATISTICS
 # ------------------------------------------------------------------------------
 STATS_FILE="${SOURCE_DIR}/.img_stats.env"
 PENDING_DELETE_LOG="${SOURCE_DIR}/.img_pending_deletes.txt"

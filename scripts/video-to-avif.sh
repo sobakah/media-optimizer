@@ -1,20 +1,22 @@
 #!/bin/bash
 # ==============================================================================
-# video-to-avif.sh  -  kurze, tonlose Videos -> animiertes AVIF
+# video-to-avif.sh  -  short, silent videos -> animated AVIF
 #
-# Optional extra script, not part of the media-optimizer.sh run.
+# Optional extra script. It only runs inside media-optimizer.sh when
+# ENABLE_AVIF_STAGE is true, otherwise it is called directly.
 #
-# AUFBAU: KONFIGURATION -> STATISTIK -> WORKER -> xargs-Aufruf am Dateiende.
+# STRUCTURE: CONFIGURATION -> STATISTICS -> WORKER -> xargs call at the end.
 #
-# SELECTION CRITERIA (all must match, otherwise SKIP):
-# video codec in AVIF_SOURCE_CODECS, runtime below AVIF_MAX_SECONDS, no audio
-# track. The audio condition is mandatory because AVIF cannot store
-# sound; --allow-audio lifts it and then discards the audio deliberately.
+# SELECTION CRITERIA (all must match, otherwise SKIP)
+#   video codec listed in AVIF_SOURCE_CODECS, runtime below
+#   AVIF_MAX_SECONDS, and no audio track. The audio condition is mandatory
+#   because AVIF cannot store sound; --allow-audio lifts it and then drops
+#   the audio deliberately.
 #
-# IMPORTANT INVARIANTS when changing this:
-# - If the output is larger than the original, ONE second attempt runs
-# with CRF + AVIF_CRF_RETRY, after that it is discarded.
-# - Before deleting the original, verify_visual checks the picture.
+# INVARIANTS
+#   - If the output is larger than the original, exactly one more attempt
+#     runs with CRF + AVIF_CRF_RETRY before it is discarded.
+#   - verify_visual checks the picture before the original is touched.
 # ==============================================================================
 set -euo pipefail
 
@@ -139,7 +141,7 @@ printf "%b[AVIF]%b encoder: %s, CRF %s, %s\n" "$C_CYAN" "$C_RESET" \
 cleanup_stale_parts "${OUTPUT_DIR:-$SOURCE_DIR}" "*.part.*.avif"
 
 # ------------------------------------------------------------------------------
-# STATISTIK
+# STATISTICS
 # ------------------------------------------------------------------------------
 STATS_FILE="${SOURCE_DIR}/.avif_stats.env"
 PENDING_DELETE_LOG="${SOURCE_DIR}/.avif_pending_deletes.txt"
@@ -321,8 +323,10 @@ convert_to_avif() {
     fi
 
     # Check the picture content before touching the original
-    local suspect=false
-    if [[ "$VERIFY_VISUAL" == true ]] && ! verify_visual "$src" "$tmp" "$VISUAL_PSNR_MIN"; then
+    local suspect=false visual_note=""
+    if [[ "$VERIFY_VISUAL" == true ]] && verify_visual "$src" "$tmp" "$VISUAL_PSNR_MIN"; then
+        visual_note=", picture ${VISUAL_PSNR:-n/a} dB"
+    elif [[ "$VERIFY_VISUAL" == true ]]; then
         suspect=true
         echo "SUSPECT" >> "$CURRENT_RUN_LOG"
         printf "%b[PICTURE?]%b '%s': PSNR %s dB below %s dB. Kept, original kept.\n" \
@@ -334,9 +338,9 @@ convert_to_avif() {
     echo "SUCCESS $orig_size $new_size" >> "$CURRENT_RUN_LOG"
     mo_log_file "$MO_LOG_TAG" "OK" "$src" "$(basename "$dest")" "$orig_size" "$new_size"
     [[ "$DELETE_ORIGINAL" == true && "$suspect" == false ]] && safe_remove "$src"
-    printf "%b[AVIF]%b '%s' -> '%s'  (%s, %s%%)\n" "$C_GREEN" "$C_RESET" \
+    printf "%b[AVIF]%b '%s' -> '%s'  (%s, %s%%%s)\n" "$C_GREEN" "$C_RESET" \
         "$filename" "$(basename "$dest")" "$(format_bytes "$new_size")" \
-        "$(( orig_size > 0 ? new_size * 100 / orig_size : 0 ))"
+        "$(( orig_size > 0 ? new_size * 100 / orig_size : 0 ))" "$visual_note"
 
     rmdir "$lockdir" 2>/dev/null || true
     return $rc

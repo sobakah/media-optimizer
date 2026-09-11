@@ -2,21 +2,20 @@
 # ==============================================================================
 # verify-output.sh  -  check a target directory against the originals
 #
-# Checks every output file in three stages and reports which do not match
-# original. Optionally it deletes the affected outputs and drops the
-# matching sources from the cache, so a repair run regenerates exactly
-# Dateien neu erzeugt.
+# Checks every output file in three stages and reports which ones do not match
+# their original. Optionally it deletes the affected outputs and drops the
+# matching sources from the cache, so a repair run regenerates exactly those.
 #
-# MATCHING output -> original is the relative path: h264-to-h265.sh
-# in target mode and keeps the file name.
+# MATCHING output -> original is the relative path, because h264-to-h265.sh
+# mirrors the folder structure in target mode and keeps the file name.
 #
-# PRUEFSTUFEN (in dieser Reihenfolge, erste Abweichung gewinnt):
-# UNREADABLE ffprobe finds no video stream
-# DURATION   runtime deviates beyond DURATION_TOL
-#   BILD?      PSNR-Stichproben liegen unter PSNR_MIN
+# CHECK STAGES (in this order, the first mismatch wins)
+#   UNREADABLE  ffprobe finds no video stream
+#   DURATION    runtime deviates beyond DURATION_TOL
+#   PICTURE?    PSNR samples fall below PSNR_MIN
 #
-# IMPORTANT when changing this: a low PSNR is a suspicion, not proof.
-# Without --fix it therefore only reports and changes nothing.
+# IMPORTANT: a low PSNR is a suspicion, not proof. Without --fix the script
+# only reports and changes nothing.
 # ==============================================================================
 set -euo pipefail
 
@@ -38,6 +37,8 @@ verify-output.sh - checks converted videos against their originals
                         Salvaged files from damaged sources are legitimately
                         shorter; a higher value helps there.
       --samples <n>     samples per file (default: 3)
+      --extensions <l>  output extensions to check, space separated
+      --no-visual       skip the picture comparison, only read and duration
       --keep-samples <d> store the compared stills in <d> for inspection
       --fix             delete broken outputs and drop them from the cache
       --run             after --fix, start h264-to-h265.sh again
@@ -58,6 +59,10 @@ PSNR_MIN="${VISUAL_PSNR_MIN:-15}"
 SAMPLES="${SAMPLES:-3}"
 VISUAL_KEEP_DIR="${VISUAL_KEEP_DIR:-}"
 DURATION_TOL="${DURATION_TOLERANCE_PCT:-2}"
+CHECK_VISUAL="${CHECK_VISUAL:-true}"
+# Same extension list as the converter, otherwise MKV outputs from a
+# VIDEO_CONTAINER=auto run would silently not be checked at all.
+VIDEO_EXTENSIONS="${VIDEO_EXTENSIONS:-mp4 m4v mov mkv webm avi ts m2ts wmv flv}"
 DO_FIX=false
 DO_RUN=false
 
@@ -71,6 +76,8 @@ while (( $# > 0 )); do
         --duration-tol) DURATION_TOL="$2"; shift 2 ;;
         --samples)      SAMPLES="$2"; shift 2 ;;
         --keep-samples) VISUAL_KEEP_DIR="$2"; shift 2 ;;
+        --no-visual)    CHECK_VISUAL=false; shift ;;
+        --extensions)   VIDEO_EXTENSIONS="$2"; shift 2 ;;
         --fix)          DO_FIX=true; shift ;;
         --run)          DO_RUN=true; shift ;;
         --hold)         MO_HOLD=1; shift ;;
@@ -83,6 +90,50 @@ while (( $# > 0 )); do
 done
 [[ -n "${POSITIONAL[0]:-}" ]] && SOURCE_DIR="${POSITIONAL[0]}"
 [[ -n "${POSITIONAL[1]:-}" ]] && OUTPUT_DIR="${POSITIONAL[1]}"
+
+# ------------------------------------------------------------------------------
+# INTERACTIVE SETUP
+# Only when there is a terminal and the script was not started by another one.
+# --keep-samples is offered only if the picture comparison is actually going
+# to run; without it there would be no stills to store.
+# ------------------------------------------------------------------------------
+if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" ]]; then
+    printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
+    printf "%bOutput check: compare converted videos with their originals%b\n" "$C_BOLD" "$C_RESET"
+    printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
+    read -rp "Run with the default settings? [Y/n]: " start_choice || start_choice=""
+    if [[ "${start_choice,,}" =~ ^(n|no|nein)$ ]]; then
+        read -rp "  Source directory (the originals) [$SOURCE_DIR]: " x && SOURCE_DIR="${x:-$SOURCE_DIR}"
+        read -rp "  Target directory (the converted files) [$OUTPUT_DIR]: " x && OUTPUT_DIR="${x:-$OUTPUT_DIR}"
+
+        mo_prompt_bool "Compare the picture content as well (PSNR sampling)?" \
+            "$CHECK_VISUAL" CHECK_VISUAL
+
+        if [[ "$CHECK_VISUAL" == true ]]; then
+            read -rp "  PSNR threshold in dB [$PSNR_MIN]: " x && PSNR_MIN="${x:-$PSNR_MIN}"
+            read -rp "  Samples per file [$SAMPLES]: " x && SAMPLES="${x:-$SAMPLES}"
+
+            keep_choice=false
+            mo_prompt_bool "Store the compared stills for inspection?" false keep_choice
+            if [[ "$keep_choice" == true ]]; then
+                read -rp "  Directory for the stills [${VISUAL_KEEP_DIR:-/tmp/mo-samples}]: " x
+                VISUAL_KEEP_DIR="${x:-${VISUAL_KEEP_DIR:-/tmp/mo-samples}}"
+            fi
+        fi
+
+        read -rp "  Allowed runtime deviation in percent [$DURATION_TOL]: " x && DURATION_TOL="${x:-$DURATION_TOL}"
+        mo_prompt_bool "Delete broken outputs and drop them from the cache?" "$DO_FIX" DO_FIX
+        [[ "$DO_FIX" == true ]] && mo_prompt_bool "Start the repair run afterwards?" "$DO_RUN" DO_RUN
+        echo ""
+    fi
+fi
+
+# --keep-samples without the picture comparison would never produce anything.
+if [[ "$CHECK_VISUAL" != true && -n "$VISUAL_KEEP_DIR" ]]; then
+    printf "%b[NOTE]%b --keep-samples has no effect without the picture comparison.\n" \
+        "$C_YELLOW" "$C_RESET" >&2
+    VISUAL_KEEP_DIR=""
+fi
 
 [[ -n "$SOURCE_DIR" && -n "$OUTPUT_DIR" ]] || {
     echo "Both source and target directory are required." >&2; usage >&2; exit 2; }
@@ -98,13 +149,16 @@ require_cmds ffmpeg ffprobe || exit 1
 RESULT_LOG=$(mktemp /tmp/mo_verify_XXXXXX)
 BROKEN_LIST="${OUTPUT_DIR}/.defekte_videos.txt"
 VISUAL_SAMPLES="$SAMPLES"
-export RESULT_LOG PSNR_MIN SAMPLES VISUAL_SAMPLES VISUAL_KEEP_DIR DURATION_TOL SOURCE_DIR OUTPUT_DIR
+export RESULT_LOG PSNR_MIN SAMPLES VISUAL_SAMPLES VISUAL_KEEP_DIR DURATION_TOL
+export CHECK_VISUAL SOURCE_DIR OUTPUT_DIR VIDEO_EXTENSIONS
 
 printf "%b╔══════════════════════════════════════════════════════════════╗%b\n" "$C_BLUE" "$C_RESET"
 printf "%b║%b                     %bOUTPUT CHECK (VIDEO)%b                     %b║%b\n" "$C_BLUE" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_BLUE" "$C_RESET"
 printf "%b╚══════════════════════════════════════════════════════════════╝%b\n" "$C_BLUE" "$C_RESET"
-printf "  Source: %s\n  Target: %s\n  threshold: %s dB, %s samples, runtime tolerance %s%%, %s workers\n\n" \
-    "$SOURCE_DIR" "$OUTPUT_DIR" "$PSNR_MIN" "$SAMPLES" "$DURATION_TOL" "$MAX_WORKERS"
+printf "  Source: %s\n  Target: %s\n  picture check: %s, runtime tolerance %s%%, %s workers\n\n" \
+    "$SOURCE_DIR" "$OUTPUT_DIR" \
+    "$([[ "$CHECK_VISUAL" == true ]] && echo "$PSNR_MIN dB, $SAMPLES samples${VISUAL_KEEP_DIR:+, stills -> $VISUAL_KEEP_DIR}" || echo "off")" \
+    "$DURATION_TOL" "$MAX_WORKERS"
 
 # ------------------------------------------------------------------------------
 # WORKER
@@ -116,6 +170,16 @@ check_one() {
     local out="$1"
     local rel="${out#"$OUTPUT_DIR"/}"
     local src="$SOURCE_DIR/$rel"
+
+    # The container may differ from the source (VIDEO_CONTAINER=auto turns an
+    # .avi into an .mkv), so fall back to matching on the base name.
+    if [[ ! -f "$src" ]]; then
+        local base="${rel%.*}" cand
+        for cand in "$SOURCE_DIR/$base".*; do
+            [[ -f "$cand" ]] || continue
+            src="$cand"; break
+        done
+    fi
 
     if [[ ! -f "$src" ]]; then
         printf 'NOSRC\t%s\t\t\n' "$out" >> "$RESULT_LOG"
@@ -135,7 +199,7 @@ check_one() {
             "$C_RED" "$C_RESET" "$rel" "${d_src:-?}" "${d_out:-?}" "$DURATION_TOL" >&2
         return 0
     fi
-    if ! verify_visual "$src" "$out" "$PSNR_MIN"; then
+    if [[ "$CHECK_VISUAL" == true ]] && ! verify_visual "$src" "$out" "$PSNR_MIN"; then
         printf 'VISUAL\t%s\t%s\t%s\n' "$out" "$src" "$VISUAL_PSNR" >> "$RESULT_LOG"
         printf "%b[PICTURE?]%b     %s  (best %s dB; samples: %s)\n" \
             "$C_YELLOW" "$C_RESET" "$rel" "$VISUAL_PSNR" "${VISUAL_PSNR_ALL:-none}" >&2
@@ -147,19 +211,28 @@ check_one() {
 }
 export -f check_one verify_video verify_visual media_duration
 
-TOTAL=$(find "$OUTPUT_DIR" -type f -iname "*.mp4" ! -name "*.part.*.mp4" 2>/dev/null | wc -l || true)
+FIND_OPTS=(-type f \()
+_first=true
+for _ext in $VIDEO_EXTENSIONS; do
+    [[ "$_first" == true ]] || FIND_OPTS+=(-o)
+    FIND_OPTS+=(-iname "*.${_ext}")
+    _first=false
+done
+FIND_OPTS+=(\) ! -name "*.part.*")
+
+TOTAL=$(find "$OUTPUT_DIR" "${FIND_OPTS[@]}" 2>/dev/null | wc -l || true)
 if (( TOTAL == 0 )); then
-    echo "No MP4 files found in the target directory."
+    echo "No matching video files found in the target directory."
     rm -f "$RESULT_LOG"
     exit 0
 fi
 printf "  checking %d file(s)...\n\n" "$TOTAL"
 
-find "$OUTPUT_DIR" -type f -iname "*.mp4" ! -name "*.part.*.mp4" -print0 |
+find "$OUTPUT_DIR" "${FIND_OPTS[@]}" -print0 |
     xargs -0 -r -n 1 -P "$MAX_WORKERS" bash -c 'check_one "$1"' _ || true
 
 # ------------------------------------------------------------------------------
-# AUSWERTUNG
+# SUMMARY
 # ------------------------------------------------------------------------------
 n_ok=$(grep -c '^OK' "$RESULT_LOG" || true)
 n_vis=$(grep -c '^VISUAL' "$RESULT_LOG" || true)
@@ -202,11 +275,12 @@ if [[ "$DO_FIX" != true ]]; then
     printf "\nNothing changed. Repair only after checking yourself:\n"
     printf "  %s -i %q -o %q --fix --run\n" "$0" "$SOURCE_DIR" "$OUTPUT_DIR"
     rm -f "$RESULT_LOG"
-    exit 0
+    # Exit 1 signals "findings" so a caller can react. It is not an error.
+    exit 1
 fi
 
 # ------------------------------------------------------------------------------
-# REPARATUR
+# REPAIR
 # Remove only the broken outputs and drop the matching source files from
 # the cache. h264-to-h265.sh skips existing outputs, so the next run
 # so the next run regenerates exactly the deleted ones.

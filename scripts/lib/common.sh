@@ -1,25 +1,29 @@
 #!/bin/bash
 # ==============================================================================
-# lib/common.sh  -  gemeinsame Hilfsfunktionen
+# lib/common.sh  -  shared helpers
 #
-# Sourced by all scripts, never executed directly.
+# Sourced by every script, never executed directly.
 #
-# INHALT:
-# colours             C_* variables, empty when stdout is not a terminal
-#   Formatierung        format_bytes, format_duration, pct_change
-# config file         load_config and MO_CONFIG_VARS
-#   Abhaengigkeiten     require_cmds
-#   Loeschen            safe_remove, resolve_pending_deletes
-#   Aufraeumen          cleanup_stale_parts
-#   Verifikation        verify_output_image, verify_video, verify_visual
-#   Fenster offen       mo_install_exit_handler, mo_hold_open
+# CONTENTS
+#   colours          C_* variables, empty when stdout is not a terminal
+#   formatting       format_bytes, format_duration, pct_change
+#   configuration    load_config and MO_CONFIG_VARS
+#   dependencies     require_cmds
+#   deletion         safe_remove, resolve_pending_deletes
+#   cleanup          cleanup_stale_parts
+#   verification     verify_output_image, verify_video, verify_visual
+#   window handling  mo_install_exit_handler, mo_hold_open
+#   mode presets     mo_apply_inplace_defaults
+#   logging          mo_log_init, mo_log, mo_log_file, mo_log_close
 #
-# BEIM ERWEITERN BEACHTEN:
-# - New configuration variables belong in MO_CONFIG_VARS, otherwise
-# the config file cannot set them.
-# - Functions running in parallel xargs workers need
-# "export -f". Without it the call is simply "command not found" there
-# and, depending on context, counted as a failed check.
+# WHEN EXTENDING THIS FILE
+#   - New configuration variables must be listed in MO_CONFIG_VARS, otherwise
+#     the config file cannot set them.
+#   - Functions used inside parallel xargs workers need "export -f". Without
+#     it the call is simply "command not found" there, which in some places is
+#     counted as a failed check rather than an error.
+#   - Do not preset log variables at source time: common.sh is sourced before
+#     load_config, and a value set here would look like an explicit setting.
 # ==============================================================================
 
 [[ -n "${_MO_COMMON_LOADED:-}" ]] && return 0
@@ -91,7 +95,7 @@ MO_CONFIG_VARS=(
     DELETE_ORIGINAL_EXPLICIT RENAME_INPLACE_EXPLICIT MO_LOG MO_LOG_FILE
     MO_LOG_MAX_KB DURATION_TOLERANCE_PCT PROBE_DURATION RENAME_INPLACE
     GPU_ALLOW_10BIT VERIFY_VISUAL VISUAL_PSNR_MIN VISUAL_SAMPLES
-    VISUAL_STRICT AUTO_FIX_LIST HEVC_TAG GPU_CODEC VULKAN_DEVICE
+    VISUAL_STRICT CHECK_VISUAL ENABLE_VERIFY_OUTPUT AUTO_FIX_LIST HEVC_TAG GPU_CODEC VULKAN_DEVICE
     GPU_RC_MODE GPU_BF GPU_LOW_POWER GPU_ASYNC_DEPTH GPU_BITRATE
 )
 
@@ -525,9 +529,9 @@ mo_apply_inplace_defaults() {
     local answer
     read -rp "  Keep these settings? [Y/n]: " answer || answer=""
     if [[ "${answer,,}" =~ ^(n|nein|no)$ ]]; then
-        mo_prompt_bool "Move originals to the trash after success?" \
+        mo_prompt_bool "Move originals to the trash after a successful conversion?" \
             "$DELETE_ORIGINAL" DELETE_ORIGINAL
-        mo_prompt_bool "Remove the _h265 suffix after deleting the original?" \
+        mo_prompt_bool "Rename the result to the original name after deleting it?" \
             "$RENAME_INPLACE" RENAME_INPLACE
         DELETE_ORIGINAL_EXPLICIT=true
         RENAME_INPLACE_EXPLICIT=true

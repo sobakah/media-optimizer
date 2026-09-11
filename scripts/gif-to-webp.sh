@@ -1,16 +1,16 @@
 #!/bin/bash
 # ==============================================================================
-# gif-to-webp.sh  -  GIF -> animated WebP or AVIF
+# gif-to-webp.sh  -  GIF -> animated WebP, or AVIF with --target avif
 #
-# AUFBAU: KONFIGURATION -> STATISTIK -> WORKER -> xargs-Aufruf am Dateiende.
-# Parallelisation and export rules as in img-to-jxl.sh.
+# STRUCTURE: CONFIGURATION -> STATISTICS -> WORKER -> xargs call at the end.
+# Parallelisation and export rules are the same as in img-to-jxl.sh.
 #
-# IMPORTANT INVARIANTS when changing this:
-#   - gif2webp encoded per Default verlustfrei. Ein Flag "-lossless" gibt es
-# NOT exist; setting it makes the whole call fail.
-# - With GIF_TARGET=avif ffmpeg takes over with an AV1 encoder. That is
-# lossy, unlike the WebP path.
-# - Results larger than the original are discarded.
+# INVARIANTS
+#   - gif2webp encodes losslessly by default. A "-lossless" flag does NOT
+#     exist; passing it makes the whole call fail.
+#   - With GIF_TARGET=avif, ffmpeg takes over with an AV1 encoder. That path
+#     is lossy, unlike the WebP one.
+#   - Results larger than the original are discarded.
 # ==============================================================================
 set -euo pipefail
 
@@ -99,7 +99,7 @@ if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" ]]; then
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
     printf "%bBatch GIF to WebP converter (via gif2webp)%b\n" "$C_BOLD" "$C_RESET"
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
-    read -rp "Run with default settings? [Y/n]: " start_choice || start_choice=""
+    read -rp "Run with the default settings? [Y/n]: " start_choice || start_choice=""
     if [[ "${start_choice,,}" =~ ^(n|nein|no)$ ]]; then
         read -rp "  Source folder [$SOURCE_DIR]: " x && SOURCE_DIR="${x:-$SOURCE_DIR}"
         read -rp "  Target folder (empty = in place) [$OUTPUT_DIR]: " x && OUTPUT_DIR="${x:-$OUTPUT_DIR}"
@@ -143,7 +143,7 @@ fi
 cleanup_stale_parts "${OUTPUT_DIR:-$SOURCE_DIR}" "*.part.*.webp" "*.part.*.avif"
 
 # ------------------------------------------------------------------------------
-# STATISTIK
+# STATISTICS
 # ------------------------------------------------------------------------------
 STATS_FILE="${SOURCE_DIR}/.gif_stats.env"
 PENDING_DELETE_LOG="${SOURCE_DIR}/.gif_pending_deletes.txt"

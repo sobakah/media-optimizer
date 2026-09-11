@@ -2,30 +2,29 @@
 # ==============================================================================
 # h264-to-h265.sh  -  video -> H.265/HEVC (VAAPI, Vulkan or libx265)
 #
-# STRUCTURE (in this order in the code):
-#   KONFIGURATION      Defaults, Konfigdatei, Optionen. Jede Einstellung folgt
-# the pattern VAR="${VAR:-default}" so that environment and
-# config file take precedence over the default.
-# GPU CAPABILITY     find the render node and run a real test encode.
-#                      fahren. Danach steht VAAPI_DEVICE konkret fest.
-# GPU SELF-TEST      only with --gpu-selftest: try option variants.
-# STATISTICS         counters that are carried over
-# across aborts (.h265_stats.env).
-# CACHE              finished files, so that a second
-# run does not have to ffprobe every file again.
-# TARGET FILES       find over the tree or the lines from --from-list.
-# MAIN LOOP          per file: filter, encoder choice, probe, encode,
-#                      Verifikation, Groessenpruefung, Loeschentscheidung.
-# FINISH             summary and pending deletions.
+# STRUCTURE (in this order in the code)
+#   CONFIGURATION    defaults, config file, options
+#   GPU CAPABILITY   find the render node and run a real test encode; only
+#                    afterwards is VAAPI_DEVICE a concrete path
+#   GPU SELF-TEST    only with --gpu-selftest: try option variants and exit
+#   STATISTICS       counters carried across aborts (.h265_stats.env)
+#   CACHE            finished files, so a second run does not ffprobe
+#                    everything again
+#   TARGET FILES     find over the tree, or the lines of --from-list
+#   MAIN LOOP        per file: filters, encoder choice, probe, encode,
+#                    verification, size check, deletion decision
+#   FINISH           summary and pending deletions
 #
-# IMPORTANT INVARIANTS when changing this:
-# - Output always goes to "<target>.part.<pid>.<random>.mp4" first
-# and only renamed after passing its check.
-# - An original is NEVER deleted before verify_video (and optionally
-# verify_visual) confirmed the output.
-# - gpu_encoder_args() must be rebuilt after any change to VAAPI_DEVICE, GPU_CODEC
-# or the pixel format, otherwise probe and
-# encode would use stale arguments.
+# INVARIANTS
+#   - Output is written to "<target>.part.<pid>.<random>.<ext>" and only
+#     renamed after it passed verification.
+#   - An original is never deleted before verify_video (and optionally
+#     verify_visual) confirmed the output.
+#   - gpu_encoder_args() must be called again after any change to
+#     VAAPI_DEVICE, GPU_CODEC or the pixel format. Otherwise the probe and
+#     the real encode would run with stale arguments.
+#   - The target container follows the source: MP4 accepts neither Opus nor
+#     SRT, so "auto" writes MKV for anything that is not MP4/MOV/M4V.
 # ==============================================================================
 set -euo pipefail
 
@@ -96,7 +95,7 @@ EOF
 }
 
 # ------------------------------------------------------------------------------
-# KONFIGURATION
+# CONFIGURATION
 # ------------------------------------------------------------------------------
 SOURCE_DIR="${SOURCE_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
@@ -228,7 +227,7 @@ if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" ]]; then
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
     printf "%bBatch video re-encoder (H.264 -> H.265 / HEVC)%b\n" "$C_BOLD" "$C_RESET"
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
-    read -rp "Run with default settings? [Y/n]: " start_choice || start_choice=""
+    read -rp "Run with the default settings? [Y/n]: " start_choice || start_choice=""
     if [[ "${start_choice,,}" =~ ^(n|nein|no)$ ]]; then
         read -rp "  Source directory [$SOURCE_DIR]: " x && SOURCE_DIR="${x:-$SOURCE_DIR}"
         read -rp "  Target directory (empty = in place) [$OUTPUT_DIR]: " x && OUTPUT_DIR="${x:-$OUTPUT_DIR}"
@@ -329,7 +328,7 @@ target_extension() {
 }
 
 # ------------------------------------------------------------------------------
-# GPU-FAEHIGKEIT EINMALIG PRUEFEN
+# CHECK GPU CAPABILITY ONCE
 # ------------------------------------------------------------------------------
 # Ein einzelnes Render-Node testen. Der ffmpeg-error landet in GPU_PROBE_ERR,
 # so a failure does not stay silent.
@@ -646,7 +645,7 @@ run_gpu_selftest() {
 [[ -n "$GPU_SELFTEST" ]] && run_gpu_selftest "$GPU_SELFTEST"
 
 # ------------------------------------------------------------------------------
-# PERSISTENTE STATISTIKEN
+# PERSISTENT STATISTICS
 # ------------------------------------------------------------------------------
 if [[ "${RESUMING:-false}" == "true" && -f "$STATS_FILE" ]]; then
     source "$STATS_FILE" 2>/dev/null || true
@@ -663,7 +662,7 @@ COUNT_PROBE_SKIPPED=${COUNT_PROBE_SKIPPED:-0}; COUNT_DISCARDED=${COUNT_DISCARDED
 COUNT_CACHE_SKIPPED=0
 COUNT_FAILED=${COUNT_FAILED:-0}; COUNT_GPU=${COUNT_GPU:-0}; COUNT_CPU=${COUNT_CPU:-0}
 COUNT_UNVERIFIED=${COUNT_UNVERIFIED:-0}; COUNT_DRY=${COUNT_DRY:-0}
-COUNT_SUSPECT=${COUNT_SUSPECT:-0}
+COUNT_SUSPECT=${COUNT_SUSPECT:-0}; COUNT_VERIFIED=${COUNT_VERIFIED:-0}
 TOTAL_ORIG_BYTES=${TOTAL_ORIG_BYTES:-0}; TOTAL_NEW_BYTES=${TOTAL_NEW_BYTES:-0}
 PREV_ELAPSED=${PREV_ELAPSED:-0}
 START_TIME=$(date +%s)
@@ -679,6 +678,7 @@ COUNT_DISCARDED=$COUNT_DISCARDED
 COUNT_FAILED=$COUNT_FAILED
 COUNT_UNVERIFIED=$COUNT_UNVERIFIED
 COUNT_SUSPECT=$COUNT_SUSPECT
+COUNT_VERIFIED=$COUNT_VERIFIED
 COUNT_GPU=$COUNT_GPU
 COUNT_CPU=$COUNT_CPU
 TOTAL_ORIG_BYTES=$TOTAL_ORIG_BYTES
@@ -761,7 +761,7 @@ slice_kbps() {
 }
 
 # ------------------------------------------------------------------------------
-# ZU VERARBEITENDE DATEIEN
+# TARGET FILES
 # Either the whole tree or exactly the lines of a list.
 # ------------------------------------------------------------------------------
 emit_targets() {
@@ -782,10 +782,10 @@ emit_targets() {
 }
 
 # ------------------------------------------------------------------------------
-# HAUPTSCHLEIFE
+# MAIN LOOP
 # ------------------------------------------------------------------------------
 # ------------------------------------------------------------------------------
-# FORTSCHRITT
+# PROGRESS
 # The total count costs one extra pass over the candidates.
 # With find that is a directory walk without ffprobe, so it is cheap.
 # ------------------------------------------------------------------------------
@@ -1036,8 +1036,14 @@ while IFS= read -r -d '' -u 9 src_file; do
 
         # Check the picture content. The runtime is also correct for broken
         # Farbformaten, deshalb ein Stichprobenvergleich per PSNR.
+        visual_note=""
         if [[ "$VERIFY_VISUAL" == true && "$is_salvaged" != true ]]; then
-            if ! verify_visual "$src_file" "$temp_file" "$VISUAL_PSNR_MIN"; then
+            if verify_visual "$src_file" "$temp_file" "$VISUAL_PSNR_MIN"; then
+                # Report the result even when it passed: otherwise a silent
+                # run leaves no way to tell the check ran at all.
+                visual_note="${VISUAL_PSNR:-n/a} dB"
+                COUNT_VERIFIED=$(( COUNT_VERIFIED + 1 ))
+            else
                 printf "%b[PICTURE?]%b '%s': PSNR %s dB below %s dB (samples: %s)\n" \
                     "$C_YELLOW" "$C_RESET" "$filename" "$VISUAL_PSNR" "$VISUAL_PSNR_MIN" \
                     "${VISUAL_PSNR_ALL:-none}" >&2
@@ -1109,6 +1115,9 @@ while IFS= read -r -d '' -u 9 src_file; do
         printf "%b│%b  Original: %s -> new: %s\n" "$C_GREEN" "$C_RESET" "$(format_bytes "$src_size")" "$(format_bytes "$dest_size")"
         printf "%b│%b  Saved: %b %s%% %b %b%b(-%s)%b\n" "$C_GREEN" "$C_RESET" \
             "$C_BG_GREEN" "$saved_pct" "$C_RESET" "$C_GREEN" "$C_BOLD" "$(format_bytes "$diff_bytes")" "$C_RESET"
+        [[ -n "$visual_note" ]] && \
+            printf "%b│%b  Picture: verified against the source, PSNR %s\n" \
+                "$C_GREEN" "$C_RESET" "$visual_note"
         printf "%b└──────────────────────────────────────────────────────────────┘%b\n" "$C_GREEN" "$C_RESET"
 
         [[ "$DELETE_ORIGINAL" == true ]] && safe_remove "$src_file"
@@ -1152,7 +1161,7 @@ done 9< <(emit_targets)
 progress_clear
 
 # ------------------------------------------------------------------------------
-# ABSCHLUSS
+# FINISH
 # ------------------------------------------------------------------------------
 if [[ "$DRY_RUN" == true ]]; then
     printf "\n%b[DRY-RUN]%b %s video(s) wuerden reencodiert.\n" "$C_CYAN" "$C_RESET" "$COUNT_DRY"
@@ -1173,6 +1182,8 @@ printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Cache (this scan):
 printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Skipped:" "$COUNT_SKIPPED file(s)" "$C_BLUE" "$C_RESET"
 printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Probe (no gain):" "$COUNT_PROBE_SKIPPED file(s)" "$C_BLUE" "$C_RESET"
 printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Discarded (larger):" "$COUNT_DISCARDED file(s)" "$C_BLUE" "$C_RESET"
+(( COUNT_VERIFIED > 0 )) && \
+printf "%b║%b  %-21s %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "Picture verified:" "$COUNT_VERIFIED file(s)" "$C_BLUE" "$C_RESET"
 (( COUNT_SUSPECT > 0 )) && \
 printf "%b║%b  %bPicture suspicious:%b   %-37s %b║%b\n" "$C_BLUE" "$C_RESET" "$C_YELLOW" "$C_RESET" "$COUNT_SUSPECT file(s)" "$C_BLUE" "$C_RESET"
 (( COUNT_UNVERIFIED > 0 )) && \
@@ -1207,7 +1218,7 @@ if (( COUNT_SUSPECT > 0 )); then
     printf "          Please inspect them yourself; the measurement can be wrong.\n"
 fi
 
-mo_log "h265" "summary: $COUNT_PROCESSED encoded (GPU $COUNT_GPU / CPU $COUNT_CPU), $COUNT_SKIPPED skipped, $COUNT_PROBE_SKIPPED per Probe, $COUNT_DISCARDED discarded, $COUNT_FAILED failed"
+mo_log "h265" "summary: $COUNT_PROCESSED encoded, $COUNT_VERIFIED picture-verified (GPU $COUNT_GPU / CPU $COUNT_CPU), $COUNT_SKIPPED skipped, $COUNT_PROBE_SKIPPED per Probe, $COUNT_DISCARDED discarded, $COUNT_FAILED failed"
 
 resolve_pending_deletes
 rm -f "$STATS_FILE"

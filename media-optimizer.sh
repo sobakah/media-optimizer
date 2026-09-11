@@ -1,7 +1,25 @@
 #!/bin/bash
 # ==============================================================================
-# media-optimizer.sh
-# Orchestrates the conversion. Saves settings and progress for resume.
+# media-optimizer.sh  -  orchestrator
+#
+# Counts the media types in the source directory and runs the matching stages
+# in order: images, GIFs, AVIF (optional), video. Settings and progress are
+# saved so an interrupted run can be resumed.
+#
+# STRUCTURE
+#   CONFIGURATION   defaults, config file, options, interactive prompts
+#   STATE           save_state / handle_interrupt for resume
+#   PRE-FLIGHT      optional extension correction, collision warning
+#   PIPELINE        stage selection, numbering, run_stage
+#   FINISH          summary, restart offer
+#
+# INVARIANTS
+#   - Every setting follows VAR="${VAR:-default}" so that environment and
+#     config file keep precedence over the built-in default.
+#   - Sub-scripts are started with an argument array, never a flat string;
+#     paths may contain spaces.
+#   - The stage count is computed before the first stage so the numbering in
+#     the output is correct.
 # ==============================================================================
 set -euo pipefail
 
@@ -15,6 +33,7 @@ SCRIPT_IMG="$SCRIPT_DIR/scripts/img-to-jxl.sh"
 SCRIPT_GIF="$SCRIPT_DIR/scripts/gif-to-webp.sh"
 SCRIPT_VIDEO="$SCRIPT_DIR/scripts/h264-to-h265.sh"
 SCRIPT_AVIF="$SCRIPT_DIR/scripts/video-to-avif.sh"
+SCRIPT_VERIFY="$SCRIPT_DIR/scripts/verify-output.sh"
 STATE_FILE="$SCRIPT_DIR/.media_optimizer_state.env"
 
 usage() {
@@ -28,6 +47,11 @@ media-optimizer.sh [<input>] [<output>] [options]
       --force-delete   if the trash fails, rm without asking
       --verify-deep    fully decode image outputs (slower)
       --preflight      fix file extensions by MIME type beforehand
+      --verify-visual    compare picture content while converting (default)
+      --no-verify-visual skip that comparison
+      --strict-visual    discard suspicious video outputs instead of warning
+      --verify-output    re-check the finished target directory afterwards
+      --no-verify-output skip that final check (default)
       --avif           extra stage: short silent videos to AVIF
       --no-avif        skip that stage (default)
       --log <file>     log file (default: media-optimizer.log next to this)
@@ -42,7 +66,7 @@ EOF
 }
 
 # ------------------------------------------------------------------------------
-# STANDARDWERTE
+# DEFAULTS
 # ------------------------------------------------------------------------------
 INPUT_DIR=""
 OUTPUT_DIR=""
@@ -76,6 +100,18 @@ VERIFY_DEEP="${VERIFY_DEEP:-false}"
 # Extra stage: short silent videos to AVIF. Off by default because the
 # savings are small and AVIF cannot store audio.
 ENABLE_AVIF_STAGE="${ENABLE_AVIF_STAGE:-false}"
+
+# Picture check DURING the conversion: every video is compared against its
+# source right after encoding. On by default, because it catches encoder
+# faults that the runtime check cannot see.
+VERIFY_VISUAL="${VERIFY_VISUAL:-true}"
+VISUAL_STRICT="${VISUAL_STRICT:-false}"
+
+# Picture check AFTER the run: scripts/verify-output.sh walks the finished
+# target directory once more. Off by default, needs a target directory
+# because it compares against the untouched originals.
+ENABLE_VERIFY_OUTPUT="${ENABLE_VERIFY_OUTPUT:-false}"
+CHECK_VISUAL="${CHECK_VISUAL:-true}"
 DRY_RUN=false
 ASSUME_YES=false
 RESET_STATE=false
@@ -97,6 +133,11 @@ while (( $# > 0 )); do
         --verify-deep)  VERIFY_DEEP=true; shift ;;
         --log)          MO_LOG_FILE="$2"; shift 2 ;;
         --no-log)       MO_LOG=false; shift ;;
+        --verify-visual)    VERIFY_VISUAL=true; shift ;;
+        --no-verify-visual) VERIFY_VISUAL=false; shift ;;
+        --strict-visual)    VISUAL_STRICT=true; shift ;;
+        --verify-output)    ENABLE_VERIFY_OUTPUT=true; shift ;;
+        --no-verify-output) ENABLE_VERIFY_OUTPUT=false; shift ;;
         --avif)         ENABLE_AVIF_STAGE=true; shift ;;
         --no-avif)      ENABLE_AVIF_STAGE=false; shift ;;
         --preflight)    CHECK_EXTENSIONS_PREFLIGHT=true; shift ;;
@@ -115,7 +156,7 @@ done
 [[ -n "${POSITIONAL[1]:-}" ]] && OUTPUT_DIR="${POSITIONAL[1]}"
 CLI_INPUT="$INPUT_DIR"; CLI_OUTPUT="$OUTPUT_DIR"
 
-for s in "$SCRIPT_IMG" "$SCRIPT_GIF" "$SCRIPT_VIDEO" "$SCRIPT_AVIF"; do
+for s in "$SCRIPT_IMG" "$SCRIPT_GIF" "$SCRIPT_VIDEO" "$SCRIPT_AVIF" "$SCRIPT_VERIFY"; do
     if [[ ! -f "$s" ]]; then
         printf "%bError: script '%s' is missing.%b\n" "$C_RED" "$s" "$C_RESET" >&2
         exit 1
@@ -124,7 +165,7 @@ for s in "$SCRIPT_IMG" "$SCRIPT_GIF" "$SCRIPT_VIDEO" "$SCRIPT_AVIF"; do
 done
 
 # ------------------------------------------------------------------------------
-# STATUS & TRAP
+# STATE AND TRAP HANDLING
 # ------------------------------------------------------------------------------
 save_state() {
     local status="$1"
@@ -209,7 +250,7 @@ if [[ -f "$STATE_FILE" ]]; then
             "$([[ "$STAGE_3_DONE" == true ]] && echo done || echo open)"
 
         if [[ -t 0 && "$ASSUME_YES" == false ]]; then
-            read -rp "Resume the last run with the saved settings? [Y/n]: " res_choice || res_choice=""
+            read -rp "Resume the last run with its saved settings? [Y/n]: " res_choice || res_choice=""
             case "${res_choice,,}" in
                 n|nein|no)
                     echo "-> Discarding state."; echo ""
@@ -240,34 +281,41 @@ if [[ "$RESUMING" == false ]]; then
 
     if [[ -t 0 && "$ASSUME_YES" == false ]]; then
         echo ""
-        read -rp "Use default settings for ALL media types? [Y/n]: " std_choice || std_choice=""
+        read -rp "Use the default settings for all media types? [Y/n]: " std_choice || std_choice=""
         if [[ "${std_choice,,}" =~ ^(n|nein|no)$ ]]; then
             printf "\n%b─── GLOBAL SETTINGS ───%b\n" "$C_YELLOW" "$C_RESET"
-            prompt_bool "Check file extensions by MIME type beforehand?" "$CHECK_EXTENSIONS_PREFLIGHT" CHECK_EXTENSIONS_PREFLIGHT
-            prompt_bool "Move originals to the trash after success?" "$DELETE_ORIGINAL" DELETE_ORIGINAL
-            prompt_bool "Additionally verify outputs completely (slower)?" "$VERIFY_DEEP" VERIFY_DEEP
+            prompt_bool "Correct wrong file extensions by MIME type first?" "$CHECK_EXTENSIONS_PREFLIGHT" CHECK_EXTENSIONS_PREFLIGHT
+            prompt_bool "Move originals to the trash after a successful conversion?" "$DELETE_ORIGINAL" DELETE_ORIGINAL
+            prompt_bool "Fully decode image outputs to verify them (slower)?" "$VERIFY_DEEP" VERIFY_DEEP
             prompt_bool "Also convert short silent videos to AVIF?" "$ENABLE_AVIF_STAGE" ENABLE_AVIF_STAGE
             prompt_val  "Parallel workers for images/GIFs" "$MAX_WORKERS" MAX_WORKERS
 
             printf "\n%b─── IMAGES & GIFS ───%b\n" "$C_YELLOW" "$C_RESET"
-            prompt_val "Image target format (jxl/webp)" "$IMG_TARGET" IMG_TARGET
-            [[ "$IMG_TARGET" == "webp" ]] && prompt_val "WebP quality (1-100)" "$IMG_WEBP_QUALITY" IMG_WEBP_QUALITY
-            prompt_val "JXL effort (1-9)" "$JXL_EFFORT" JXL_EFFORT
-            prompt_val "PNG mode (lossless/lossy)" "$PNG_MODE" PNG_MODE
-            [[ "$PNG_MODE" == "lossy" ]] && prompt_val "PNG JXL quality (1-100)" "$PNG_QUALITY" PNG_QUALITY
-            prompt_val "WebP GIF compression (0-6)" "$COMPRESSION_METHOD" COMPRESSION_METHOD
+            prompt_val "Image target format (jxl or webp)" "$IMG_TARGET" IMG_TARGET
+            [[ "$IMG_TARGET" == "webp" ]] && prompt_val "WebP quality, higher is better (1-100)" "$IMG_WEBP_QUALITY" IMG_WEBP_QUALITY
+            prompt_val "JXL effort, higher is slower and smaller (1-9)" "$JXL_EFFORT" JXL_EFFORT
+            prompt_val "PNG mode (lossless or lossy)" "$PNG_MODE" PNG_MODE
+            [[ "$PNG_MODE" == "lossy" ]] && prompt_val "JXL quality for PNG, higher is better (1-100)" "$PNG_QUALITY" PNG_QUALITY
+            prompt_val "WebP compression level for GIFs (0-6)" "$COMPRESSION_METHOD" COMPRESSION_METHOD
 
             printf "\n%b─── VIDEO (H.265) ───%b\n" "$C_YELLOW" "$C_RESET"
-            prompt_val "Encoder (auto / gpu / cpu)" "$ENCODER_MODE" ENCODER_MODE
-            [[ "${ENCODER_MODE,,}" == "auto" ]] && prompt_val "CPU/GPU threshold (kb/s)" "$BITRATE_THRESHOLD_KBPS" BITRATE_THRESHOLD_KBPS
-            [[ "${ENCODER_MODE,,}" =~ ^(auto|gpu)$ ]] && prompt_val "GPU CQP (24-28)" "$GPU_QP" GPU_QP
+            prompt_val "Video encoder (auto, gpu or cpu)" "$ENCODER_MODE" ENCODER_MODE
+            [[ "${ENCODER_MODE,,}" == "auto" ]] && prompt_val "Bitrate above which the GPU is used (kb/s)" "$BITRATE_THRESHOLD_KBPS" BITRATE_THRESHOLD_KBPS
+            [[ "${ENCODER_MODE,,}" =~ ^(auto|gpu)$ ]] && prompt_val "GPU quality, lower is better (24-28)" "$GPU_QP" GPU_QP
             if [[ "${ENCODER_MODE,,}" =~ ^(auto|cpu)$ ]]; then
-                prompt_val "CPU CRF (20-24)" "$CPU_CRF" CPU_CRF
-                prompt_val "CPU preset (medium/slow)" "$CPU_PRESET" CPU_PRESET
+                prompt_val "CPU quality, lower is better (20-24)" "$CPU_CRF" CPU_CRF
+                prompt_val "CPU preset (medium or slow)" "$CPU_PRESET" CPU_PRESET
             fi
-            prompt_bool "Encode a 10s test slice beforehand?" "$ENABLE_PROBE" ENABLE_PROBE
-            prompt_bool "Discard videos when the output grows?" "$DISCARD_IF_LARGER" DISCARD_IF_LARGER
-            prompt_bool "Keep salvaged damaged videos even when larger?" "$KEEP_SALVAGED_CORRUPT" KEEP_SALVAGED_CORRUPT
+            prompt_bool "Encode a short test slice first to check whether it is worth it?" "$ENABLE_PROBE" ENABLE_PROBE
+            prompt_bool "Discard a video if the result is larger than the original?" "$DISCARD_IF_LARGER" DISCARD_IF_LARGER
+            prompt_bool "Keep videos salvaged from damaged sources even if they grew?" "$KEEP_SALVAGED_CORRUPT" KEEP_SALVAGED_CORRUPT
+            prompt_bool "Compare the picture against the source while converting?" "$VERIFY_VISUAL" VERIFY_VISUAL
+            [[ "$VERIFY_VISUAL" == true ]] && \
+                prompt_bool "Discard a video when that comparison looks wrong?" "$VISUAL_STRICT" VISUAL_STRICT
+            if [[ -n "$OUTPUT_DIR" ]]; then
+                prompt_bool "Re-check the finished target directory at the end?" \
+                    "$ENABLE_VERIFY_OUTPUT" ENABLE_VERIFY_OUTPUT
+            fi
         fi
     fi
 fi
@@ -286,11 +334,12 @@ mo_log_settings DELETE_ORIGINAL RENAME_INPLACE FORCE_DELETE MAX_WORKERS \
     JXL_EFFORT PNG_MODE PNG_QUALITY CJXL_THREADS COMPRESSION_METHOD GIF_TARGET \
     ENCODER_MODE BITRATE_THRESHOLD_KBPS GPU_QP CPU_CRF CPU_PRESET CPU_X265_PARAMS \
     GPU_CODEC GPU_RC_MODE HEVC_TAG ENABLE_PROBE PROBE_MARGIN_PCT DISCARD_IF_LARGER \
-    KEEP_SALVAGED_CORRUPT VERIFY_DEEP ENABLE_AVIF_STAGE CHECK_EXTENSIONS_PREFLIGHT \
+    KEEP_SALVAGED_CORRUPT VERIFY_DEEP VERIFY_VISUAL VISUAL_STRICT \
+    ENABLE_VERIFY_OUTPUT CHECK_VISUAL ENABLE_AVIF_STAGE CHECK_EXTENSIONS_PREFLIGHT \
     DRY_RUN
 
 # ------------------------------------------------------------------------------
-# ABHAENGIGKEITEN EINMALIG PRUEFEN
+# CHECK DEPENDENCIES ONCE
 # ------------------------------------------------------------------------------
 missing_any=false
 require_cmds cjxl cwebp file || missing_any=true
@@ -307,7 +356,7 @@ command -v gio >/dev/null 2>&1 || command -v trash-put >/dev/null 2>&1 || \
 [[ "$DRY_RUN" == true ]] && printf "\n%b[DRY-RUN]%b No writes, no deletions.\n" "$C_CYAN" "$C_RESET"
 
 # ------------------------------------------------------------------------------
-# EXPORT FUER UNTERSKRIPTE
+# EXPORT FOR THE SUB-SCRIPTS
 # ------------------------------------------------------------------------------
 export NON_INTERACTIVE=true
 export MAX_WORKERS DELETE_ORIGINAL FORCE_DELETE RENAME_INPLACE
@@ -317,10 +366,11 @@ export IMG_TARGET IMG_WEBP_QUALITY IMG_DISCARD_IF_LARGER VIDEO_EXTENSIONS
 export ENCODER_MODE BITRATE_THRESHOLD_KBPS GPU_QP CPU_CRF CPU_PRESET CPU_X265_PARAMS CJXL_THREADS
 export ENABLE_PROBE PROBE_MARGIN_PCT DISCARD_IF_LARGER KEEP_SALVAGED_CORRUPT
 export VERIFY_DEEP DRY_RUN RESUMING
+export VERIFY_VISUAL VISUAL_STRICT CHECK_VISUAL
 export SOURCE_DIR="$INPUT_DIR" OUTPUT_DIR
 
 # ------------------------------------------------------------------------------
-# PRE-FLIGHT: ENDUNGEN
+# PRE-FLIGHT: FILE EXTENSIONS
 # ------------------------------------------------------------------------------
 if [[ "$CHECK_EXTENSIONS_PREFLIGHT" == true && "$RESUMING" == false ]]; then
     printf "\n%bChecking file extensions against MIME types...%b\n" "$C_CYAN" "$C_RESET"
@@ -354,7 +404,7 @@ if [[ "$CHECK_EXTENSIONS_PREFLIGHT" == true && "$RESUMING" == false ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# WARNUNG: GLEICHE DATEINAMEN MIT VERSCHIEDENEN ENDUNGEN
+# WARNING: SAME BASE NAME, DIFFERENT EXTENSIONS
 # foo.jpg and foo.png both map to foo.jxl. The workers lock the
 # target name, but it is better to surface this beforehand.
 # ------------------------------------------------------------------------------
@@ -470,7 +520,7 @@ if (( COUNT_VID > 0 )) && [[ "$STAGE_3_DONE" != true ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# NEUSTART ANBIETEN
+# OFFER A RESTART
 #
 # Rebuilds the command line without directory arguments and replaces the process.
 # exec fires no EXIT trap, so this run's log is already
@@ -504,6 +554,33 @@ offer_restart() {
     printf "\n%b─── New run ───%b\n\n" "$C_CYAN" "$C_RESET"
     exec "$0" "${restart[@]}"
 }
+
+# ------------------------------------------------------------------------------
+# FINAL CHECK
+# Only useful with a target directory: verify-output.sh compares the finished
+# outputs against the untouched originals. Read-only, it never deletes.
+# ------------------------------------------------------------------------------
+if [[ "$ENABLE_VERIFY_OUTPUT" == true && "$DRY_RUN" != true ]]; then
+    if [[ -z "$OUTPUT_DIR" ]]; then
+        printf "\n%b[NOTE]%b --verify-output needs a target directory; the originals\n" \
+            "$C_YELLOW" "$C_RESET"
+        printf "       would already be gone in place. Skipping the final check.\n"
+    elif (( COUNT_VID == 0 )); then
+        printf "\n%b[NOTE]%b No videos in the source, nothing to re-check.\n" "$C_YELLOW" "$C_RESET"
+    else
+        printf "\n%b▶ Final check of the target directory...%b\n" "$C_CYAN" "$C_RESET"
+        mo_log "verify" "final check of $OUTPUT_DIR"
+        verify_rc=0
+        env MO_HOLD=0 NON_INTERACTIVE=true "$SCRIPT_VERIFY" \
+            -i "$INPUT_DIR" -o "$OUTPUT_DIR" || verify_rc=$?
+        if (( verify_rc != 0 )); then
+            printf "%b[NOTE]%b The check reported findings. Nothing was changed;\n" \
+                "$C_YELLOW" "$C_RESET"
+            printf "       repair with: %s -i %q -o %q --fix --run\n" \
+                "$SCRIPT_VERIFY" "$INPUT_DIR" "$OUTPUT_DIR"
+        fi
+    fi
+fi
 
 rm -f "$STATE_FILE"
 mo_log_close 0

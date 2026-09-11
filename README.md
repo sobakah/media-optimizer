@@ -93,6 +93,11 @@ Options that behave the same in several scripts:
 ```
       --preflight      fix file extensions by MIME type beforehand
       --verify-deep    fully decode image outputs (slower)
+      --verify-visual    compare picture content while converting (default)
+      --no-verify-visual skip that comparison
+      --strict-visual    discard suspicious video outputs instead of warning
+      --verify-output    re-check the finished target directory afterwards
+      --no-verify-output skip that final check (default)
       --avif           extra stage: short silent videos to AVIF
       --no-avif        skip that stage (default)
   -y, --yes            no prompts, use defaults
@@ -101,6 +106,18 @@ Options that behave the same in several scripts:
 
 Warns beforehand when files share a base name with different extensions, since
 `foo.jpg` and `foo.png` both map to `foo.jxl`.
+
+Two independent picture checks are available for video:
+
+| | when | default | effect |
+|---|---|---|---|
+| `VERIFY_VISUAL` | during conversion | on | every encoded video is compared against its source right away; the result is shown per file and counted in the summary, `VISUAL_STRICT` discards instead of warning |
+| `ENABLE_VERIFY_OUTPUT` | after the run | off | `verify-output.sh` walks the finished target directory once more |
+
+The final check needs a target directory, because it compares against the
+untouched originals; in place it is skipped with a note. It is read-only and
+never deletes. If it reports findings, the orchestrator prints the repair
+command rather than acting on its own.
 
 ### `img-to-jxl.sh`
 
@@ -219,10 +236,13 @@ higher CRF before it is discarded.
 
 ### `verify-output.sh`
 
-Checks a target directory against the source directory; files are matched by
-relative path.
+Checks a target directory against the source directory. Files are matched by
+relative path, falling back to the base name when the container differs, since
+`VIDEO_CONTAINER=auto` turns an `.avi` source into an `.mkv` output.
 
 ```
+      --extensions <l>   output extensions to check, space separated
+      --no-visual        skip the picture comparison, only read and duration
       --psnr-min <db>    threshold for suspicion (default: 15)
       --duration-tol <p> allowed runtime deviation in percent (default: 2)
       --samples <n>      samples per file (default: 3)
@@ -236,6 +256,12 @@ relative path.
 | `[UNLESBAR]` | `ffprobe` finds no video stream |
 | `[DAUER]` | runtime deviates beyond the tolerance |
 | `[BILD?]` | runtime fine, picture comparison below the PSNR threshold |
+
+Called without `-y` on a terminal the script offers an interactive setup.
+`--keep-samples` is only offered there when the picture comparison is
+actually going to run, since without it there would be no stills to store;
+combining `--no-visual` with `--keep-samples` prints a note instead of
+silently doing nothing.
 
 A low PSNR is a **suspicion, not proof**. Without `--fix` nothing is changed.
 `--keep-samples` stores the compared stills so every message can be judged.
