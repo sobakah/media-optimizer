@@ -1,6 +1,31 @@
 #!/bin/bash
 # ==============================================================================
-# h264-to-h265.sh  -  H.264 -> H.265/HEVC (VAAPI oder libx265)
+# h264-to-h265.sh  -  H.264 -> H.265/HEVC (VAAPI, Vulkan oder libx265)
+#
+# AUFBAU (in dieser Reihenfolge im Code):
+#   KONFIGURATION      Defaults, Konfigdatei, Optionen. Jede Einstellung folgt
+#                      dem Muster VAR="${VAR:-default}", damit Umgebung und
+#                      Konfigdatei Vorrang vor dem Default behalten.
+#   GPU-FAEHIGKEIT     Render-Node ermitteln und einen echten Testencode
+#                      fahren. Danach steht VAAPI_DEVICE konkret fest.
+#   GPU-SELBSTTEST     Nur bei --gpu-selftest: Optionsvarianten durchprobieren.
+#   STATISTIKEN        Zaehler, die ueber Abbrueche hinweg fortgeschrieben
+#                      werden (.h265_stats.env).
+#   CACHE              Abgeschlossene Dateien, damit ein zweiter Lauf nicht
+#                      erneut jede Datei per ffprobe anfassen muss.
+#   ZU VERARBEITENDE   find ueber den Baum oder die Zeilen aus --from-list.
+#   HAUPTSCHLEIFE      Pro Datei: Filter, Encoderwahl, Probe, Encode,
+#                      Verifikation, Groessenpruefung, Loeschentscheidung.
+#   ABSCHLUSS          Auswertung und offene Loeschungen.
+#
+# WICHTIGE INVARIANTEN beim Aendern:
+#   - Es wird immer erst in "<ziel>.part.<pid>.<zufall>.mp4" geschrieben und
+#     erst nach bestandener Pruefung umbenannt.
+#   - Ein Original wird NIE geloescht, bevor verify_video (und optional
+#     verify_visual) die Ausgabe bestaetigt hat.
+#   - gpu_encoder_args() muss nach jeder Aenderung an VAAPI_DEVICE, GPU_CODEC
+#     oder dem Pixelformat erneut aufgerufen werden, sonst arbeiten Probe und
+#     Encode mit veralteten Argumenten.
 # ==============================================================================
 set -euo pipefail
 
@@ -58,6 +83,8 @@ h264-to-h265.sh - reencodiert H.264-MP4s nach HEVC
                          Zielverzeichnis, falls vorhanden.
       --no-cache         Cache-Datei ignorieren
   -n, --dry-run          Nur anzeigen, nichts schreiben
+      --log <datei>      Protokolldatei
+      --no-log           Kein Protokoll schreiben
       --hold             Fenster am Ende offen halten (fuer Doppelklick-Start)
       --no-hold          Fenster nie offen halten
   -h, --help             Diese Hilfe
@@ -69,6 +96,10 @@ EOF
 # ------------------------------------------------------------------------------
 SOURCE_DIR="${SOURCE_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
+# Kein fester Default: die Vorbelegung haengt davon ab, ob ein
+# Zielverzeichnis angegeben wurde (siehe mo_apply_inplace_defaults).
+# Ein Wert aus Umgebung oder Konfigdatei gilt als ausdrueckliche Angabe.
+if [[ -n "${DELETE_ORIGINAL+x}" ]]; then DELETE_ORIGINAL_EXPLICIT=true; fi
 DELETE_ORIGINAL="${DELETE_ORIGINAL:-false}"
 FORCE_DELETE="${FORCE_DELETE:-false}"
 ENCODER_MODE="${ENCODER_MODE:-auto}"
@@ -91,6 +122,7 @@ VAAPI_DEVICE="${VAAPI_DEVICE:-auto}"   # auto = alle Render-Nodes durchprobieren
 # Ueber die Konfigdatei oder --x265-params gezielt wieder aktivierbar.
 CPU_X265_PARAMS="${CPU_X265_PARAMS:-aq-mode=3:no-sao=1}"
 FORCE_GPU="${FORCE_GPU:-false}"
+if [[ -n "${RENAME_INPLACE+x}" ]]; then RENAME_INPLACE_EXPLICIT=true; fi
 RENAME_INPLACE="${RENAME_INPLACE:-false}"
 FROM_LIST="${FROM_LIST:-}"
 AUTO_FIX_LIST="${AUTO_FIX_LIST:-false}"
@@ -100,9 +132,9 @@ HEVC_TAG="${HEVC_TAG:-}"
 GPU_CODEC="${GPU_CODEC:-hevc_vaapi}"     # hevc_vaapi | av1_vaapi | hevc_vulkan
 VULKAN_DEVICE="${VULKAN_DEVICE:-0}"
 GPU_RC_MODE="${GPU_RC_MODE:-CQP}"        # CQP | VBR | ICQ | QVBR | CBR | AUTO
-# Leer = -bf gar nicht setzen, also exakt wie in der Fassung, mit der das
-# GPU-Encoding nachweislich funktioniert hat. "0" nur setzen, wenn der
-# Selbsttest zeigt, dass es hilft.
+# B-Frames auf der GPU. Leer heisst: -bf wird nicht gesetzt, ffmpeg entscheidet.
+# Manche VAAPI-Treiber liefern mit erzwungenem -bf fehlerhafte Bilder; ob das
+# hier zutrifft, beantwortet --gpu-selftest.
 GPU_BF="${GPU_BF:-}"
 GPU_LOW_POWER="${GPU_LOW_POWER:-false}"
 GPU_ASYNC_DEPTH="${GPU_ASYNC_DEPTH:-}"
@@ -135,14 +167,14 @@ while (( $# > 0 )); do
         --probe-margin)  PROBE_MARGIN_PCT="$2"; shift 2 ;;
         --probe-duration) PROBE_DURATION="$2"; shift 2 ;;
         --keep-larger)   DISCARD_IF_LARGER=false; shift ;;
-        --delete)        DELETE_ORIGINAL=true; shift ;;
-        --no-delete)     DELETE_ORIGINAL=false; shift ;;
+        --delete)        DELETE_ORIGINAL=true; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
+        --no-delete)     DELETE_ORIGINAL=false; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
         --force-delete)  FORCE_DELETE=true; shift ;;
         --gpu-device)    VAAPI_DEVICE="$2"; shift 2 ;;
         --force-gpu)     FORCE_GPU=true; ENCODER_MODE=gpu; shift ;;
         --x265-params)   CPU_X265_PARAMS="$2"; shift 2 ;;
         --no-faststart)  FASTSTART=false; shift ;;
-        --rename-inplace) RENAME_INPLACE=true; shift ;;
+        --rename-inplace) RENAME_INPLACE=true; RENAME_INPLACE_EXPLICIT=true; shift ;;
         --gpu-10bit)     GPU_ALLOW_10BIT=true; shift ;;
         --hevc-tag)      HEVC_TAG="$2"; shift 2 ;;
         --gpu-codec)     GPU_CODEC="$2"; shift 2 ;;
@@ -155,6 +187,8 @@ while (( $# > 0 )); do
         --from-list)     FROM_LIST="$2"; shift 2 ;;
         --no-cache)      USE_CACHE=false; shift ;;
         -n|--dry-run)    DRY_RUN=true; shift ;;
+        --log)           MO_LOG_FILE="$2"; shift 2 ;;
+        --no-log)        MO_LOG=false; shift ;;
         --hold)          MO_HOLD=1; shift ;;
         --no-hold)       MO_HOLD=0; shift ;;
         -h|--help)       usage; exit 0 ;;
@@ -190,6 +224,10 @@ if [[ -n "$OUTPUT_DIR" ]]; then
     OUTPUT_DIR="${OUTPUT_DIR%/}"
     [[ "$DRY_RUN" == true ]] || mkdir -p "$OUTPUT_DIR"
 fi
+
+mo_apply_inplace_defaults "$OUTPUT_DIR"
+export MO_LOG_TAG="h265"
+mo_log_init "h264-to-h265.sh" "$SOURCE_DIR" "$OUTPUT_DIR"
 
 require_cmds ffmpeg ffprobe || exit 1
 gain_needed=$(( 100 - PROBE_MARGIN_PCT ))
@@ -249,11 +287,11 @@ FIND_OPTS=(-type f -iname "*.mp4" ! -name "*.part.*.mp4")
 # was spaeter wirklich ausgefuehrt wird.
 # gpu_encoder_args [<quell-pixelformat>]
 #
-# WICHTIG: hier stand einmal 'format=nv12|p010'. Die Alternative laesst den
-# Filter das Format aushandeln. Waehlt er p010, der Encoder laeuft aber ohne
-# -profile:v main10 in 8 Bit, entsteht ein gruenes Bild mit Artefakten.
-# Default ist deshalb fest nv12, also 8 Bit - der Pfad, der nachweislich
-# funktioniert. 10 Bit nur explizit und dann mit passendem Profil.
+# Das Pixelformat wird bewusst fest gesetzt und NICHT als Alternative
+# ('format=nv12|p010') geschrieben. Bei einer Alternative handelt der Filter
+# das Format selbst aus; waehlt er p010, waehrend der Encoder ohne
+# -profile:v main10 in 8 Bit arbeitet, entsteht ein gruenes Bild mit
+# Artefakten. 10 Bit deshalb nur zusammen mit dem passenden Profil.
 # GPU_HW_ARGS   globale Optionen VOR dem Input (Geraeteinitialisierung)
 # GPU_ENC_ARGS  Filter und Encoder NACH dem Input
 # GPU_TAG_ARGS  containerspezifische Tags
@@ -298,12 +336,14 @@ gpu_encoder_args() {
     [[ -n "$GPU_ASYNC_DEPTH" ]] && GPU_ENC_ARGS+=(-async_depth "$GPU_ASYNC_DEPTH")
     GPU_ENC_ARGS+=("${prof[@]}")
 
-    # Container-Tag nur bei HEVC und nur, wenn ausdruecklich gesetzt.
-    # ACHTUNG: "hvc1" verlangt, dass VPS/SPS/PPS ausschliesslich im hvcC-Kasten
-    # der Sample-Beschreibung stehen. Liefert der Hardware-Encoder sie
+    # Container-Tag nur bei HEVC und nur auf ausdruecklichen Wunsch.
+    #
+    # ACHTUNG bei "hvc1": der Tag verlangt, dass VPS/SPS/PPS ausschliesslich
+    # im hvcC-Kasten der Sample-Beschreibung stehen. Liefert der Encoder sie
     # stattdessen im Datenstrom, baut der Muxer ein unvollstaendiges hvcC.
-    # Die Datei ist dann korrekt kodiert, aber nicht mehr korrekt
-    # dekodierbar - typisch: Fragmente oben, Rest gruen.
+    # Die Datei ist dann korrekt kodiert, aber nicht mehr korrekt dekodierbar
+    # (typisch: Fragmente oben, Rest gruen). Vor dem Setzen mit
+    # --gpu-selftest pruefen.
     [[ "$GPU_CODEC" == "hevc_vaapi" && -n "$HEVC_TAG" ]] && GPU_TAG_ARGS=(-tag:v "$HEVC_TAG")
     return 0
 }
@@ -438,10 +478,11 @@ run_gpu_selftest() {
     fi
 
     # Kombinationen: rc_mode : bf : low_power
-    # Jede Variante ist ein vollstaendiger ffmpeg-Aufruf. Die erste Zeile ist
-    # exakt der Befehl aus der urspruenglichen Skriptfassung; die folgenden
-    # fuegen jeweils EINE meiner spaeteren Aenderungen hinzu. Damit laesst
-    # sich eingrenzen, welche davon den Defekt ausloest.
+    # Jede Variante ist ein vollstaendiger ffmpeg-Aufruf. "original" ist die
+    # minimale Kombination ohne Zusatzoptionen; die folgenden Varianten fuegen
+    # jeweils GENAU EINE Option hinzu. Schlaegt nur eine davon fehl, ist der
+    # Ausloeser damit eindeutig benannt. Neue Verdachtsoptionen gehoeren als
+    # eigene Variante hierher, nicht in eine Sammelzeile.
     local enc_list; enc_list=$(ffmpeg -hide_banner -encoders 2>/dev/null || true)
     local -a variants=(
         "original|Originalbefehl, Geraet nach -i"
@@ -692,17 +733,49 @@ emit_targets() {
 # ------------------------------------------------------------------------------
 # HAUPTSCHLEIFE
 # ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# FORTSCHRITT
+# Die Gesamtzahl kostet einen zusaetzlichen Durchlauf ueber die Kandidaten.
+# Bei find ist das ein Verzeichnisdurchlauf ohne ffprobe, also billig.
+# ------------------------------------------------------------------------------
+if [[ -n "$FROM_LIST" ]]; then
+    TOTAL_TARGETS=$(grep -cvE '^\s*(#|$)' "$FROM_LIST" 2>/dev/null || echo 0)
+else
+    TOTAL_TARGETS=$(find "$SOURCE_DIR" "${FIND_OPTS[@]}" -print0 2>/dev/null | tr -dc '\0' | wc -c || echo 0)
+fi
+IDX=0
+PROGRESS_OPEN=false
+
+# Einzeilige Fortschrittsanzeige fuer Dateien, die ohne Ausgabe durchlaufen
+# (Cache, zu klein, kein H.264). Nur am Terminal, damit Logdateien sauber
+# bleiben.
+progress_tick() {
+    [[ -t 1 && -z "${NO_COLOR:-}" ]] || return 0
+    printf "\r  [%d/%d] geprueft, %d uebersprungen\033[K" \
+        "$IDX" "$TOTAL_TARGETS" "$(( COUNT_CACHE_SKIPPED + COUNT_SKIPPED + COUNT_PROBE_SKIPPED ))"
+    PROGRESS_OPEN=true
+}
+progress_clear() {
+    [[ "$PROGRESS_OPEN" == true ]] || return 0
+    printf "\r\033[K"
+    PROGRESS_OPEN=false
+}
+
+printf "\n%b%d Kandidat(en) gefunden.%b\n" "$C_BOLD" "$TOTAL_TARGETS" "$C_RESET"
+
 while IFS= read -r -d '' -u 9 src_file; do
+    IDX=$(( IDX + 1 ))
 
     if [[ "$USE_CACHE" == true && "${CACHE_MAP["$src_file"]:-0}" -eq 1 ]]; then
         COUNT_CACHE_SKIPPED=$(( COUNT_CACHE_SKIPPED + 1 ))
+        progress_tick
         continue
     fi
 
     src_size=$(stat -c%s "$src_file" 2>/dev/null || echo 0)
     if (( src_size < MIN_SIZE_BYTES )); then
         COUNT_SKIPPED=$(( COUNT_SKIPPED + 1 ))
-        add_to_cache "$src_file"; continue
+        add_to_cache "$src_file"; progress_tick; continue
     fi
 
     current_codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
@@ -711,7 +784,7 @@ while IFS= read -r -d '' -u 9 src_file; do
         -of default=noprint_wrappers=1:nokey=1 "$src_file" 2>/dev/null || echo "")
     if [[ "$current_codec" != "h264" ]]; then
         COUNT_SKIPPED=$(( COUNT_SKIPPED + 1 ))
-        add_to_cache "$src_file"; continue
+        add_to_cache "$src_file"; progress_tick; continue
     fi
 
     filename=$(basename "$src_file")
@@ -726,9 +799,15 @@ while IFS= read -r -d '' -u 9 src_file; do
         dest_file="$(dirname "$src_file")/${stem}_h265.mp4"
     fi
 
-    if [[ "$SKIP_EXISTING" == true && -s "$dest_file" ]]; then
+    # Vorhandene Ausgabe? Das gilt auch fuer eine AVIF-Datei zur selben
+    # Quelle: laeuft die optionale AVIF-Stufe vorher, ist der Clip dort schon
+    # umgewandelt und soll nicht zusaetzlich als HEVC entstehen.
+    # Der AVIF-Name leitet sich vom QUELLNAMEN ab, nicht von dest_file - im
+    # In-Place-Modus traegt dest_file den Suffix _h265.
+    dest_avif="$(dirname "$dest_file")/${stem}.avif"
+    if [[ "$SKIP_EXISTING" == true ]] && { [[ -s "$dest_file" ]] || [[ -s "$dest_avif" ]]; }; then
         COUNT_SKIPPED=$(( COUNT_SKIPPED + 1 ))
-        add_to_cache "$src_file"; add_dest_to_cache "$dest_file"; continue
+        add_to_cache "$src_file"; add_dest_to_cache "$dest_file"; progress_tick; continue
     fi
 
     # ---------- Encoder-Wahl ----------
@@ -756,6 +835,7 @@ while IFS= read -r -d '' -u 9 src_file; do
     gpu_encoder_args "$src_pix_fmt"
 
     if [[ "$DRY_RUN" == true ]]; then
+        progress_clear
         printf "%b[DRY-RUN]%b '%s' (%s, %s kb/s) -> '%s'\n" \
             "$C_CYAN" "$C_RESET" "$filename" "${active_encoder^^}" "$bitrate_kbps" "$(basename "$dest_file")"
         COUNT_DRY=$(( COUNT_DRY + 1 ))
@@ -796,8 +876,10 @@ while IFS= read -r -d '' -u 9 src_file; do
                     else
                         probe_verdict="nur ${probe_delta#-}% kleiner, Schwelle ${gain_needed}%"
                     fi
+                    progress_clear
                     printf "%b[UEBERSPRUNGEN]%b %s (Probe %s vs. Original %s kb/s: %s)\n" \
                         "$C_YELLOW" "$C_RESET" "$filename" "$probe_kbps" "$ref_kbps" "$probe_verdict"
+                    mo_log "h265" "PROBE     $src_file ($probe_verdict)"
                     COUNT_PROBE_SKIPPED=$(( COUNT_PROBE_SKIPPED + 1 ))
                     add_to_cache "$src_file"
                     continue
@@ -809,7 +891,9 @@ while IFS= read -r -d '' -u 9 src_file; do
     fi
 
     # ---------- Encoding ----------
-    printf "\n%b>>> Verarbeite:%b %s (%s)\n" "$C_BOLD" "$C_RESET" "$src_file" "${active_encoder^^}"
+    progress_clear
+    printf "\n%b>>> [%d/%d] Verarbeite:%b %s (%s)\n" \
+        "$C_BOLD" "$IDX" "$TOTAL_TARGETS" "$C_RESET" "$src_file" "${active_encoder^^}"
     temp_file="${dest_file}.part.$$.${RANDOM}.mp4"
     err_log=$(mktemp /tmp/mo_enc_err_XXXXXX)
 
@@ -875,6 +959,7 @@ while IFS= read -r -d '' -u 9 src_file; do
             printf "%b[UNGUELTIG]%b '%s': Ausgabe unvollstaendig oder nicht lesbar. Verworfen, Original bleibt.\n" \
                 "$C_RED" "$C_RESET" "$filename" >&2
             rm -f "$temp_file"
+            mo_log_file "h265" "UNGUELTIG" "$src_file"
             COUNT_UNVERIFIED=$(( COUNT_UNVERIFIED + 1 ))
             save_stats
             continue
@@ -887,6 +972,7 @@ while IFS= read -r -d '' -u 9 src_file; do
                 printf "%b[BILD?]%b '%s': PSNR %s dB unter %s dB (Stichproben: %s)\n" \
                     "$C_YELLOW" "$C_RESET" "$filename" "$VISUAL_PSNR" "$VISUAL_PSNR_MIN" \
                     "${VISUAL_PSNR_ALL:-keine}" >&2
+                mo_log_file "h265" "BILD?" "$src_file" "" "" ""
                 COUNT_SUSPECT=$(( COUNT_SUSPECT + 1 ))
                 printf '%s\n' "$src_file" >> "$SUSPECT_LIST" 2>/dev/null || true
 
@@ -895,7 +981,8 @@ while IFS= read -r -d '' -u 9 src_file; do
                 if [[ "$VISUAL_STRICT" == true ]]; then
                     printf "            --strict-visual: verworfen, Original bleibt.\n" >&2
                     rm -f "$temp_file"
-                    COUNT_UNVERIFIED=$(( COUNT_UNVERIFIED + 1 ))
+                    mo_log_file "h265" "UNGUELTIG" "$src_file"
+            COUNT_UNVERIFIED=$(( COUNT_UNVERIFIED + 1 ))
                     save_stats
                     continue
                 fi
@@ -918,6 +1005,7 @@ while IFS= read -r -d '' -u 9 src_file; do
                 printf "%b│%b  Status:   Behalten. Original wird NICHT geloescht.\n" "$C_MAGENTA" "$C_RESET"
                 printf "%b└──────────────────────────────────────────────────────────────┘%b\n" "$C_MAGENTA" "$C_RESET"
                 COUNT_PROCESSED=$(( COUNT_PROCESSED + 1 ))
+                mo_log_file "h265" "GERETTET" "$src_file" "$(basename "$dest_file")" "$src_size" "$dest_size"
                 COUNT_SALVAGED=$(( COUNT_SALVAGED + 1 ))
                 [[ "$active_encoder" == "gpu" ]] && COUNT_GPU=$(( COUNT_GPU + 1 )) || COUNT_CPU=$(( COUNT_CPU + 1 ))
                 TOTAL_ORIG_BYTES=$(( TOTAL_ORIG_BYTES + src_size ))
@@ -931,6 +1019,7 @@ while IFS= read -r -d '' -u 9 src_file; do
                 printf "%b│%b  Original: %s -> Neu: %s\n" "$C_YELLOW" "$C_RESET" "$src_h" "$dest_h"
                 printf "%b│%b  Status:   Verworfen, da (+%s%%, +%s) groesser.\n" "$C_YELLOW" "$C_RESET" "$inc_pct" "$inc_h"
                 printf "%b└──────────────────────────────────────────────────────────────┘%b\n" "$C_YELLOW" "$C_RESET"
+                mo_log_file "h265" "VERWORFEN" "$src_file" "" "$src_size" "$dest_size"
                 COUNT_DISCARDED=$(( COUNT_DISCARDED + 1 ))
                 save_stats
                 continue
@@ -943,6 +1032,7 @@ while IFS= read -r -d '' -u 9 src_file; do
         [[ "$active_encoder" == "gpu" ]] && COUNT_GPU=$(( COUNT_GPU + 1 )) || COUNT_CPU=$(( COUNT_CPU + 1 ))
         TOTAL_ORIG_BYTES=$(( TOTAL_ORIG_BYTES + src_size ))
         TOTAL_NEW_BYTES=$(( TOTAL_NEW_BYTES + dest_size ))
+        mo_log_file "h265" "OK" "$src_file" "$(basename "$dest_file")" "$src_size" "$dest_size"
 
         saved_pct=$(pct_change "$src_size" "$dest_size")
         printf "%b┌──────────────────────────────────────────────────────────────┐%b\n" "$C_GREEN" "$C_RESET"
@@ -976,12 +1066,14 @@ while IFS= read -r -d '' -u 9 src_file; do
     else
         printf "%b[FEHLER]%b '%s'\n" "$C_RED" "$C_RESET" "$src_file" >&2
         rm -f "$temp_file"; [[ -n "$err_log" ]] && rm -f "$err_log"
+        mo_log_file "h265" "FEHLER" "$src_file"
         COUNT_FAILED=$(( COUNT_FAILED + 1 ))
         save_stats
     fi
     temp_file=""; err_log=""
 
 done 9< <(emit_targets)
+progress_clear
 
 # ------------------------------------------------------------------------------
 # ABSCHLUSS
@@ -1038,6 +1130,8 @@ if (( COUNT_SUSPECT > 0 )); then
     printf "          Liste: %s\n" "$SUSPECT_LIST"
     printf "          Bitte selbst ansehen. Die Messung kann sich irren.\n"
 fi
+
+mo_log "h265" "Auswertung: $COUNT_PROCESSED kodiert (GPU $COUNT_GPU / CPU $COUNT_CPU), $COUNT_SKIPPED uebersprungen, $COUNT_PROBE_SKIPPED per Probe, $COUNT_DISCARDED verworfen, $COUNT_FAILED fehlgeschlagen"
 
 resolve_pending_deletes
 rm -f "$STATS_FILE"

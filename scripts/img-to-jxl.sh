@@ -1,6 +1,21 @@
 #!/bin/bash
 # ==============================================================================
-# img-to-jxl.sh  -  JPG/PNG -> JXL (mit WebP-Fallback)
+# img-to-jxl.sh  -  JPG/PNG -> JPEG XL (WebP als Fallback)
+#
+# AUFBAU: KONFIGURATION -> STATISTIK -> WORKER -> xargs-Aufruf am Dateiende.
+#
+# Die Konvertierung laeuft parallel: find liefert die Dateien, xargs startet
+# pro Datei eine eigene Shell und ruft convert_image auf. Alles, was der
+# Worker braucht, muss deshalb exportiert sein (Variablen mit "export",
+# Funktionen mit "export -f") - sonst ist es dort schlicht nicht vorhanden.
+#
+# WICHTIGE INVARIANTEN beim Aendern:
+#   - Zielnamen werden per Lock-Verzeichnis beansprucht. "foto.jpg" und
+#     "foto.png" zeigen beide auf "foto.jxl"; ohne Lock wuerden zwei Worker
+#     dieselbe Datei schreiben.
+#   - Temp-Dateien tragen PID und Zufallszahl im Namen, damit sich parallele
+#     Worker nicht in die Quere kommen.
+#   - JPEG wird bit-exakt verlustfrei transcodiert. PNG_MODE betrifft nur PNG.
 # ==============================================================================
 set -euo pipefail
 
@@ -26,6 +41,8 @@ img-to-jxl.sh - konvertiert JPG/PNG nach JPEG XL (WebP als Fallback)
       --cjxl-threads <n> Threads pro cjxl-Prozess (Default: 1, da parallel)
       --verify-deep     Ausgabe vollstaendig dekodieren (langsamer, sicherer)
   -n, --dry-run         Nur anzeigen, nichts schreiben
+      --log <datei>      Protokolldatei
+      --no-log           Kein Protokoll schreiben
       --hold            Fenster am Ende offen halten (fuer Doppelklick-Start)
       --no-hold         Fenster nie offen halten
   -h, --help            Diese Hilfe
@@ -40,6 +57,10 @@ EOF
 SOURCE_DIR="${SOURCE_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 MAX_WORKERS="${MAX_WORKERS:-$(nproc)}"
+# Kein fester Default: die Vorbelegung haengt davon ab, ob ein
+# Zielverzeichnis angegeben wurde (siehe mo_apply_inplace_defaults).
+# Ein Wert aus Umgebung oder Konfigdatei gilt als ausdrueckliche Angabe.
+if [[ -n "${DELETE_ORIGINAL+x}" ]]; then DELETE_ORIGINAL_EXPLICIT=true; fi
 DELETE_ORIGINAL="${DELETE_ORIGINAL:-false}"
 FORCE_DELETE="${FORCE_DELETE:-false}"
 JXL_EFFORT="${JXL_EFFORT:-7}"
@@ -63,12 +84,14 @@ while (( $# > 0 )); do
         -e|--effort)      JXL_EFFORT="$2"; shift 2 ;;
         --png-mode)       PNG_MODE="$2"; shift 2 ;;
         --png-quality)    PNG_QUALITY="$2"; shift 2 ;;
-        --delete)         DELETE_ORIGINAL=true; shift ;;
-        --no-delete)      DELETE_ORIGINAL=false; shift ;;
+        --delete)         DELETE_ORIGINAL=true; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
+        --no-delete)      DELETE_ORIGINAL=false; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
         --force-delete)   FORCE_DELETE=true; shift ;;
         --cjxl-threads)   CJXL_THREADS="$2"; shift 2 ;;
         --verify-deep)    VERIFY_DEEP=true; shift ;;
         -n|--dry-run)     DRY_RUN=true; shift ;;
+        --log)            MO_LOG_FILE="$2"; shift 2 ;;
+        --no-log)         MO_LOG=false; shift ;;
         --hold)           MO_HOLD=1; shift ;;
         --no-hold)        MO_HOLD=0; shift ;;
         -h|--help)        usage; exit 0 ;;
@@ -102,6 +125,10 @@ if [[ -n "$OUTPUT_DIR" ]]; then
     OUTPUT_DIR="${OUTPUT_DIR%/}"
     [[ "$DRY_RUN" == true ]] || mkdir -p "$OUTPUT_DIR"
 fi
+
+mo_apply_inplace_defaults "$OUTPUT_DIR"
+export MO_LOG_TAG="img"
+mo_log_init "img-to-jxl.sh" "$SOURCE_DIR" "$OUTPUT_DIR"
 
 require_cmds cjxl cwebp file || exit 1
 [[ "$PNG_MODE" == "lossless" || "$PNG_MODE" == "lossy" ]] || {
@@ -199,6 +226,7 @@ EOF
     fi
     printf "%b╚══════════════════════════════════════════════════════════════╝%b\n" "$C_BLUE" "$C_RESET"
 
+    mo_log "img" "Auswertung: $TOTAL_PROCESSED konvertiert, $TOTAL_SKIPPED uebersprungen, $TOTAL_FAILED fehlgeschlagen, $(format_bytes "$TOTAL_ORIG_BYTES") -> $(format_bytes "$TOTAL_NEW_BYTES")"
     resolve_pending_deletes
 }
 
@@ -248,6 +276,7 @@ convert_image() {
     local lockdir="$target_folder/.${stem}.molock"
     if ! mkdir "$lockdir" 2>/dev/null; then
         echo "COLLISION" >> "$CURRENT_RUN_LOG"
+        mo_log_file "$MO_LOG_TAG" "KONFLIKT" "$src"
         printf "%b[KONFLIKT]%b '%s': Zielname '%s' wird bereits belegt, Original bleibt.\n" \
             "$C_YELLOW" "$C_RESET" "$file" "$(basename "$dest_jxl")" >&2
         return 0
@@ -257,6 +286,57 @@ convert_image() {
     _convert_image_locked || rc=$?
     rmdir "$lockdir" 2>/dev/null || true
     return $rc
+}
+
+# Behandelt eine Datei, deren Endung nicht zum tatsaechlichen Inhalt passt.
+#
+# In-Place: die Quelldatei wird umbenannt, das ist ja der Zweck.
+# Mit Zielverzeichnis: die QUELLE BLEIBT UNANGETASTET. Alles, was korrigiert
+# werden soll, landet unter dem richtigen Namen im Zielverzeichnis. Sonst
+# waere ein getrenntes Zielverzeichnis wirkungslos, weil die Quelle doch
+# veraendert wuerde.
+#
+# Rueckgabe: 0 = erledigt (Aufrufer soll zurueckkehren)
+#            1 = weiterverarbeiten, Variablen src/file/ext wurden angepasst
+_handle_wrong_extension() {
+    local real_mime="$1" correct_ext="$2"
+    local cand n=1
+
+    if [[ -n "${OUTPUT_DIR:-}" ]]; then
+        cand="$target_folder/${stem}.${correct_ext}"
+        while [[ -e "$cand" ]]; do cand="$target_folder/${stem}_${n}.${correct_ext}"; n=$(( n + 1 )); done
+        printf "%b[KORREKTUR]%b '%s' (%s) -> Ziel '%s', Quelle unveraendert\n" \
+            "$C_MAGENTA" "$C_RESET" "$file" "$real_mime" "$(basename "$cand")"
+
+        case "$correct_ext" in
+            webp|jxl|gif)
+                # Bereits ein modernes Format: unveraendert uebernehmen.
+                cp -p "$src" "$cand"
+                mo_log_file "$MO_LOG_TAG" "KORREKTUR" "$src" "$(basename "$cand")"
+                echo "SKIP" >> "$CURRENT_RUN_LOG"
+                return 0 ;;
+            png|jpg)
+                # Weiterverarbeiten, aber aus der unveraenderten Quelle.
+                ext="$correct_ext"
+                return 1 ;;
+        esac
+        echo "SKIP" >> "$CURRENT_RUN_LOG"
+        return 0
+    fi
+
+    # In-Place: umbenennen
+    cand="$dir/${stem}.${correct_ext}"
+    while [[ -e "$cand" ]]; do cand="$dir/${stem}_${n}.${correct_ext}"; n=$(( n + 1 )); done
+    mv "$src" "$cand"
+    printf "%b[KORREKTUR]%b '%s' (%s) -> '%s'\n" \
+        "$C_MAGENTA" "$C_RESET" "$file" "$real_mime" "$(basename "$cand")"
+    mo_log_file "$MO_LOG_TAG" "KORREKTUR" "$src" "$(basename "$cand")"
+
+    case "$correct_ext" in
+        webp|jxl|gif) echo "SKIP" >> "$CURRENT_RUN_LOG"; return 0 ;;
+    esac
+    src="$cand"; file="$(basename "$src")"; ext="$correct_ext"
+    return 1
 }
 
 # Innere Funktion: nutzt die lokalen Variablen der Huelle (dynamic scoping).
@@ -277,6 +357,7 @@ _convert_image_locked() {
         new_size=$(stat -c%s "$dest" 2>/dev/null || echo 0)
         echo "SUCCESS $orig_size $new_size" >> "$CURRENT_RUN_LOG"
         [[ "$DELETE_ORIGINAL" == true ]] && safe_remove "$src"
+        mo_log_file "$MO_LOG_TAG" "OK" "$src" "$(basename "$dest")" "$orig_size" "$new_size"
         printf "%b%s%b '%s' -> '%s'\n" "$C_GREEN" "$label" "$C_RESET" "$file" "$(basename "$dest")"
         return 0
     }
@@ -298,21 +379,7 @@ _convert_image_locked() {
                 image/jxl)  correct_ext="jxl"  ;; image/gif) correct_ext="gif" ;;
             esac
             if [[ -n "$correct_ext" ]]; then
-                local cand="$dir/${stem}.${correct_ext}" n=1
-                while [[ -e "$cand" ]]; do cand="$dir/${stem}_${n}.${correct_ext}"; n=$(( n + 1 )); done
-                mv "$src" "$cand"
-                printf "%b[KORREKTUR]%b '%s' (%s) -> '%s'\n" \
-                    "$C_MAGENTA" "$C_RESET" "$file" "$real_mime" "$(basename "$cand")"
-                if [[ "$correct_ext" == "webp" || "$correct_ext" == "jxl" ]]; then
-                    if [[ -n "${OUTPUT_DIR:-}" ]]; then
-                        cp -p "$cand" "$target_folder/"
-                        [[ "$DELETE_ORIGINAL" == true ]] && safe_remove "$cand"
-                    fi
-                    echo "SKIP" >> "$CURRENT_RUN_LOG"; return 0
-                fi
-                if [[ "$correct_ext" == "png" ]]; then
-                    src="$cand"; file="$(basename "$src")"; ext="png"
-                fi
+                _handle_wrong_extension "$real_mime" "$correct_ext" && return 0
             fi
         fi
         if [[ "$ext" != "png" ]]; then
@@ -345,14 +412,12 @@ _convert_image_locked() {
                 image/jxl)  correct_ext="jxl" ;; image/gif)  correct_ext="gif"  ;;
             esac
             if [[ -n "$correct_ext" ]]; then
-                local cand="$dir/${stem}.${correct_ext}" n=1
-                while [[ -e "$cand" ]]; do cand="$dir/${stem}_${n}.${correct_ext}"; n=$(( n + 1 )); done
-                mv "$src" "$cand"
-                printf "%b[KORREKTUR]%b '%s' (%s) -> '%s'\n" \
-                    "$C_MAGENTA" "$C_RESET" "$file" "$real_mime" "$(basename "$cand")"
-                if [[ "$correct_ext" == "jpg" ]]; then
-                    if cjxl "$cand" "$temp_jxl" -e "$JXL_EFFORT" --num_threads="$CJXL_THREADS" --quiet 2>/dev/null && [[ -s "$temp_jxl" ]]; then
-                        src="$cand"; file="$(basename "$cand")"
+                _handle_wrong_extension "$real_mime" "$correct_ext" && return 0
+                # Es ist in Wahrheit ein JPEG: verlustfrei transcodieren.
+                if [[ "$ext" == "jpg" ]]; then
+                    if cjxl "$src" "$temp_jxl" -e "$JXL_EFFORT" \
+                            --num_threads="$CJXL_THREADS" --quiet 2>/dev/null \
+                       && [[ -s "$temp_jxl" ]]; then
                         _commit "$temp_jxl" "$dest_jxl" "[JXL-LOSSLESS]" && return 0
                         return 1
                     fi
@@ -371,6 +436,7 @@ _convert_image_locked() {
         fi
         rm -f "$temp_webp"
         printf "%b[FEHLER]%b Konvertierung fehlgeschlagen: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
+        mo_log_file "$MO_LOG_TAG" "FEHLER" "$src"
         echo "FAIL" >> "$CURRENT_RUN_LOG"; return 1
     fi
 
@@ -379,7 +445,7 @@ _convert_image_locked() {
 
 export SOURCE_DIR OUTPUT_DIR SKIP_EXISTING DELETE_ORIGINAL
 export JXL_EFFORT PNG_MODE PNG_QUALITY WEBP_FALLBACK_METHOD CJXL_THREADS
-export -f convert_image _convert_image_locked
+export -f convert_image _convert_image_locked _handle_wrong_extension
 
 exit_code=0
 find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) -print0 |

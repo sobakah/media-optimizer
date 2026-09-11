@@ -1,21 +1,32 @@
 # Media Optimizer Suite
 
-Eine Bash-Skript-Sammlung zur automatisierten Konvertierung und Größenreduzierung von Mediendateien (Bilder, GIFs und Videos).
+Bash-Skripte zur automatisierten Konvertierung und Größenreduzierung von
+Bildern, GIFs und Videos. Ein Orchestrator ruft die Unter-Skripte
+nacheinander auf, jedes davon läuft auch einzeln.
+
+## Inhalt
+
+- [Kernfunktionen](#kernfunktionen) · [Systemanforderungen](#systemanforderungen) · [Aufbau](#aufbau)
+- [Nutzung](#nutzung) · [Skripte und Optionen](#skripte-und-optionen) · [Konfiguration](#konfiguration)
+- [Beachtenswertes](#beachtenswertes) · [Formatwahl](#formatwahl-was-lohnt-sich) · [Fehlersuche](#fehlersuche) · [Grenzen](#bekannte-grenzen)
 
 ## Kernfunktionen
 
-* **Zentrale Steuerung:** Das Skript `media-optimizer.sh` fungiert als Orchestrator, fragt Parameter ab und ruft die jeweiligen Unter-Skripte sequenziell auf.
-* **Resume-Funktion:** Vorgänge können mit `Strg+C` abgebrochen werden. Der aktuelle Fortschritt, Datei-Statistiken und gewählte Parameter werden in `.env`-Dateien gespeichert, sodass der Lauf später nahtlos fortgesetzt werden kann.
-* **Sicheres Löschen:** Originaldateien werden nach erfolgreicher Konvertierung über `gio trash` oder `trash-cli` in den Desktop-Papierkorb verschoben, statt sie direkt per `rm` zu löschen. Schlägt der Papierkorb fehl, wird nichts gelöscht, sondern am Ende des Laufs einmal nachgefragt.
-* **Verifikation vor dem Löschen:** Eine Zieldatei wird erst akzeptiert, wenn sie tatsächlich lesbar ist, bei Videos zusätzlich mit Abgleich der Laufzeit gegen das Original.
-* **Dateiendungs-Korrektur (Magic Bytes):** Das Skript prüft auf Wunsch vor der Verarbeitung den MIME-Type der Dateien (z. B. ein als `.jpg` benanntes WebP-Bild) und korrigiert die Dateiendung bei Abweichungen automatisch.
-* **Dateisystem-Spiegelung:** Zieldateien können In-Place (im Quellverzeichnis) oder unter Beibehaltung der Unterordner-Struktur in einem separaten Zielverzeichnis abgelegt werden.
-* **Dry-Run:** Jeder Aufruf lässt sich mit `-n` vorab durchspielen, ohne dass geschrieben oder gelöscht wird.
-* **Konfigurationsdatei:** Wiederkehrende Einstellungen stehen in `media-optimizer.conf` statt im Skriptkopf.
+* **Zentrale Steuerung.** `media-optimizer.sh` zählt die Dateitypen im
+  Quellordner und startet die passenden Unter-Skripte.
+* **Fortsetzbar.** `Strg+C` speichert Fortschritt, Statistiken und Parameter;
+  der nächste Start setzt nahtlos fort.
+* **Sicheres Löschen.** Originale wandern über `gio trash` oder `trash-cli` in
+  den Papierkorb. Schlägt das fehl, wird nichts gelöscht, sondern am Ende
+  einmal nachgefragt.
+* **Verifikation vor dem Löschen.** Eine Ausgabe wird erst akzeptiert, wenn sie
+  lesbar ist; bei Videos zusätzlich mit Abgleich von Laufzeit und Bildinhalt.
+* **Dateisystem-Spiegelung.** In-Place oder in ein separates Zielverzeichnis
+  unter Beibehaltung der Ordnerstruktur.
+* **Dry-Run.** `-n` spielt jeden Aufruf durch, ohne zu schreiben oder zu löschen.
+* **Konfigurationsdatei** statt Einstellungen im Skriptkopf.
 
 ## Systemanforderungen
-
-Folgende Pakete müssen auf dem System installiert sein:
 
 **Fedora / RHEL / Bazzite:**
 ```bash
@@ -27,309 +38,390 @@ sudo dnf install ffmpeg libjxl jxl-tools libwebp-tools file trash-cli libva-util
 sudo apt install ffmpeg libjxl-tools webp file trash-cli vainfo
 ```
 
-*(Hinweis: `gio` ist in den meisten GNOME/KDE-Umgebungen standardmäßig enthalten. `trash-cli` dient als Fallback. `libva-utils` bzw. `vainfo` wird nur zur Fehlersuche beim GPU-Encoding gebraucht.)*
+`gio` ist in GNOME und KDE enthalten, `trash-cli` dient als Ersatz.
+`libva-utils` bzw. `vainfo` wird nur zur Fehlersuche beim GPU-Encoding
+gebraucht. Für AVIF braucht ffmpeg einen AV1-Encoder (`libsvtav1` oder
+`libaom-av1`).
 
-Alle Abhängigkeiten werden beim Start einmal geprüft. Fehlt etwas, bricht der Orchestrator sofort ab, statt nach halbem Durchlauf zu scheitern.
+Der Orchestrator prüft alle Abhängigkeiten beim Start und bricht ab, statt
+nach halbem Durchlauf zu scheitern.
 
 ## Aufbau
 
 ```
-media-optimizer.sh          Orchestrator, Resume, Pre-Flight
+media-optimizer.sh          Orchestrator: Pre-Flight, Stufen, Resume
 media-optimizer.conf        Einstellungen (optional)
-scripts/img-to-jxl.sh       JPG/PNG -> JXL, WebP als Fallback
-scripts/gif-to-webp.sh      GIF -> animiertes WebP
-scripts/h264-to-h265.sh     H.264-MP4 -> HEVC
-scripts/verify-output.sh    Zielverzeichnis gegen die Originale prüfen
-scripts/lib/common.sh       gemeinsame Helfer, wird gesourct
+scripts/img-to-jxl.sh       JPG/PNG  -> JXL, WebP als Fallback
+scripts/gif-to-webp.sh      GIF      -> animiertes WebP oder AVIF
+scripts/h264-to-h265.sh     H.264    -> HEVC (GPU oder CPU)
+scripts/video-to-avif.sh    kurze tonlose Videos -> AVIF  (optional)
+scripts/verify-output.sh    Ausgaben gegen die Originale prüfen
+scripts/lib/common.sh       gemeinsame Funktionen, wird gesourct
 ```
 
-## Skript-Übersicht
+Die drei ersten Skripte laufen im normalen Durchlauf. `video-to-avif.sh` ist
+eine abschaltbare Zusatzstufe, standardmäßig aus (`--avif` bzw.
+`ENABLE_AVIF_STAGE=true`). `verify-output.sh` wird immer einzeln aufgerufen.
 
-### 1. `media-optimizer.sh` (Orchestrator)
-
-Analysiert den angegebenen Quellordner, zählt die zu verarbeitenden Dateitypen und startet die entsprechenden Unter-Skripte. Führt optional den Pre-Flight-Check zur Korrektur von Dateiendungen aus und warnt vor gleichnamigen Dateien mit verschiedenen Endungen, da `foo.jpg` und `foo.png` beide auf `foo.jxl` zeigen würden.
-
-```
-  -i, --input  <dir>   Quellverzeichnis
-  -o, --output <dir>   Zielverzeichnis (leer = In-Place)
-      --delete         Originale nach Erfolg in den Papierkorb
-      --no-delete      Originale behalten (Default)
-      --force-delete   Falls Papierkorb fehlschlägt: ohne Rückfrage rm
-      --verify-deep    Bildausgaben vollständig dekodieren (langsamer)
-      --preflight      Dateiendungen vorab per MIME-Typ korrigieren
-  -y, --yes            Keine Rückfragen, Standardwerte verwenden
-  -n, --dry-run        Nur anzeigen, nichts schreiben
-      --reset          Gespeicherten Zustand verwerfen und neu starten
-```
-
-### 2. `img-to-jxl.sh` (Bilder)
-
-Konvertiert Bilder parallel (`xargs -P`).
-
-* **JPG/JPEG:** Verlustfreies Transcoding zu JPEG XL (`cjxl`), bit-exakt umkehrbar. Keine Qualitätseinstellung wirkt auf diesen Pfad.
-* **PNG:** Konvertierung zu JPEG XL, verlustfrei oder mit einstellbarer Qualität. Schlägt das fehl, erfolgt ein Fallback auf verlustfreies WebP (`cwebp -lossless -z 9`).
-* Jeder Zielname wird per Lock-Verzeichnis exklusiv beansprucht, damit zwei Worker nicht gleichzeitig dieselbe Ausgabe schreiben.
-
-```
-  -j, --workers <n>      Parallele Worker (Default: nproc)
-  -e, --effort  <1-9>    JXL Effort (Default: 7)
-      --png-mode  <m>    lossless | lossy   (Default: lossless)
-      --png-quality <q>  Nur bei --png-mode lossy (Default: 90)
-      --cjxl-threads <n> Threads pro cjxl-Prozess (Default: 1, da parallel)
-      --verify-deep      Ausgabe vollständig dekodieren
-```
-
-`-q` bildet intern auf eine Butteraugli-Distanz ab. Gemessen an einem 1080p-Testbild, Prozentwerte relativ zur PNG-Größe:
-
-| `-q` | Distanz | fotoähnlich | Screenshot/Text |
-|---|---|---|---|
-| 75 | d2.35 | 7 % | 19 % |
-| 90 | d1.00, visuell verlustfrei | 12 % | 33 % |
-| 93 | d0.73 | 14 % | 39 % |
-| verlustfrei | d0 | 52 % | 55 % |
-
-### 3. `gif-to-webp.sh` (Animierte GIFs)
-
-Wandelt animierte GIFs verlustfrei in animierte WebP-Dateien um (`gif2webp`). Die Verarbeitung erfolgt ebenfalls parallel über `xargs`. Ergebnisse, die größer als das Original wären, werden verworfen.
-
-```
-  -j, --workers <n>   Parallele Worker (Default: nproc)
-  -m, --method  <0-6> Kompressionsstufe (Default: 6)
-      --keep-larger   Ergebnis auch behalten, wenn es größer ist
-      --verify-deep   Ausgabe mit webpinfo prüfen
-```
-
-### 4. `h264-to-h265.sh` (Videos)
-
-Re-Encoder für AVC/H.264-Videos zu HEVC/H.265.
-
-* **Encoder-Auswahl:** Wechselt abhängig von einer definierten Bitraten-Schwelle automatisch zwischen Hardware-Encoding (VA-API) und Software-Encoding (libx265). Beim Start wird einmal geprüft, ob HEVC über VA-API überhaupt funktioniert.
-* **Probe-Slice:** Konvertiert optional vorab ein Segment aus der Dateimitte und vergleicht es mit demselben Ausschnitt des Originals, beides ohne Audio, gleiche Länge, über die Dateigröße gemessen. Übersprungen wird, sobald weniger als 10 % Ersparnis zu erwarten sind.
-* **Fehlertoleranz:** Erkennt Abbruchfehler durch beschädigte Quelldateien. Intakte Frames werden in eine lesbare Zieldatei gerettet. Bei geretteten Dateien bleibt das Original erhalten, auch mit `--delete`.
-* **Größenprüfung:** Resultierende Dateien, die größer als das Original sind, werden automatisch verworfen.
-* **Kompatibilität:** `-tag:v hvc1` und `-movflags +faststart` für Abspielbarkeit in Apple-Playern und beim Streaming.
-* **Bildkontrolle:** Nach dem Encoding werden an mehreren Stellen Einzelbilder aus Quelle und Ziel per PSNR verglichen, denn die Laufzeitprüfung allein erkennt zerstörte Farbformate nicht (ein grünes Bild hat die korrekte Dauer). Bewertet wird die **beste** Stichprobe: einzelne schlechte Werte entstehen durch Zeitversatz beim Suchen und sind kein Defekt. Standardmäßig wird nur gewarnt und die Datei behalten, die Liste landet in `.video_verdaechtig.txt`. `--strict-visual` verwirft stattdessen, `--no-verify-visual` schaltet die Prüfung ab.
-* **Pixelformat:** Auf der GPU wird fest mit `format=nv12` gearbeitet, also 8 Bit. 10-Bit-Quellen werden reduziert. `--gpu-10bit` schaltet auf `p010` plus `-profile:v main10` um; beides gehört zwingend zusammen, sonst entsteht ein grünes Bild.
-
-```
-      --encoder <mode>     auto | gpu | cpu   (Default: auto)
-      --threshold <kbps>   Schwelle CPU/GPU im auto-Modus (Default: 3500)
-      --qp <n>             GPU CQP (Default: 26)
-      --crf <n>            CPU CRF (Default: 22)
-      --preset <p>         CPU x265-Preset (Default: medium)
-      --min-size <mb>      Dateien darunter überspringen (Default: 5)
-      --no-probe           Kein Testslice vorab
-      --probe-margin <p>   Überspringen ab p % des Originals (Default: 90)
-                           100 = nur wenn die Ausgabe wirklich größer wird
-      --probe-duration <s> Länge des Testslice (Default: 10)
-      --keep-larger        Größere Ergebnisse trotzdem behalten
-      --gpu-device <p>     VAAPI-Render-Node, oder "auto"
-      --force-gpu          Startprüfung überspringen
-      --x265-params <s>    x265-Parameter (Default: aq-mode=3:no-sao=1)
-      --no-faststart       moov-Atom nicht nach vorn schreiben
-      --rename-inplace     _h265-Suffix nach dem Löschen des Originals entfernen
-      --from-list <datei>  Nur die dort aufgeführten Quelldateien verarbeiten
-      --no-cache           Cache-Datei ignorieren
-```
-
-`--from-list auto` nimmt `.defekte_videos.txt` aus dem Zielverzeichnis, falls
-vorhanden, und läuft sonst normal durch. Liegt eine Liste vor, ohne dass sie
-angefordert wurde, weist das Skript darauf hin, wechselt aber nicht von
-selbst auf die Teilmenge: eine veraltete Liste würde den restlichen Bestand
-stillschweigend ausblenden. Wer das trotzdem als Standard will, setzt
-`AUTO_FIX_LIST=true` in der Konfig.
-
-Damit die Liste nicht veralten kann, verschiebt `verify-output.sh --run` sie
-nach der Reparatur nach `.defekte_videos.erledigt-<zeitstempel>.txt`.
-
-`--from-list` erwartet eine Datei mit einem Quellpfad pro Zeile (`#` ist
-Kommentar). Cache und vorhandene Ausgaben werden dabei ignoriert, weil die
-Auswahl ausdrücklich getroffen wurde: die genannten Dateien werden neu
-erzeugt und überschrieben. Fehlende Pfade werden gemeldet und übersprungen.
-
-Im In-Place-Modus heißt die Ausgabe `name_h265.mp4`, weil Quelle und Ziel
-sonst denselben Pfad hätten. Der Suffix bleibt standardmäßig stehen, auch
-wenn das Original gelöscht wurde. `--rename-inplace` bzw.
-`RENAME_INPLACE=true` benennt die Datei danach zurück auf `name.mp4`.
-
-Umbenannt wird nur, wenn der Pfad des Originals frei ist. Ohne `--delete`,
-bei geretteten Dateien und wenn der Papierkorb fehlschlug, bleibt das
-Original liegen und der Suffix wird beibehalten, statt die Quelldatei zu
-überschreiben. Nachteil der Option: nach dem Umbenennen ist am Dateinamen
-nicht mehr erkennbar, welche Videos konvertiert wurden.
-
-### 5. `verify-output.sh` (Kontrolle und Reparatur)
-
-Prüft ein Zielverzeichnis gegen das Quellverzeichnis. Die Zuordnung ist der
-relative Pfad, weil die Ordnerstruktur gespiegelt und der Dateiname
-beibehalten wird. Geprüft wird in drei Stufen: ist die Datei lesbar, stimmt
-die Laufzeit, passt der Bildinhalt (PSNR-Stichproben).
-
-```
-  -i, --input   <dir>   Quellverzeichnis (die Originale)
-  -o, --output  <dir>   Zielverzeichnis (die konvertierten Dateien)
-  -j, --workers <n>     Parallele Prüfungen (Default: nproc)
-      --psnr-min <db>   Schwelle für „zerstört" (Default: 20)
-      --samples <n>     Stichproben pro Datei (Default: 3)
-      --duration-tol <p> Erlaubte Laufzeitabweichung in Prozent (Default: 2)
-      --fix             Defekte Ausgaben löschen und aus dem Cache nehmen
-      --run             Nach --fix h264-to-h265.sh neu starten
-```
-
-Die drei Meldungen bedeuten:
-
-| Status | Bedeutung |
-|---|---|
-| `[UNLESBAR]` | `ffprobe` findet keinen Videostream, die Datei ist unbrauchbar |
-| `[DAUER]` | Die Laufzeit weicht um mehr als die Toleranz vom Original ab, oder die Ausgabe meldet gar keine Dauer |
-| `[BILD?]` | Laufzeit stimmt, aber der Bildvergleich liegt unter der PSNR-Schwelle |
-
-`[DAUER]` deutet meist auf eine abgeschnittene Datei hin, etwa bei voller
-Platte. Es trifft aber auch **gerettete Dateien**: wenn der Encoder eine
-beschädigte Quelle nur teilweise lesen konnte, ist die Ausgabe legitim
-kürzer. Solche Dateien sind kein Defekt und würden bei `--fix` unnötig
-gelöscht und neu erzeugt, mit demselben Ergebnis. Die Meldung nennt deshalb
-beide Laufzeiten, und `--duration-tol` hebt die Grenze an.
-
-Ein niedriger PSNR ist ein **Verdacht, kein Beweis**. Mit `--keep-samples <dir>`
-werden die verglichenen Einzelbilder abgelegt, sodass sich die Meldung selbst
-beurteilen lässt. Ohne `--fix` wird nur berichtet und nichts verändert. Mit `--fix` werden die
-defekten Ausgaben gelöscht und die zugehörigen Quelldateien aus
-`.video_conversion_cache.txt` entfernt (mit `.bak`-Sicherung), sodass ein
-normaler Lauf genau diese Dateien neu erzeugt und die intakten überspringt.
-`--run` startet ihn direkt, und zwar mit `--from-list` auf der Defektliste.
-Es wird also nur wiederholt, was gemeldet wurde, statt den ganzen Baum
-erneut abzugehen.
-
-Bei vorhandenem Cache ist der Zeitgewinn gering, weil gecachte Dateien
-ohnehin kein `ffprobe` auslösen. Fehlt der Cache, ist er deutlich: in einem
-Test mit 30 Dateien und 2 Defekten 14 statt 70 `ffprobe`-Aufrufe und
-2,8 statt 5,8 Sekunden. Der eigentliche Vorteil ist aber, dass ausschließlich
-die gemeldeten Dateien angefasst werden und die Reparatur auch dann greift,
-wenn die defekte Ausgabe noch an ihrem Platz liegt.
-
-Ausgaben ohne passendes Original werden nur gezählt und nicht angetastet.
-Ein identisches Quell- und Zielverzeichnis wird abgelehnt, das Skript ist
-nicht für den In-Place-Modus gedacht.
-
-```bash
-./scripts/verify-output.sh -i ~/Videos -o /mnt/archiv             # nur prüfen
-./scripts/verify-output.sh -i ~/Videos -o /mnt/archiv --fix --run # reparieren
-```
+Die Stufen laufen in dieser Reihenfolge, die Nummerierung passt sich an:
+Bilder, GIFs, AVIF, Videos. AVIF steht **vor** dem HEVC-Encoding, damit kurze
+tonlose Clips als AVIF enden; die HEVC-Stufe überspringt danach jede Quelle,
+für die bereits eine AVIF-Ausgabe mit gleichem Namen existiert.
 
 ## Nutzung
 
-### Gesamter Durchlauf (Empfohlen)
-
-Startet die Parameter-Abfrage für alle Dateitypen:
-
 ```bash
-./media-optimizer.sh /pfad/zum/input /pfad/zum/output
+./media-optimizer.sh -n ~/Bilder                    # erst ansehen
+./media-optimizer.sh ~/Bilder                       # In-Place
+./media-optimizer.sh ~/Bilder /mnt/archiv --delete  # Ziel + Originale entsorgen
 ```
 
-*(Wird `/pfad/zum/output` weggelassen, speichert das Skript die Dateien im Quellordner.)*
-
-Erst einmal ansehen, was passieren würde:
-
-```bash
-./media-optimizer.sh -n /pfad/zum/input
-```
-
-### Standalone-Nutzung
-
-Die Unter-Skripte können einzeln aufgerufen werden. Wenn sie nicht über den Orchestrator gestartet werden, rufen sie ein eigenes interaktives Setup-Menü auf:
+Ohne Zielverzeichnis wird im Quellordner gearbeitet. Unter-Skripte lassen sich
+einzeln aufrufen und zeigen dann ein eigenes Menü:
 
 ```bash
-./scripts/h264-to-h265.sh /pfad/zu/videos
-./scripts/h264-to-h265.sh -i /pfad/zu/videos --encoder cpu --crf 20
+./scripts/h264-to-h265.sh ~/Videos
+./scripts/h264-to-h265.sh -i ~/Videos --encoder cpu --crf 20
 ```
 
-Positionsargumente und Optionen lassen sich mischen. `--help` gibt es bei jedem Skript.
+Positionsargumente und Optionen sind mischbar, `--help` gibt es überall.
+
+## Skripte und Optionen
+
+Optionen, die in mehreren Skripten gleich funktionieren:
+
+| Option | Wirkung |
+|---|---|
+| `-i, --input <dir>` | Quellverzeichnis |
+| `-o, --output <dir>` | Zielverzeichnis, leer = In-Place |
+| `-j, --workers <n>` | parallele Worker (Default: `nproc`) |
+| `--delete` / `--no-delete` | Originale in den Papierkorb (Default: siehe unten) |
+| `--force-delete` | bei fehlgeschlagenem Papierkorb ohne Rückfrage `rm` |
+| `--keep-larger` | Ergebnis auch behalten, wenn es größer ist |
+| `-n, --dry-run` | nur anzeigen |
+| `--hold` / `--no-hold` | Fenster am Ende offen halten |
+| `-h, --help` | Hilfe |
+
+### `media-optimizer.sh` (Orchestrator)
+
+Zählt die Dateitypen, startet die Stufen und verwaltet den Resume-Zustand.
+Warnt vorab, wenn gleichnamige Dateien mit verschiedenen Endungen vorliegen
+(`foo.jpg` und `foo.png` zeigen beide auf `foo.jxl`).
+
+```
+      --preflight      Dateiendungen vorab per MIME-Typ korrigieren
+      --verify-deep    Bildausgaben vollständig dekodieren (langsamer)
+      --avif           Zusatzstufe: kurze, tonlose Videos nach AVIF
+      --no-avif        diese Stufe überspringen (Default)
+      --log <datei>    Protokolldatei (Default: media-optimizer.log daneben)
+      --no-log         kein Protokoll schreiben
+  -y, --yes            keine Rückfragen, Standardwerte verwenden
+      --reset          gespeicherten Zustand verwerfen
+```
+
+### `img-to-jxl.sh` (Bilder)
+
+JPEG wird bit-exakt verlustfrei nach JXL transcodiert. PNG wird verlustfrei
+oder mit einstellbarer Qualität konvertiert; schlägt das fehl, greift ein
+verlustfreier WebP-Fallback.
+
+Passt die Endung nicht zum Inhalt (etwa ein WebP mit `.jpg`), hängt die
+Behandlung vom Modus ab. **Mit Zielverzeichnis bleibt die Quelle
+unangetastet**: die Datei landet unter dem richtigen Namen im Ziel. In-Place
+wird die Quelldatei umbenannt, denn dort ist genau das der Zweck. Dasselbe
+gilt für `--preflight` im Orchestrator, der mit Zielverzeichnis nur meldet
+statt umzubenennen.
+
+```
+  -e, --effort <1-9>     JXL Effort (Default: 7)
+      --png-mode <m>     lossless | lossy (Default: lossless)
+      --png-quality <q>  nur bei lossy (Default: 90)
+      --cjxl-threads <n> Threads je cjxl-Prozess (Default: 1)
+      --verify-deep      Ausgabe vollständig dekodieren
+```
+
+### `gif-to-webp.sh` (animierte GIFs)
+
+Wandelt GIFs in animiertes WebP (verlustfrei) oder AVIF (kleiner, verlustbehaftet).
+
+```
+  -m, --method <0-6>  WebP-Kompressionsstufe (Default: 6)
+      --target <f>    webp | avif (Default: webp)
+      --avif-crf <n>  AV1-Qualität bei --target avif (Default: 20)
+      --verify-deep   Ausgabe mit webpinfo prüfen
+```
+
+### `h264-to-h265.sh` (Videos)
+
+Reencoder von AVC/H.264 nach HEVC. Wählt anhand der Quell-Bitrate zwischen
+Hardware-Encoding (VA-API oder Vulkan) und Software-Encoding (libx265).
+
+```
+      --encoder <mode>     auto | gpu | cpu (Default: auto)
+      --threshold <kbps>   Schwelle CPU/GPU im auto-Modus (Default: 3500)
+      --qp <n>             GPU-Qualität (Default: 26)
+      --crf <n>            CPU CRF (Default: 22)
+      --preset <p>         x265-Preset (Default: medium)
+      --x265-params <s>    x265-Parameter (Default: aq-mode=3:no-sao=1)
+      --min-size <mb>      Dateien darunter überspringen (Default: 5)
+      --no-probe           kein Testslice vorab
+      --probe-margin <p>   überspringen ab p % des Originals (Default: 90)
+      --probe-duration <s> Länge des Testslice (Default: 10)
+      --from-list <datei|auto>  nur die gelisteten Quelldateien
+      --rename-inplace     _h265-Suffix nach dem Löschen des Originals entfernen
+      --hevc-tag <t>       Container-Tag, z. B. hvc1 (Default: keiner)
+      --gpu-codec <c>      hevc_vaapi | av1_vaapi | hevc_vulkan
+      --gpu-device <p>     Render-Node oder "auto"
+      --rc-mode <m>        CQP | VBR | ICQ | QVBR | CBR (Default: CQP)
+      --bf <n>             max. B-Frames auf der GPU
+      --low-power          VAAPI Low-Power-Encoder
+      --force-gpu          Startprüfung überspringen
+      --gpu-selftest <datei>  Optionsvarianten durchprobieren, dann beenden
+      --gpu-10bit          10-Bit-Quellen in 10 Bit kodieren
+      --no-verify-visual   keinen PSNR-Vergleich
+      --strict-visual      auffällige Ausgaben verwerfen statt nur warnen
+      --no-faststart       moov-Atom nicht nach vorn schreiben
+      --no-cache           Cache-Datei ignorieren
+```
+
+Wesentliche Abläufe:
+
+* **Probe-Slice.** Vor dem Encoding wird ein Ausschnitt aus der Dateimitte
+  kodiert und mit demselben Ausschnitt des Originals verglichen (beides ohne
+  Audio, gleiche Länge, über die Dateigröße gemessen). Übersprungen wird,
+  sobald weniger als `100 − --probe-margin` Prozent Ersparnis zu erwarten sind.
+* **Fehlertoleranz.** Meldet der Decoder Korruption, werden die intakten
+  Frames gerettet. Bei solchen Dateien bleibt das Original immer erhalten,
+  auch mit `--delete`.
+* **Größenprüfung.** Ergebnisse, die größer als das Original sind, werden
+  verworfen.
+* **Fortschritt.** `>>> [12/347] Verarbeite: …`. Der Zähler läuft über alle
+  gefundenen Kandidaten, auch über die still übersprungenen; am Terminal
+  zeigt eine sich selbst überschreibende Zeile, wie weit das Überspringen ist.
+* **Listenmodus.** `--from-list` verarbeitet nur die aufgeführten Quellpfade
+  (einer pro Zeile, `#` ist Kommentar) und ignoriert dabei Cache und
+  vorhandene Ausgaben. `auto` nimmt `.defekte_videos.txt` aus dem
+  Zielverzeichnis, falls vorhanden.
+
+### `video-to-avif.sh` (optionale Stufe)
+
+Wird über `--avif` in den Durchlauf aufgenommen oder einzeln aufgerufen.
+Wandelt kurze, tonlose Videos in animiertes AVIF. Ausgewählt wird nur, was
+alle drei Kriterien erfüllt: Codec H.264 oder H.265, Laufzeit unter
+`--max-seconds`, keine Tonspur. Die Tonbedingung ist notwendig, weil AVIF
+keinen Ton speichern kann.
+
+```
+      --max-seconds <s> nur Videos kürzer als s (Default: 10)
+      --crf <n>         AV1-Qualität (Default: 32)
+      --crf-retry <n>   Aufschlag beim zweiten Versuch (Default: 6)
+      --preset <n>      SVT-AV1 Preset 0-13 (Default: 6)
+      --pix-fmt <p>     yuv420p | yuv444p (Default: yuv420p)
+      --allow-audio     auch Videos mit Ton (Ton geht verloren)
+      --no-verify       keinen PSNR-Vergleich
+```
+
+Wird die Ausgabe größer als das Original, läuft ein zweiter Versuch mit
+höherem CRF, erst danach wird verworfen.
+
+### `verify-output.sh` (Kontrolle und Reparatur)
+
+Prüft ein Zielverzeichnis gegen das Quellverzeichnis. Die Zuordnung ist der
+relative Pfad.
+
+```
+      --psnr-min <db>    Schwelle für Verdacht (Default: 15)
+      --duration-tol <p> erlaubte Laufzeitabweichung in Prozent (Default: 2)
+      --samples <n>      Stichproben pro Datei (Default: 3)
+      --keep-samples <d> verglichene Einzelbilder ablegen
+      --fix              defekte Ausgaben löschen und aus dem Cache nehmen
+      --run              nach --fix den Reparaturlauf starten
+```
+
+| Meldung | Bedeutung |
+|---|---|
+| `[UNLESBAR]` | `ffprobe` findet keinen Videostream |
+| `[DAUER]` | Laufzeit weicht über die Toleranz hinaus ab |
+| `[BILD?]` | Laufzeit stimmt, Bildvergleich liegt unter der PSNR-Schwelle |
+
+Ein niedriger PSNR ist ein **Verdacht, kein Beweis**. Ohne `--fix` wird nur
+berichtet. `--keep-samples` legt die verglichenen Einzelbilder ab, damit sich
+jede Meldung selbst beurteilen lässt. `--run` startet den Reparaturlauf mit
+`--from-list` auf der Defektliste, verarbeitet also nur die gemeldeten
+Dateien, und archiviert die Liste anschließend mit Zeitstempel.
+
+`[DAUER]` trifft auch **gerettete** Dateien, die aus beschädigten Quellen
+legitim kürzer sind. Die Meldung nennt deshalb beide Laufzeiten;
+`--duration-tol` hebt die Grenze an.
+
+### Protokoll
+
+Jeder Lauf hängt einen Block an `media-optimizer.log` an, die Datei liegt
+neben `media-optimizer.sh`. Sie enthält die verwendeten Einstellungen, eine
+Zeile je bearbeiteter Datei und die Auswertung je Stufe:
+
+```
+================================================================
+LAUF 260911-120014-926  gestartet 2026-09-11 12:00:14
+  Aufruf : media-optimizer.sh
+  Quelle : /tmp/lg2
+  Ziel   : (In-Place)
+  Einstellungen:
+    DELETE_ORIGINAL        true
+    ...
+----------------------------------------------------------------
+12:00:14  start  Stufe Bilder (2 Kandidaten)
+12:00:14  img    OK        /tmp/lg2/a.jpg -> a.jxl (8.85 KB -> 7.11 KB, -19.6%)
+12:00:14  img    Auswertung: 2 konvertiert, 0 übersprungen, 0 fehlgeschlagen
+12:00:16  h265   OK        /tmp/lg2/unter/v.mp4 -> v_h265.mp4 (214.05 KB -> 34.85 KB, -83.7%)
+----------------------------------------------------------------
+LAUF 260911-120014-926  beendet 2026-09-11 12:00:16  (Code 0)
+================================================================
+```
+
+Die Statuswerte je Datei sind `OK`, `VERWORFEN`, `KONFLIKT`, `PROBE`,
+`GERETTET`, `BILD?`, `UNGUELTIG` und `FEHLER`. Übersprungene Dateien werden
+nicht einzeln protokolliert, sonst wäre die Datei bei großen Beständen von
+Cache-Treffern dominiert; sie erscheinen in der Auswertungszeile.
+
+Ein Abbruch wird als eigene Zeile samt Exit-Code festgehalten. Die
+Run-Kennung im Kopf taucht auch in der Schlusszeile auf, sodass sich
+zusammengehörende Blöcke bei parallelen Läufen zuordnen lassen.
+
+Einstellungen dazu, jeweils in der Konfigdatei, als Umgebungsvariable oder
+per Flag:
+
+| Variable | Flag | Default | Wirkung |
+|---|---|---|---|
+| `MO_LOG` | `--no-log` | `true` | Protokoll überhaupt schreiben |
+| `MO_LOG_FILE` | `--log <datei>` | `media-optimizer.log` neben dem Skript | Pfad |
+| `MO_LOG_MAX_KB` | — | `5120` | Rotationsgrenze in KB |
+
+Überschreitet die Datei `MO_LOG_MAX_KB`, wird sie einmalig nach
+`media-optimizer.log.1` verschoben. Ist der Pfad nicht schreibbar, läuft die
+Konvertierung normal weiter und nur ein Hinweis erscheint.
+
+### Vorbelegung nach Modus
+
+`DELETE_ORIGINAL` und `RENAME_INPLACE` haben keinen festen Default, sondern
+richten sich danach, ob ein Zielverzeichnis angegeben wurde:
+
+| Modus | `DELETE_ORIGINAL` | `RENAME_INPLACE` | Hinweis |
+|---|---|---|---|
+| mit Zielverzeichnis | `false` | `false` | keine Meldung |
+| In-Place | `true` | `true` | Hinweis mit Änderungsmöglichkeit |
+
+Im In-Place-Modus liegt das Original sonst neben der Ausgabe und der
+`_h265`-Suffix bliebe dauerhaft stehen. Weil das destruktiv ist, erscheint
+ein Hinweis mit beiden Werten:
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║  IN-PLACE-MODUS: Originale werden veraendert                 ║
+╚══════════════════════════════════════════════════════════════╝
+  Kein Zielverzeichnis angegeben, daher gilt:
+    Originale in den Papierkorb  : true
+    _h265-Suffix danach entfernen: true
+  Diese Einstellungen uebernehmen? [J/n]:
+```
+
+Der Hinweis erscheint auch dann, wenn zuvor „Standardeinstellungen nutzen"
+gewählt wurde. Mit `n` lassen sich beide Werte einzeln ändern. Bei `-y` oder
+ohne Terminal wird er nur angezeigt und die Werte gelten.
+
+Eine ausdrückliche Angabe hat immer Vorrang und wird nicht überschrieben: per
+CLI (`--delete`, `--no-delete`, `--rename-inplace`), per Umgebungsvariable
+oder per Konfigdatei. In der mitgelieferten Konfig sind beide Werte deshalb
+auskommentiert; wer dort etwas einträgt, legt es für beide Modi fest.
 
 ## Konfiguration
 
-`media-optimizer.conf` wird automatisch geladen, wenn sie neben `media-optimizer.sh` liegt. Alternative Orte sind `$XDG_CONFIG_HOME/media-optimizer.conf` oder ein Pfad in `MO_CONFIG`. Löschen oder Umbenennen stellt die eingebauten Defaults wieder her.
+`media-optimizer.conf` wird geladen, wenn sie neben `media-optimizer.sh`
+liegt. Alternativ `$XDG_CONFIG_HOME/media-optimizer.conf` oder ein Pfad in
+`MO_CONFIG`. Löschen stellt die eingebauten Defaults wieder her.
 
 Rangfolge: **CLI-Flag > interaktive Eingabe > Umgebungsvariable > Konfigdatei > Default.**
 
-Die interaktive Abfrage, erreichbar über ein `n` auf „Standardeinstellungen für ALLE Medienarten nutzen?", zeigt die Konfigwerte als Vorbelegung und überschreibt sie für den laufenden Durchgang. Dort einstellbar sind:
+Die interaktive Abfrage (im Menü mit `n` auf „Standardeinstellungen nutzen?"
+antworten) zeigt die Konfigwerte als Vorbelegung. Dort einstellbar sind
+`MAX_WORKERS`, `DELETE_ORIGINAL`, `VERIFY_DEEP`, `JXL_EFFORT`, `PNG_MODE`,
+`PNG_QUALITY`, `COMPRESSION_METHOD`, `ENCODER_MODE`, `BITRATE_THRESHOLD_KBPS`,
+`GPU_QP`, `CPU_CRF`, `CPU_PRESET`, `ENABLE_PROBE`, `DISCARD_IF_LARGER`,
+`KEEP_SALVAGED_CORRUPT` und der Endungs-Preflight.
 
-`MAX_WORKERS`, `DELETE_ORIGINAL`, `VERIFY_DEEP`, `JXL_EFFORT`, `PNG_MODE`, `PNG_QUALITY`, `COMPRESSION_METHOD`, `ENCODER_MODE`, `BITRATE_THRESHOLD_KBPS`, `GPU_QP`, `CPU_CRF`, `CPU_PRESET`, `ENABLE_PROBE`, `DISCARD_IF_LARGER`, `KEEP_SALVAGED_CORRUPT` und der Endungs-Preflight.
-
-Nur über Konfig, CLI oder Umgebung erreichbar:
-
-`CPU_X265_PARAMS`, `VAAPI_DEVICE`, `MIN_SIZE_MB`, `PROBE_MARGIN_PCT`, `PROBE_DURATION`, `CJXL_THREADS`, `FASTSTART`, `GIF_KMIN`, `USE_CACHE`, `FORCE_DELETE`, `DURATION_TOLERANCE_PCT`.
+Nur über Konfig, CLI oder Umgebung erreichbar: `CPU_X265_PARAMS`,
+`VAAPI_DEVICE`, `GPU_CODEC`, `GPU_RC_MODE`, `GPU_BF`, `GPU_LOW_POWER`,
+`HEVC_TAG`, `MIN_SIZE_MB`, `PROBE_MARGIN_PCT`, `PROBE_DURATION`,
+`CJXL_THREADS`, `FASTSTART`, `GIF_KMIN`, `GIF_TARGET`, `USE_CACHE`,
+`FORCE_DELETE`, `DURATION_TOLERANCE_PCT`, `RENAME_INPLACE`, `AUTO_FIX_LIST`,
+`VISUAL_*` und `AVIF_*`.
 
 ### Hardware-Tuning
 
-Die mitgelieferte Konfiguration ist auf einen Ryzen 7 9700X (8C/16T, Zen 5) mit RX 9070 XT (RDNA4) zugeschnitten.
+Die mitgelieferte Konfiguration ist auf Ryzen 7 9700X (8C/16T, Zen 5) mit
+RX 9070 XT (RDNA 4) zugeschnitten.
 
-* `pools` und `frame-threads` sind bewusst nicht gesetzt. x265 wählt auf 16 Threads von selbst einen Pool über alle 16 Threads und 4 Frame-Threads. Explizite Werte ändern dort nichts und engen bei einem Hardwarewechsel nur ein.
-* `asm=avx512` ist bei x265 per Default aus, weil es auf CPUs mit halbiertem AVX-512-Datenpfad bremst. Zen 5 hat einen vollen 512-Bit-Datenpfad, dort kann es helfen. In der Konfig aktiviert, die Messbefehle zum Gegenprüfen stehen als Kommentar daneben.
-* `CJXL_THREADS=1`, weil sonst jeder der 16 parallelen cjxl-Prozesse noch einmal 16 eigene Threads startet.
+* `pools` und `frame-threads` sind bewusst nicht gesetzt: x265 wählt auf
+  16 Threads von selbst einen Pool über alle Threads und 4 Frame-Threads.
+  Explizite Werte ändern nichts und engen bei einem Hardwarewechsel ein.
+* `asm=avx512` ist bei x265 per Default aus, weil es auf CPUs mit halbiertem
+  AVX-512-Datenpfad bremst. Zen 5 hat einen vollen Datenpfad. Die Messbefehle
+  zum Gegenprüfen stehen als Kommentar in der Konfig.
+* `CJXL_THREADS=1`, weil sonst jeder der 16 parallelen cjxl-Prozesse noch
+  einmal 16 eigene Threads startet.
 
-## Hinweise zur Ausführung
+## Beachtenswertes
 
-* **Atomares Schreiben:** Alle Skripte schreiben zunächst in temporäre `.part`-Dateien mit eindeutigem Namen. Die Originaldatei wird erst ersetzt oder in den Papierkorb verschoben, wenn die Zieldatei die Verifikation bestanden hat. Bei Videos heißt das: `ffprobe` meldet eine Laufzeit, die auf 2 % zum Original passt. Bei Bildern: die Datei ist nicht leer, mit `--verify-deep` zusätzlich vollständig dekodierbar.
-* **Papierkorb:** Wenn die Option zum Löschen der Originaldateien gewählt wurde, landen diese im System-Papierkorb. Der Speicherplatz wird physisch erst freigegeben, wenn der Papierkorb durch den Nutzer geleert wird.
-* **Papierkorb nicht verfügbar:** Bei Dateien auf anderen Mounts oder ohne `gio` und `trash-cli` schlägt das Verschieben fehl. Dann wird nichts gelöscht. Die betroffenen Pfade sammeln sich in `.<typ>_pending_deletes.txt`, und am Ende des Laufs kommt eine einmalige Rückfrage. Ohne Terminal bleiben die Originale erhalten.
-* **Reste aufräumen:** `.part`-Dateien und Lock-Verzeichnisse aus hart abgebrochenen Läufen werden beim nächsten Start entfernt.
-* **Statusdateien:** `.img_stats.env`, `.gif_stats.env`, `.h265_stats.env`, `.video_conversion_cache.txt` und die Pending-Listen liegen versteckt im Quellverzeichnis.
-* **Zähler bei Fortsetzungen:** Die Statusdatei `.h265_stats.env` schreibt geleistete Arbeit über Abbrüche hinweg fort: neu kodiert, gerettet, verworfen, fehlgeschlagen, Byte-Summen und Laufzeit. Jede Datei geht dort genau einmal ein, weil sie danach im Cache steht. Die Cache-Treffer beschreiben dagegen den aktuellen Scan und werden bei jedem Start neu gezählt, sonst würde jede Fortsetzung dieselben Dateien erneut aufaddieren. In der Auswertung heißt die Zeile deshalb „Cache (dieser Scan)".
-* **Video-Cache:** `.video_conversion_cache.txt` merkt sich abgeschlossene Dateien, damit ein späterer Lauf nicht erneut `ffprobe` über jede Datei laufen lässt. Eingetragen werden Quelldateien sowie, nur im In-Place-Modus, die erzeugten `_h265.mp4`, weil `find` diese im nächsten Lauf wieder einsammelt. Bei separatem Zielordner werden keine Ausgabepfade vermerkt. Verwaiste Einträge, deren Datei nicht mehr existiert, werden beim Start entfernt. Der Cache ist eine reine Beschleunigung: `--no-cache` oder Löschen der Datei ändert nur die Laufzeit, nicht das Ergebnis. Da absolute Pfade gespeichert werden, greift er nach einem Verschieben des Ordners nicht mehr.
+* **Atomares Schreiben.** Es wird immer zuerst in eine `.part`-Datei mit
+  eindeutigem Namen geschrieben. Das Original wird erst ersetzt oder entsorgt,
+  wenn die Ausgabe die Prüfung bestanden hat: bei Videos meldet `ffprobe` eine
+  Laufzeit innerhalb von 2 % zum Original, bei Bildern ist die Datei nicht
+  leer und mit `--verify-deep` zusätzlich vollständig dekodierbar.
+* **Papierkorb.** Der Speicher wird erst frei, wenn der Papierkorb geleert
+  wird. Scheitert das Verschieben (anderer Mount, kein `gio`/`trash-cli`),
+  wird nichts gelöscht; die Pfade sammeln sich in
+  `.<typ>_pending_deletes.txt` und am Ende kommt eine einmalige Rückfrage.
+  Ohne Terminal bleiben die Originale erhalten.
+* **Reste.** `.part`-Dateien und Lock-Verzeichnisse aus hart abgebrochenen
+  Läufen werden beim nächsten Start entfernt.
+* **Statusdateien** liegen versteckt im Quellverzeichnis: `.img_stats.env`,
+  `.gif_stats.env`, `.h265_stats.env`, `.avif_stats.env`,
+  `.video_conversion_cache.txt` und die Pending-Listen.
+* **Video-Cache.** `.video_conversion_cache.txt` merkt sich abgeschlossene
+  Dateien, damit ein späterer Lauf nicht erneut jede Datei per `ffprobe`
+  anfasst. Eingetragen werden Quelldateien sowie, nur im In-Place-Modus, die
+  erzeugten `_h265.mp4`. Verwaiste Einträge werden beim Start entfernt. Der
+  Cache ist eine reine Beschleunigung; Löschen ändert nur die Laufzeit. Da
+  absolute Pfade gespeichert werden, greift er nach einem Verschieben des
+  Ordners nicht mehr.
+* **Kandidatenzahl.** Der Fortschrittszähler zählt alle Dateien, die dem
+  Suchmuster entsprechen, einschließlich der später übersprungenen. Im
+  In-Place-Modus zählen die erzeugten `_h265.mp4` beim nächsten Lauf mit.
+* **Zähler bei Fortsetzungen.** Geleistete Arbeit wird über Abbrüche hinweg
+  fortgeschrieben. Die Cache-Treffer beschreiben dagegen den aktuellen Scan
+  und werden bei jedem Start neu gezählt, sonst würde jede Fortsetzung
+  dieselben Dateien erneut aufaddieren.
+* **In-Place bei Videos.** Quelle und Ziel hätten denselben Pfad, deshalb
+  heißt die Ausgabe `name_h265.mp4`. `--rename-inplace` entfernt den Suffix
+  nach dem Löschen des Originals, aber nur wenn dessen Pfad wirklich frei ist.
 
-## GPU-Encoding funktioniert nicht
+### Start per Doppelklick
 
-`VAAPI_DEVICE="auto"` probiert alle Render-Nodes unter `/dev/dri/` durch. Schlägt trotzdem alles fehl, nennt das Skript den konkreten ffmpeg-Fehler und passende Diagnosebefehle. Häufige Ursachen:
+Aus einem Dateimanager oder über eine `.desktop`-Datei gestartet, schließt der
+Terminal-Emulator das Fenster, sobald das Skript endet. Ein Exit-Handler hält
+es deshalb offen, auch bei erfolgreichem Durchlauf, und nennt bei einem
+Abbruch Exit-Code, Zeilennummer und den fehlgeschlagenen Befehl.
 
-1. **Falsches Render-Node.** Bei einer CPU mit iGPU plus dGPU ist `renderD128` oft die integrierte Grafik, die dGPU liegt auf `renderD129`. `ls -l /dev/dri/by-path/` ordnet die Nodes den PCI-Adressen zu.
-2. **Fehlende Rechte.** Der Benutzer muss in der Gruppe `render` sein: `id | grep render`, sonst `sudo usermod -aG render $USER` und neu anmelden.
-3. **Mesa zu alt.** RDNA4 mit VCN 5 braucht Mesa 25.0 oder neuer und Kernel 6.13 oder neuer.
-4. **ffmpeg ohne VAAPI gebaut.** `ffmpeg -hide_banner -encoders | grep hevc_vaapi` muss eine Zeile liefern.
-
-Prüfen lässt sich das mit `vainfo --display drm --device /dev/dri/renderD128 | grep -i 'hevc.*enc'`. Gesucht ist `VAProfileHEVCMain : VAEntrypointEncSlice`.
-
-Scheitert die GPU erst an einer echten Datei, wird diese sofort auf der CPU wiederholt und der Rest des Laufs bleibt bei der CPU. Ein Durchlauf kann daran also nicht mehr abbrechen.
-
-## Start per Doppelklick
-
-Wird ein Skript aus einem Dateimanager oder über eine `.desktop`-Datei
-gestartet, schließt der Terminal-Emulator das Fenster, sobald das Skript
-endet. Weder die Auswertung noch eine Fehlermeldung wären dann lesbar.
-Deshalb hält ein Exit-Handler das Fenster in diesem Fall offen, **auch bei
-erfolgreichem Durchlauf**, damit die Statistiken geprüft werden können:
-
-```
-║  GESAMTER VORGANG ERFOLGREICH BEENDET                         ║
-╚══════════════════════════════════════════════════════════════╝
-
-[FERTIG] Ohne Fehler beendet.
-Fenster bleibt offen. Enter zum Schliessen.
-```
-
-Bei einem Abbruch nennt der Handler zusätzlich Exit-Code, Zeilennummer und
-den fehlgeschlagenen Befehl:
-
-```
-[ABBRUCH] Skript endete mit Code 1.
-          Zeile 412: `rm /pfad/datei` (Code 1)
-
-Fenster bleibt offen. Enter zum Schliessen.
-```
-
-Die Erkennung wertet die Kommandozeile des Elternprozesses aus. Eine
-interaktive Shell hat kein Skript- und kein `-c`-Argument, ein Terminal-
-Emulator oder `sh -c ...` dagegen schon. Aus dem Terminal gestartet wird
-also nicht gewartet, per Doppelklick schon.
-
-Steuerbar über `--hold`, `--no-hold` oder die Umgebung:
+Die Erkennung wertet die Kommandozeile des Elternprozesses aus: eine
+interaktive Shell hat kein Skript- und kein `-c`-Argument, ein
+Terminal-Emulator dagegen schon. Aus dem Terminal gestartet wird also nicht
+gewartet.
 
 | Variable | Wirkung |
 |---|---|
-| `MO_HOLD=auto` | Default: offen halten, wenn kein interaktives Terminal die Eltern ist |
-| `MO_HOLD=1` | immer offen halten |
-| `MO_HOLD=0` | nie offen halten |
-| `MO_HOLD_TIMEOUT=15` | nach 15 Sekunden von selbst schließen (0 = warten) |
+| `MO_HOLD=auto` | Default |
+| `MO_HOLD=1` / `0` | immer / nie warten |
+| `MO_HOLD_TIMEOUT=15` | nach 15 Sekunden von selbst schließen |
 
 Für eine `.desktop`-Datei ist `MO_HOLD=1` die verlässlichste Wahl, weil die
 Automatik nicht jede Startmethode kennen kann:
@@ -342,72 +434,155 @@ Exec=env MO_HOLD=1 /pfad/zu/media-optimizer.sh
 Terminal=true
 ```
 
-Ohne Terminal, etwa bei „Als Programm ausführen" in GNOME Files, wird nicht
-gewartet, weil dort niemand die Meldung sehen könnte.
+Beim Start über den Orchestrator wartet nur dieser, nicht jede Stufe einzeln.
 
-Beim Start über `media-optimizer.sh` wartet nur der Orchestrator am Ende,
-nicht jede der drei Stufen einzeln. Standalone aufgerufene Unter-Skripte
-halten das Fenster dagegen selbst offen.
+### Weiterer Durchlauf
 
-## Grünes Bild mit Artefakten (behoben)
+Nach einem erfolgreichen Lauf fragt der Orchestrator:
 
-Symptom: Das Video ist überwiegend einfarbig dunkelgrün, nur im oberen
-Bereich bewegen sich Pixel, der Ton ist einwandfrei.
+```
+  Weiteres Verzeichnis bearbeiten? [j/N]:
+```
 
-Ursache war **`-tag:v hvc1`**, nachgewiesen per Bisektion mit
-`--gpu-selftest` auf einer RX 9070 XT: der Originalbefehl und alle anderen
-Varianten lieferten 42 dB, allein die Variante mit `hvc1` fiel auf 8 dB.
+Mit `j` startet er sich mit denselben Optionen neu und fragt nach einem neuen
+Quellverzeichnis; Enter beendet ihn. Die Verzeichnisangaben des ersten
+Aufrufs werden dabei verworfen, alle übrigen Flags bleiben erhalten. Jeder
+Durchlauf bekommt einen eigenen Block im Protokoll.
 
-Der Tag `hvc1` verlangt, dass die Parametersätze (VPS/SPS/PPS)
-ausschließlich im `hvcC`-Kasten der Sample-Beschreibung stehen und nicht im
-Datenstrom. Liefert der Hardware-Encoder sie in-band, baut der Muxer ein
-unvollständiges `hvcC`. Die Datei ist dann korrekt kodiert, aber nicht mehr
-korrekt dekodierbar: der Decoder beginnt mit falschen Parametern, füllt nur
-einen Teil des Bildpuffers und lässt den Rest auf Null. Ein YUV-Puffer aus
-Nullen (Y=0, U=0, V=0) erscheint als Dunkelgrün. Der Ton ist nicht betroffen,
-weil er per `-c:a copy` durchkopiert wird.
+Die Frage ersetzt das Warten auf Enter beim Start per Doppelklick, es gibt
+also nur eine Rückfrage. Mit `-y` oder ohne Terminal entfällt sie.
 
-Es war also kein Encoder- und kein Treiberfehler, sondern falsche
-Container-Signalisierung. Deshalb ist `HEVC_TAG` jetzt leer (ffmpeg-Vorgabe
-`hev1`) und `hvc1` nur noch über `--hevc-tag hvc1` erreichbar.
+## Formatwahl: was lohnt sich?
 
-Bereits erzeugte Dateien lassen sich finden und neu erzeugen:
+Messwerte aus diesem Projekt, jeweils gegen die Originaldatei. WebP
+verlustfrei ist bit-exakt und hat daher keinen endlichen PSNR.
+
+**GIF-Quellen** (240×180, 3 s):
+
+| Ziel | flächige Animation | fotoähnlich | PSNR |
+|---|---|---|---|
+| WebP verlustfrei (Default) | 66 % | 84 % | bit-exakt |
+| AVIF CRF 20 | 46 % | 48 % | 47 / 39 dB |
+| AVIF CRF 28 | 34 % | 29 % | 44 / 35 dB |
+
+AVIF halbiert die Größe, ist dafür verlustbehaftet. Für GIFs mit Text und
+harten Kanten halbiert `yuv420p` zusätzlich die Farbauflösung; `yuv444p`
+kostete im Test 67 % statt 37 % für +1,6 dB, was PSNR allerdings schlecht
+abbildet.
+
+**Video-Quellen** (H.264 CRF 23, 480×360, 6 s, ohne Ton):
+
+| Ziel | Größe vs Original | PSNR |
+|---|---|---|
+| AVIF CRF 18 | 160 % | 51 dB |
+| AVIF CRF 28 | 112 % | 47 dB |
+| AVIF CRF 32 (Default) | 90 % | 45 dB |
+| AVIF CRF 35 | 75 % | 44 dB |
+
+Die Quelle ist bereits H.264-komprimiert, AVIF muss das erst einholen. Unter
+CRF 30 wird die Datei größer als das Original. Eine längere GOP ändert nichts,
+SVT-AV1 nutzt ohnehin lange Abstände.
+
+**Einschätzung.** Für GIFs ist AVIF ein echter Gewinn. Für kurze Videos ist es
+eher Formatvereinheitlichung als Platzersparnis; wer Platz sparen will, fährt
+mit dem HEVC- oder AV1-Pfad des Videoskripts besser, weil dort die Tonspur
+erhalten bleibt und MP4 überall läuft.
+
+**Anzeigeunterstützung.** Animiertes AVIF wird von Glycin unterstützt, also
+von Loupe und den Nautilus-Vorschaubildern. Firefox animiert AVIF weiterhin
+nicht. Ob die eigene Glycin-Version es kann, zeigt am schnellsten ein Blick
+auf eine erzeugte Datei in Loupe.
+
+## Fehlersuche
+
+### GPU-Encoding startet nicht
+
+`VAAPI_DEVICE="auto"` probiert alle Render-Nodes unter `/dev/dri/` durch.
+Schlägt alles fehl, nennt das Skript den konkreten ffmpeg-Fehler. Häufige
+Ursachen:
+
+1. **Falsches Render-Node.** Bei CPU mit iGPU plus dGPU ist `renderD128` oft
+   die integrierte Grafik. `ls -l /dev/dri/by-path/` ordnet die Nodes den
+   PCI-Adressen zu.
+2. **Fehlende Rechte.** `id | grep render`, sonst
+   `sudo usermod -aG render $USER` und neu anmelden.
+3. **Treiber zu alt.** RDNA 4 mit VCN 5 braucht Mesa 25.0+ und Kernel 6.13+.
+4. **ffmpeg ohne VAAPI.** `ffmpeg -hide_banner -encoders | grep hevc_vaapi`
+   muss eine Zeile liefern.
+5. **Fedora.** Die Standardpakete sind aus Patentgründen beschnitten:
+   `sudo dnf swap mesa-va-drivers mesa-va-drivers-freeworld`
+
+Mit `--encoder gpu` bricht das Skript ab, statt still auf CPU zurückzufallen.
+Scheitert die GPU erst an einer echten Datei, wird diese sofort auf der CPU
+wiederholt und der Rest des Laufs bleibt dabei.
+
+### GPU läuft, aber das Bild ist kaputt
+
+Ein VAAPI-Encoder kann ohne Fehlermeldung unbrauchbare Bilder liefern; von
+außen ist das nicht vom Erfolg zu unterscheiden. Typisches Bild: Fragmente im
+oberen Bereich, der Rest einfarbig dunkelgrün. Das Grün ist ein mit Nullen
+gefüllter YUV-Puffer, also Speicher, in den nie Bilddaten geschrieben wurden.
+
+Der Selbsttest probiert Optionsvarianten an einer echten Datei durch und
+bewertet jedes Ergebnis per Bildvergleich:
+
+```bash
+./scripts/h264-to-h265.sh --gpu-selftest /pfad/zu/video.mp4
+```
+
+```
+  Variante      Beschreibung                       Ergebnis   PSNR
+  original      Originalbefehl, Geraet nach -i     brauchbar  42 dB
+  bf0           wie Original + -bf 0               brauchbar  42 dB
+  hvc1          wie Original + -tag:v hvc1         KAPUTT      8 dB
+  aktuell       aktuelle Skriptvorgabe             brauchbar  42 dB
+  av1           av1_vaapi statt hevc_vaapi         brauchbar  47 dB
+```
+
+Bekannte Stolpersteine:
+
+* **`-tag:v hvc1`.** Der Tag verlangt, dass VPS/SPS/PPS ausschließlich im
+  `hvcC`-Kasten stehen. Liefert der Encoder sie im Datenstrom, baut der Muxer
+  ein unvollständiges `hvcC`: korrekt kodiert, aber nicht mehr korrekt
+  dekodierbar. Deshalb ist `HEVC_TAG` leer.
+* **Pixelformat.** `format=nv12|p010` als Alternative zu schreiben überlässt
+  dem Filter die Wahl. Fällt sie auf p010, während der Encoder in 8 Bit
+  arbeitet, wird der Puffer nur teilweise gefüllt. Das Format wird deshalb
+  fest gesetzt; 10 Bit nur mit `--gpu-10bit` und passendem Profil.
+* **B-Frames.** Manche VCN-Generationen kommen über Mesa damit nicht zurecht.
+  `--bf 0` probieren.
+* **Ratenkontrolle.** `CQP` ist der klassische Weg, `--rc-mode VBR` die
+  Alternative.
+* **Anderer Encoder.** `--gpu-codec av1_vaapi` oder `hevc_vulkan` (ffmpeg 7.1+).
+
+### Bereits erzeugte Dateien prüfen
 
 ```bash
 ./scripts/verify-output.sh -i ~/Videos -o /mnt/archiv --keep-samples /tmp/proben
 ./scripts/verify-output.sh -i ~/Videos -o /mnt/archiv --fix --run
 ```
 
-Dieses Fehlerbild liegt im Test bei 4 bis 7 dB PSNR und wird damit
-zuverlässig erkannt, weit unterhalb der Schwelle von 15 dB.
-
 ## Bekannte Grenzen
 
-* Die Kollisionswarnung im Orchestrator nutzt `sort | uniq`. Dateinamen mit Zeilenumbrüchen werden dort nicht erkannt, die Sperre im Worker greift trotzdem.
-* Videos laufen sequenziell. Bei CPU-Encoding lastet x265 die Kerne selbst aus, bei GPU ist Parallelität ohnehin nicht sinnvoll.
-* `--verify-deep` dekodiert jede Bildausgabe komplett und kostet spürbar Zeit. Ohne das Flag wird nur auf nicht-leere Ausgabe geprüft.
-* Der PSNR-Bildvergleich ist eine Heuristik. Einzelne Stichproben können durch Zeitversatz beim Suchen deutlich einbrechen; bei variabler Bildrate wurden an einem einwandfreien Video 13, 15 und 24 dB gemessen. Deshalb zählt nur die beste Stichprobe und die Schwelle liegt bei 15 dB, während echte Zerstörung bei 3 bis 7 dB liegt. Trotzdem: gemeldete Dateien selbst ansehen, bevor etwas gelöscht wird.
-* Kurze Probe-Slices überschätzen die neue Bitrate leicht, weil der erste Keyframe anteilig stark ins Gewicht fällt. Bei Grenzfällen hilft `--probe-duration 30` mehr als eine gelockerte Schwelle.
+* Nur `.mp4` wird als Videoquelle gesucht (bei `video-to-avif.sh` zusätzlich
+  `.mov` und `.m4v`). MKV, AVI und TS bleiben unberührt.
+* Videos laufen sequenziell. Bei CPU-Encoding lastet x265 die Kerne selbst
+  aus, bei GPU ist Parallelität ohnehin nicht sinnvoll.
+* Der PSNR-Bildvergleich ist eine Heuristik. Einzelne Stichproben können durch
+  Zeitversatz beim Suchen einbrechen, bei variabler Bildrate wurden an einem
+  einwandfreien Video 13, 15 und 24 dB gemessen. Deshalb zählt nur die beste
+  Stichprobe und die Schwelle liegt bei 15 dB, während zerstörte Ausgaben bei
+  3 bis 7 dB liegen. Gemeldete Dateien trotzdem selbst ansehen.
+* Kurze Probe-Slices überschätzen die neue Bitrate leicht, weil der erste
+  Keyframe anteilig stark ins Gewicht fällt. `--probe-duration 30` hilft mehr
+  als eine gelockerte Schwelle.
+* Die Kollisionswarnung im Orchestrator nutzt `sort | uniq` und erkennt
+  Dateinamen mit Zeilenumbrüchen nicht. Die Sperre im Worker greift trotzdem.
+* `--verify-deep` dekodiert jede Bildausgabe komplett und kostet spürbar Zeit.
 
 ## Entstehung
 
-Die ursprüngliche Fassung der vier Skripte wurde mit **Google Gemini** erstellt.
-
-Eine spätere Überarbeitung mit **Claude (Anthropic)** hat den Code auditiert, in einer Testumgebung durchgespielt und erweitert. Dabei behobene Fehler:
-
-| Fund | Auswirkung |
-|---|---|
-| `mkdir -p ""` | Der In-Place-Modus brach den Orchestrator sofort mit Exit 1 ab. |
-| `gif2webp -lossless` | Diese Option existiert nicht, gif2webp arbeitet ohnehin verlustfrei. Der Aufruf schlug bei jeder Datei fehl, die GIF-Stufe hat nie etwas konvertiert. |
-| `cwebp -q 9` | Qualität 9 von 100 im PNG-Fallback, vermutlich mit `-z 9` verwechselt. |
-| `BATCH_MAP` | Videos wurden vor der Verarbeitung eingetragen und nach einem Abbruch beim Resume dauerhaft übersprungen. |
-| Namenskollision | `foo.jpg` und `foo.png` teilten sich Ziel- und Temp-Datei, bei parallelen Workern mit Datenverlust. |
-| `find *.mp4` | Fand auch `.part.mp4` aus abgebrochenen Läufen. |
-| `eval` in `prompt_val` | Pfadeingaben mit `$(...)` wurden ausgeführt. |
-| `find \| wc -l` | Ohne `\|\| true` riss ein Permission-Denied unter `pipefail` den Orchestrator mit. |
-| PNG mit festem `-q 75` | Verlustbehaftet bei gleichzeitig gelöschtem Original, ohne dass die Ausgabe darauf hinwies. |
-| Kein Abgleich vor dem Löschen | Eine bei voller Platte abgeschnittene Datei genügte der Prüfung „größer als 0 Byte". |
-
-Ergänzt wurden Dry-Run, Konfigurationsdatei, `--help`, Abhängigkeitsprüfung, Verifikation der Ausgaben, die Rückfrage bei fehlgeschlagenem Papierkorb, `lib/common.sh` gegen dreifach duplizierte Hilfsfunktionen sowie die GPU-Erkennung mit Fallback pro Datei.
-
-Zwei Fehler stammten aus dieser Überarbeitung selbst und sind ebenfalls behoben: eine GPU-Startprüfung, die `hevc_vaapi` ohne `-rc_mode` aufrief und deshalb funktionierende Hardware verwarf, sowie eine Konfig-Ladelogik, die Werte nicht bis zu den Worker-Skripten durchreichte.
+Die erste Fassung der Skripte entstand mit **Google Gemini**, eine spätere
+Überarbeitung mit **Claude (Anthropic)**. Die Entwicklungsgeschichte mit
+behobenen Fehlern, Messreihen und verworfenen Ansätzen steht in
+[CHANGELOG.md](CHANGELOG.md).

@@ -1,14 +1,22 @@
 #!/bin/bash
 # ==============================================================================
-# verify-output.sh
+# verify-output.sh  -  Zielverzeichnis gegen die Originale pruefen
 #
-# Prueft ein Zielverzeichnis gegen das Quellverzeichnis: stimmt die Laufzeit
-# und passt der Bildinhalt? Faengt damit auch zerstoerte Farbformate, die eine
-# reine Laufzeitpruefung passieren (gruenes Bild mit korrekter Dauer).
+# Prueft jede Ausgabedatei in drei Stufen und meldet, welche nicht zum
+# Original passen. Optional loescht es die betroffenen Ausgaben und nimmt die
+# zugehoerigen Quellen aus dem Cache, sodass ein Reparaturlauf genau diese
+# Dateien neu erzeugt.
 #
-# Standard ist ein reiner Bericht. --fix loescht die defekten Ausgaben und
-# nimmt die zugehoerigen Quelldateien aus dem Cache, sodass ein normaler Lauf
-# von h264-to-h265.sh genau diese Dateien neu erzeugt. --run startet ihn gleich.
+# ZUORDNUNG Ausgabe -> Original ist der relative Pfad: h264-to-h265.sh
+# spiegelt im Zielmodus die Ordnerstruktur und behaelt den Dateinamen.
+#
+# PRUEFSTUFEN (in dieser Reihenfolge, erste Abweichung gewinnt):
+#   UNLESBAR   ffprobe findet keinen Videostream
+#   DAUER      Laufzeit weicht ueber DURATION_TOL hinaus ab
+#   BILD?      PSNR-Stichproben liegen unter PSNR_MIN
+#
+# WICHTIG beim Aendern: ein niedriger PSNR ist ein Verdacht, kein Beweis.
+# Ohne --fix wird deshalb nur berichtet und nichts veraendert.
 # ==============================================================================
 set -euo pipefail
 

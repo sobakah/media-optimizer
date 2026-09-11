@@ -1,8 +1,25 @@
 #!/bin/bash
 # ==============================================================================
-# lib/common.sh
-# Gemeinsame Hilfsfunktionen fuer media-optimizer.sh und die Worker-Skripte.
-# Wird gesourct, nicht direkt ausgefuehrt.
+# lib/common.sh  -  gemeinsame Hilfsfunktionen
+#
+# Wird von allen Skripten gesourct, nie direkt ausgefuehrt.
+#
+# INHALT:
+#   Farben              C_* Variablen, leer wenn stdout kein Terminal ist
+#   Formatierung        format_bytes, format_duration, pct_change
+#   Konfigurationsdatei load_config und MO_CONFIG_VARS
+#   Abhaengigkeiten     require_cmds
+#   Loeschen            safe_remove, resolve_pending_deletes
+#   Aufraeumen          cleanup_stale_parts
+#   Verifikation        verify_output_image, verify_video, verify_visual
+#   Fenster offen       mo_install_exit_handler, mo_hold_open
+#
+# BEIM ERWEITERN BEACHTEN:
+#   - Neue Konfigurationsvariablen gehoeren in MO_CONFIG_VARS, sonst kann die
+#     Konfigdatei sie nicht setzen.
+#   - Funktionen, die in parallelen xargs-Workern laufen, brauchen
+#     "export -f". Fehlt der Export, ist der Aufruf dort "command not found"
+#     und wird je nach Kontext als fehlgeschlagene Pruefung gewertet.
 # ==============================================================================
 
 [[ -n "${_MO_COMMON_LOADED:-}" ]] && return 0
@@ -64,13 +81,18 @@ export -f format_bytes format_duration pct_change
 # ------------------------------------------------------------------------------
 # Variablen, die eine Konfigdatei setzen darf.
 MO_CONFIG_VARS=(
-    MAX_WORKERS DELETE_ORIGINAL FORCE_DELETE VERIFY_DEEP
-    JXL_EFFORT PNG_MODE PNG_QUALITY CJXL_THREADS
-    COMPRESSION_METHOD GIF_KMIN
+    MAX_WORKERS DELETE_ORIGINAL FORCE_DELETE VERIFY_DEEP JXL_EFFORT
+    PNG_MODE PNG_QUALITY CJXL_THREADS COMPRESSION_METHOD GIF_KMIN
     ENCODER_MODE BITRATE_THRESHOLD_KBPS GPU_QP CPU_CRF CPU_PRESET
     CPU_X265_PARAMS VAAPI_DEVICE ENABLE_PROBE PROBE_MARGIN_PCT
     DISCARD_IF_LARGER KEEP_SALVAGED_CORRUPT MIN_SIZE_MB FASTSTART USE_CACHE
-    DURATION_TOLERANCE_PCT PROBE_DURATION RENAME_INPLACE GPU_ALLOW_10BIT VERIFY_VISUAL VISUAL_PSNR_MIN VISUAL_SAMPLES VISUAL_STRICT AUTO_FIX_LIST HEVC_TAG GPU_CODEC VULKAN_DEVICE GPU_RC_MODE GPU_BF GPU_LOW_POWER GPU_ASYNC_DEPTH GPU_BITRATE
+    GIF_TARGET GIF_AVIF_CRF AVIF_MAX_SECONDS AVIF_CRF AVIF_CRF_RETRY
+    AVIF_PRESET AVIF_PIX_FMT AVIF_REQUIRE_SILENT ENABLE_AVIF_STAGE
+    DELETE_ORIGINAL_EXPLICIT RENAME_INPLACE_EXPLICIT MO_LOG MO_LOG_FILE
+    MO_LOG_MAX_KB DURATION_TOLERANCE_PCT PROBE_DURATION RENAME_INPLACE
+    GPU_ALLOW_10BIT VERIFY_VISUAL VISUAL_PSNR_MIN VISUAL_SAMPLES
+    VISUAL_STRICT AUTO_FIX_LIST HEVC_TAG GPU_CODEC VULKAN_DEVICE
+    GPU_RC_MODE GPU_BF GPU_LOW_POWER GPU_ASYNC_DEPTH GPU_BITRATE
 )
 
 load_config() {
@@ -252,6 +274,9 @@ verify_output_image() {
 }
 export -f verify_output_image
 
+# Diese Funktionen laufen auch in xargs-Workern, also exportieren.
+# Fehlt der Export, ist der Aufruf dort schlicht "command not found" und
+# wird faelschlich als fehlgeschlagene Pruefung gewertet.
 # media_duration <datei> -> Dauer in Sekunden (float) oder leer
 media_duration() {
     ffprobe -v error -show_entries format=duration \
@@ -435,3 +460,195 @@ verify_visual() {
     awk -v p="$best" -v m="$minp" 'BEGIN { exit (p < m) ? 0 : 1 }' && return 1
     return 0
 }
+
+export -f media_duration verify_video verify_visual
+
+# ------------------------------------------------------------------------------
+# Modusabhaengige Vorbelegung fuer DELETE_ORIGINAL und RENAME_INPLACE
+#
+# In-Place (kein Zielverzeichnis): beide true. Ohne Loeschen lieg das Original
+# neben der Ausgabe, ohne Umbenennen bleibt der _h265-Suffix stehen - in
+# diesem Modus ist das selten gewollt. Weil es destruktiv ist, wird darauf
+# hingewiesen und die Einstellung laesst sich an Ort und Stelle aendern.
+#
+# Mit Zielverzeichnis: beide false, ohne Meldung. Das Original wird dort
+# ohnehin nicht angefasst.
+#
+# Eine ausdrueckliche Angabe per CLI, Umgebung oder Konfigdatei hat immer
+# Vorrang; dann wird nichts ueberschrieben.
+# ------------------------------------------------------------------------------
+mo_prompt_bool() {
+    local question="$1" default="$2" result_var="$3" input
+    local def_str="J/n"; [[ "$default" == false ]] && def_str="j/N"
+    read -rp "  $question [$def_str]: " input || input=""
+    case "${input,,}" in
+        j|ja|y|yes) printf -v "$result_var" '%s' true ;;
+        n|nein|no)  printf -v "$result_var" '%s' false ;;
+        *)          printf -v "$result_var" '%s' "$default" ;;
+    esac
+}
+
+mo_apply_inplace_defaults() {
+    local outdir="$1"
+
+    if [[ -n "$outdir" ]]; then
+        [[ "${DELETE_ORIGINAL_EXPLICIT:-false}" == true ]] || DELETE_ORIGINAL=false
+        [[ "${RENAME_INPLACE_EXPLICIT:-false}" == true ]] || RENAME_INPLACE=false
+        return 0
+    fi
+
+    [[ "${DELETE_ORIGINAL_EXPLICIT:-false}" == true ]] || DELETE_ORIGINAL=true
+    [[ "${RENAME_INPLACE_EXPLICIT:-false}" == true ]] || RENAME_INPLACE=true
+
+    # Nur einmal pro Aufrufkette warnen, nicht je Unterskript.
+    [[ -n "${MO_INPLACE_WARNED:-}" ]] && return 0
+    export MO_INPLACE_WARNED=1
+
+    printf "\n%b╔══════════════════════════════════════════════════════════════╗%b\n" "$C_YELLOW" "$C_RESET"
+    printf "%b║%b  %bIN-PLACE-MODUS: Originale werden veraendert%b                  %b║%b\n" \
+        "$C_YELLOW" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_YELLOW" "$C_RESET"
+    printf "%b╚══════════════════════════════════════════════════════════════╝%b\n" "$C_YELLOW" "$C_RESET"
+    printf "  Kein Zielverzeichnis angegeben, daher gilt:\n"
+    printf "    Originale in den Papierkorb  : %b%s%b\n" "$C_BOLD" "$DELETE_ORIGINAL" "$C_RESET"
+    printf "    _h265-Suffix danach entfernen: %b%s%b\n" "$C_BOLD" "$RENAME_INPLACE" "$C_RESET"
+    printf "  Originale landen im Papierkorb und sind von dort wiederherstellbar.\n"
+
+    if [[ ! -t 0 ]]; then
+        printf "  %bKeine Rueckfrage moeglich (nicht interaktiv).%b\n" "$C_CYAN" "$C_RESET"
+        return 0
+    fi
+    if [[ "${ASSUME_YES:-false}" == true ]]; then
+        printf "  %b-y gesetzt, Einstellungen werden uebernommen.%b\n" "$C_CYAN" "$C_RESET"
+        return 0
+    fi
+
+    local answer
+    read -rp "  Diese Einstellungen uebernehmen? [J/n]: " answer || answer=""
+    if [[ "${answer,,}" =~ ^(n|nein|no)$ ]]; then
+        mo_prompt_bool "Originale nach Erfolg in den Papierkorb verschieben?" \
+            "$DELETE_ORIGINAL" DELETE_ORIGINAL
+        mo_prompt_bool "_h265-Suffix nach dem Loeschen des Originals entfernen?" \
+            "$RENAME_INPLACE" RENAME_INPLACE
+        DELETE_ORIGINAL_EXPLICIT=true
+        RENAME_INPLACE_EXPLICIT=true
+        export DELETE_ORIGINAL_EXPLICIT RENAME_INPLACE_EXPLICIT
+    fi
+    echo ""
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Protokoll
+#
+# Eine fortlaufende Textdatei neben media-optimizer.sh. Jeder Lauf haengt einen
+# Block an: Kopf mit Einstellungen, eine Zeile je bearbeiteter Datei, am Ende
+# die Auswertung. Orchestrator und Unterskripte teilen sich MO_RUN_ID, sodass
+# zusammengehoerende Zeilen erkennbar bleiben.
+#
+# Die Zeilen werden von parallelen Workern angehaengt. Das ist unkritisch,
+# solange eine Zeile kurz bleibt: Anhaengen unter O_APPEND ist bis zur
+# Puffergroesse des Systems atomar. Deshalb hier keine langen Meldungen.
+# ------------------------------------------------------------------------------
+# Keine Vorbelegung auf dieser Ebene: common.sh wird VOR load_config gesourct.
+# Ein hier gesetzter Wert gaelte fuer load_config als ausdrueckliche Angabe und
+# wuerde den Eintrag aus der Konfigdatei wieder ueberschreiben. Die Defaults
+# stehen deshalb erst in mo_log_init, also nach dem Laden der Konfiguration.
+mo_log_enabled() {
+    [[ "${MO_LOG:-true}" == true && -n "${MO_LOG_FILE:-}" ]]
+}
+
+# mo_log_init <skriptname> <quelle> <ziel>
+# Legt Run-ID und Pfad fest, rotiert bei Bedarf und schreibt den Kopf.
+# Der Kopf wird nur vom ersten Aufrufer geschrieben; Unterskripte, die der
+# Orchestrator startet, erben MO_RUN_ID und melden sich nur mit einer Zeile.
+mo_log_init() {
+    local script="$1" src="$2" dst="$3"
+    : "${MO_LOG:=true}"
+    : "${MO_LOG_MAX_KB:=5120}"
+    # Immer exportieren, auch im abgeschalteten Fall: sonst erben die
+    # Unterskripte die Entscheidung nicht und protokollieren doch.
+    export MO_LOG MO_LOG_MAX_KB
+    [[ "$MO_LOG" == true ]] || return 0
+    : "${MO_LOG_FILE:=${_MO_ROOT:-.}/media-optimizer.log}"
+    export MO_LOG_FILE
+
+    if ! touch "$MO_LOG_FILE" 2>/dev/null; then
+        printf "%b[PROTOKOLL]%b Nicht schreibbar, wird uebersprungen: %s\n" \
+            "$C_YELLOW" "$C_RESET" "$MO_LOG_FILE" >&2
+        MO_LOG=false; export MO_LOG
+        return 0
+    fi
+
+    # Einmalige Rotation, damit die Datei nicht unbegrenzt waechst.
+    local size_kb; size_kb=$(( $(stat -c%s "$MO_LOG_FILE" 2>/dev/null || echo 0) / 1024 ))
+    if (( size_kb > MO_LOG_MAX_KB )); then
+        mv -f "$MO_LOG_FILE" "${MO_LOG_FILE}.1" 2>/dev/null || true
+        : > "$MO_LOG_FILE"
+    fi
+
+    if [[ -z "${MO_RUN_ID:-}" ]]; then
+        # Zufallsanteil noetig: bei einem Neustart per exec bleibt die PID
+        # gleich, und im selben Sekundentakt waere die Kennung sonst doppelt.
+        MO_RUN_ID=$(date '+%y%m%d-%H%M%S')-$$-$RANDOM
+        export MO_RUN_ID
+        {
+            printf '\n%s\n' "================================================================"
+            printf 'LAUF %s  gestartet %s\n' "$MO_RUN_ID" "$(date '+%F %T')"
+            printf '  Aufruf : %s\n' "$script"
+            printf '  Quelle : %s\n' "$src"
+            printf '  Ziel   : %s\n' "${dst:-(In-Place)}"
+        } >> "$MO_LOG_FILE" 2>/dev/null || true
+    else
+        # Unterskript innerhalb eines Orchestrator-Laufs: nur eine Zeile,
+        # der Kopf steht bereits vom Orchestrator im Protokoll.
+        mo_log "${MO_LOG_TAG:-stufe}" "gestartet ($script)"
+    fi
+    return 0
+}
+
+# mo_log_settings <VAR> [<VAR> ...] - schreibt "NAME=wert" je Zeile
+mo_log_settings() {
+    mo_log_enabled || return 0
+    local v
+    printf '  Einstellungen:\n' >> "$MO_LOG_FILE" 2>/dev/null || return 0
+    for v in "$@"; do
+        printf '    %-22s %s\n' "$v" "${!v-}" >> "$MO_LOG_FILE" 2>/dev/null || true
+    done
+    printf '%s\n' "----------------------------------------------------------------" \
+        >> "$MO_LOG_FILE" 2>/dev/null || true
+}
+
+# mo_log <tag> <meldung...>
+mo_log() {
+    mo_log_enabled || return 0
+    local tag="$1"; shift
+    printf '%s  %-6s %s\n' "$(date '+%H:%M:%S')" "$tag" "$*" \
+        >> "$MO_LOG_FILE" 2>/dev/null || true
+}
+
+# mo_log_file <tag> <status> <quelle> [<ziel>] [<bytes_alt>] [<bytes_neu>]
+# Eine Zeile je bearbeiteter Datei. Groessen werden nur angehaengt, wenn beide
+# Werte vorliegen und sinnvoll sind.
+mo_log_file() {
+    mo_log_enabled || return 0
+    local tag="$1" status="$2" src="$3" dst="${4:-}" old="${5:-}" new="${6:-}"
+    local extra=""
+    if [[ "$old" =~ ^[0-9]+$ && "$new" =~ ^[0-9]+$ ]] && (( old > 0 )); then
+        extra=" ($(format_bytes "$old") -> $(format_bytes "$new"), $(pct_change "$old" "$new")%)"
+    fi
+    printf '%s  %-6s %-9s %s%s%s\n' "$(date '+%H:%M:%S')" "$tag" "$status" \
+        "$src" "${dst:+ -> $dst}" "$extra" >> "$MO_LOG_FILE" 2>/dev/null || true
+}
+
+# mo_log_close <exitcode>  - nur vom aeussersten Aufrufer
+mo_log_close() {
+    mo_log_enabled || return 0
+    printf '%s\n' "----------------------------------------------------------------" \
+        >> "$MO_LOG_FILE" 2>/dev/null || true
+    printf 'LAUF %s  beendet %s  (Code %s)\n' "$MO_RUN_ID" "$(date '+%F %T')" "${1:-0}" \
+        >> "$MO_LOG_FILE" 2>/dev/null || true
+    printf '%s\n' "================================================================" \
+        >> "$MO_LOG_FILE" 2>/dev/null || true
+}
+
+export -f mo_log_enabled mo_log mo_log_file
