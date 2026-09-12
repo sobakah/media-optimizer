@@ -204,16 +204,10 @@ finalize_stats() {
     TOTAL_NEW_BYTES=$(( TOTAL_NEW_BYTES + c_new ))
 
     if [[ $exit_code -eq 130 ]]; then
-        cat > "$STATS_FILE" <<EOF
-TOTAL_PROCESSED=$TOTAL_PROCESSED
-TOTAL_SKIPPED=$TOTAL_SKIPPED
-TOTAL_FAILED=$TOTAL_FAILED
-TOTAL_COLLISION=$TOTAL_COLLISION
-TOTAL_DISCARDED=$TOTAL_DISCARDED
-TOTAL_ORIG_BYTES=$TOTAL_ORIG_BYTES
-TOTAL_NEW_BYTES=$TOTAL_NEW_BYTES
-PREV_ELAPSED=$tot_elapsed
-EOF
+        PREV_ELAPSED="$tot_elapsed"
+        mo_write_vars "$STATS_FILE" \
+            TOTAL_PROCESSED TOTAL_SKIPPED TOTAL_FAILED TOTAL_COLLISION \
+            TOTAL_DISCARDED TOTAL_ORIG_BYTES TOTAL_NEW_BYTES PREV_ELAPSED
         resolve_pending_deletes
         exit 130
     fi
@@ -430,7 +424,7 @@ _convert_image_locked() {
             fi
             rm -f "$temp_webp"
         fi
-        printf "%b[ERROR]%b Konvertierung failed: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
+        printf "%b[ERROR]%b conversion failed: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
         mo_log_file "$MO_LOG_TAG" "ERROR" "$src"
         echo "FAIL" >> "$CURRENT_RUN_LOG"; return 1
     fi
@@ -509,9 +503,12 @@ _convert_image_locked() {
             return 1
         fi
         rm -f "$temp_webp"
-        printf "%b[ERROR]%b Konvertierung failed: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
+        printf "%b[ERROR]%b conversion failed: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
         mo_log_file "$MO_LOG_TAG" "ERROR" "$src"
-        echo "FAIL" >> "$CURRENT_RUN_LOG"; return 1
+        echo "FAIL" >> "$CURRENT_RUN_LOG"
+        mo_encoder_missing cjxl && return 255
+        mo_encoder_missing cwebp && return 255
+        return 1
     fi
 
     echo "FAIL" >> "$CURRENT_RUN_LOG"; return 1
@@ -527,6 +524,13 @@ find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png
     xargs -0 -r -n 1 -P "$MAX_WORKERS" bash -c 'convert_image "$1"' _ || exit_code=$?
 
 # xargs reports 124/125 on abort, 123 on worker errors (not an abort)
+# 255 means a worker reported a fatal problem and xargs aborted the batch.
+if (( exit_code == 255 )); then
+    printf "\n%b[ABORT]%b Batch stopped: a required encoder is missing.\n" \
+        "$C_RED" "$C_RESET" >&2
+    finalize_stats 0
+    exit 255
+fi
 if (( exit_code == 124 || exit_code == 125 || exit_code == 130 )); then
     finalize_stats 130
 else

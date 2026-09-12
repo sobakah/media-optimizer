@@ -32,7 +32,7 @@ verify-output.sh - checks converted videos against their originals
   -i, --input   <dir>   source directory (the originals)
   -o, --output  <dir>   target directory (the converted files)
   -j, --workers <n>     parallel checks (default: nproc)
-      --psnr-min <db>   threshold for suspicion (default: 15)
+      --psnr-min <db>   threshold for suspicion (default: 18)
       --duration-tol <p> allowed runtime deviation in percent (default: 2).
                         Salvaged files from damaged sources are legitimately
                         shorter; a higher value helps there.
@@ -55,7 +55,7 @@ EOF
 SOURCE_DIR="${SOURCE_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 MAX_WORKERS="${MAX_WORKERS:-$(nproc)}"
-PSNR_MIN="${VISUAL_PSNR_MIN:-15}"
+PSNR_MIN="${VISUAL_PSNR_MIN:-18}"
 SAMPLES="${SAMPLES:-3}"
 VISUAL_KEEP_DIR="${VISUAL_KEEP_DIR:-}"
 DURATION_TOL="${DURATION_TOLERANCE_PCT:-2}"

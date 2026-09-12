@@ -189,16 +189,10 @@ finalize_stats() {
     TOTAL_NEW_BYTES=$(( TOTAL_NEW_BYTES + c_new ))
 
     if [[ $exit_code -eq 130 ]]; then
-        cat > "$STATS_FILE" <<EOF
-TOTAL_PROCESSED=$TOTAL_PROCESSED
-TOTAL_SKIPPED=$TOTAL_SKIPPED
-TOTAL_FAILED=$TOTAL_FAILED
-TOTAL_DISCARDED=$TOTAL_DISCARDED
-TOTAL_COLLISION=$TOTAL_COLLISION
-TOTAL_ORIG_BYTES=$TOTAL_ORIG_BYTES
-TOTAL_NEW_BYTES=$TOTAL_NEW_BYTES
-PREV_ELAPSED=$tot_elapsed
-EOF
+        PREV_ELAPSED="$tot_elapsed"
+        mo_write_vars "$STATS_FILE" \
+            TOTAL_PROCESSED TOTAL_SKIPPED TOTAL_FAILED TOTAL_DISCARDED \
+            TOTAL_COLLISION TOTAL_ORIG_BYTES TOTAL_NEW_BYTES PREV_ELAPSED
         resolve_pending_deletes
         exit 130
     fi
@@ -318,6 +312,8 @@ convert_gif() {
         rm -f "$temp_dest"
         echo "FAIL" >> "$CURRENT_RUN_LOG"
         mo_log_file "$MO_LOG_TAG" "ERROR" "$src"
+        if [[ "$GIF_TARGET" == "avif" ]]; then mo_encoder_missing ffmpeg && rc=255
+        else mo_encoder_missing gif2webp && rc=255; fi
         printf "%b[ERROR]%b '%s' (original kept)\n" "$C_RED" "$C_RESET" "$filename" >&2
         rc=1
     fi
@@ -336,6 +332,13 @@ find "$SOURCE_DIR" -type f -iname "*.gif" -print0 |
     xargs -0 -r -n 1 -P "$MAX_WORKERS" bash -c 'read -r -a GIF_AV1_SPEED <<< "$GIF_AV1_SPEED_STR"; convert_gif "$1"' _ || exit_code=$?
 
 # xargs reports 124/125 on abort, 123 on worker errors (not an abort)
+# 255 means a worker reported a fatal problem and xargs aborted the batch.
+if (( exit_code == 255 )); then
+    printf "\n%b[ABORT]%b Batch stopped: a required encoder is missing.\n" \
+        "$C_RED" "$C_RESET" >&2
+    finalize_stats 0
+    exit 255
+fi
 if (( exit_code == 124 || exit_code == 125 || exit_code == 130 )); then
     finalize_stats 130
 else

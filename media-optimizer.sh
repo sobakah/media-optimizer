@@ -50,6 +50,8 @@ media-optimizer.sh [<input>] [<output>] [options]
       --verify-visual    compare picture content while converting (default)
       --no-verify-visual skip that comparison
       --strict-visual    discard suspicious video outputs instead of warning
+      --no-cache         ignore the video cache for this run
+      --cache            use the video cache (default)
       --verify-output    re-check the finished target directory afterwards
       --no-verify-output skip that final check (default)
       --avif           extra stage: short silent videos to AVIF
@@ -111,6 +113,12 @@ VISUAL_STRICT="${VISUAL_STRICT:-false}"
 # target directory once more. Off by default, needs a target directory
 # because it compares against the untouched originals.
 ENABLE_VERIFY_OUTPUT="${ENABLE_VERIFY_OUTPUT:-false}"
+
+# Ignore the video cache for this run. The cache only stores which files are
+# already finished, so ignoring it costs an ffprobe per file but never changes
+# the result. Useful after moving a folder, since the cache holds absolute
+# paths, or when outputs were deleted outside the suite.
+USE_CACHE="${USE_CACHE:-true}"
 CHECK_VISUAL="${CHECK_VISUAL:-true}"
 DRY_RUN=false
 ASSUME_YES=false
@@ -136,6 +144,8 @@ while (( $# > 0 )); do
         --verify-visual)    VERIFY_VISUAL=true; shift ;;
         --no-verify-visual) VERIFY_VISUAL=false; shift ;;
         --strict-visual)    VISUAL_STRICT=true; shift ;;
+        --no-cache)         USE_CACHE=false; shift ;;
+        --cache)            USE_CACHE=true; shift ;;
         --verify-output)    ENABLE_VERIFY_OUTPUT=true; shift ;;
         --no-verify-output) ENABLE_VERIFY_OUTPUT=false; shift ;;
         --avif)         ENABLE_AVIF_STAGE=true; shift ;;
@@ -170,33 +180,13 @@ done
 save_state() {
     local status="$1"
     [[ -z "$INPUT_DIR" || "$DRY_RUN" == true ]] && return 0
-    cat > "$STATE_FILE" <<EOF
-STATUS="$status"
-INPUT_DIR="$INPUT_DIR"
-OUTPUT_DIR="$OUTPUT_DIR"
-MAX_WORKERS="$MAX_WORKERS"
-DELETE_ORIGINAL="$DELETE_ORIGINAL"
-FORCE_DELETE="$FORCE_DELETE"
-JXL_EFFORT="$JXL_EFFORT"
-PNG_MODE="$PNG_MODE"
-PNG_QUALITY="$PNG_QUALITY"
-COMPRESSION_METHOD="$COMPRESSION_METHOD"
-ENCODER_MODE="$ENCODER_MODE"
-BITRATE_THRESHOLD_KBPS="$BITRATE_THRESHOLD_KBPS"
-GPU_QP="$GPU_QP"
-CPU_CRF="$CPU_CRF"
-CPU_PRESET="$CPU_PRESET"
-ENABLE_PROBE="$ENABLE_PROBE"
-PROBE_MARGIN_PCT="$PROBE_MARGIN_PCT"
-DISCARD_IF_LARGER="$DISCARD_IF_LARGER"
-KEEP_SALVAGED_CORRUPT="$KEEP_SALVAGED_CORRUPT"
-VERIFY_DEEP="$VERIFY_DEEP"
-STAGE_1_DONE="$STAGE_1_DONE"
-STAGE_2_DONE="$STAGE_2_DONE"
-STAGE_3_DONE="$STAGE_3_DONE"
-STAGE_AVIF_DONE="$STAGE_AVIF_DONE"
-ENABLE_AVIF_STAGE="$ENABLE_AVIF_STAGE"
-EOF
+    STATUS="$status"
+    mo_write_vars "$STATE_FILE" \
+        STATUS INPUT_DIR OUTPUT_DIR MAX_WORKERS DELETE_ORIGINAL FORCE_DELETE \
+        JXL_EFFORT PNG_MODE PNG_QUALITY COMPRESSION_METHOD ENCODER_MODE \
+        BITRATE_THRESHOLD_KBPS GPU_QP CPU_CRF CPU_PRESET ENABLE_PROBE \
+        PROBE_MARGIN_PCT DISCARD_IF_LARGER KEEP_SALVAGED_CORRUPT VERIFY_DEEP \
+        STAGE_1_DONE STAGE_2_DONE STAGE_3_DONE STAGE_AVIF_DONE ENABLE_AVIF_STAGE
 }
 
 handle_interrupt() {
@@ -306,7 +296,8 @@ if [[ "$RESUMING" == false ]]; then
                 prompt_val "CPU quality, lower is better (20-24)" "$CPU_CRF" CPU_CRF
                 prompt_val "CPU preset (medium or slow)" "$CPU_PRESET" CPU_PRESET
             fi
-            prompt_bool "Encode a short test slice first to check whether it is worth it?" "$ENABLE_PROBE" ENABLE_PROBE
+            prompt_bool "Encode a few short test slices first to predict the saving?" "$ENABLE_PROBE" ENABLE_PROBE
+            prompt_bool "Use the cache of already finished videos?" "$USE_CACHE" USE_CACHE
             prompt_bool "Discard a video if the result is larger than the original?" "$DISCARD_IF_LARGER" DISCARD_IF_LARGER
             prompt_bool "Keep videos salvaged from damaged sources even if they grew?" "$KEEP_SALVAGED_CORRUPT" KEEP_SALVAGED_CORRUPT
             prompt_bool "Compare the picture against the source while converting?" "$VERIFY_VISUAL" VERIFY_VISUAL
@@ -335,7 +326,8 @@ mo_log_settings DELETE_ORIGINAL RENAME_INPLACE FORCE_DELETE MAX_WORKERS \
     ENCODER_MODE BITRATE_THRESHOLD_KBPS GPU_QP CPU_CRF CPU_PRESET CPU_X265_PARAMS \
     GPU_CODEC GPU_RC_MODE HEVC_TAG ENABLE_PROBE PROBE_MARGIN_PCT DISCARD_IF_LARGER \
     KEEP_SALVAGED_CORRUPT VERIFY_DEEP VERIFY_VISUAL VISUAL_STRICT \
-    ENABLE_VERIFY_OUTPUT CHECK_VISUAL ENABLE_AVIF_STAGE CHECK_EXTENSIONS_PREFLIGHT \
+    ENABLE_VERIFY_OUTPUT CHECK_VISUAL USE_CACHE ENABLE_AVIF_STAGE \
+    CHECK_EXTENSIONS_PREFLIGHT \
     DRY_RUN
 
 # ------------------------------------------------------------------------------
@@ -366,7 +358,7 @@ export IMG_TARGET IMG_WEBP_QUALITY IMG_DISCARD_IF_LARGER VIDEO_EXTENSIONS
 export ENCODER_MODE BITRATE_THRESHOLD_KBPS GPU_QP CPU_CRF CPU_PRESET CPU_X265_PARAMS CJXL_THREADS
 export ENABLE_PROBE PROBE_MARGIN_PCT DISCARD_IF_LARGER KEEP_SALVAGED_CORRUPT
 export VERIFY_DEEP DRY_RUN RESUMING
-export VERIFY_VISUAL VISUAL_STRICT CHECK_VISUAL
+export VERIFY_VISUAL VISUAL_STRICT CHECK_VISUAL USE_CACHE
 export SOURCE_DIR="$INPUT_DIR" OUTPUT_DIR
 
 # ------------------------------------------------------------------------------

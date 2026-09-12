@@ -23,15 +23,26 @@ on its own.
 
 ## Requirements
 
-**Fedora / RHEL / Bazzite**
+**Fedora / RHEL**
 ```bash
-sudo dnf install ffmpeg libjxl jxl-tools libwebp-tools file trash-cli libva-utils
+sudo dnf install ffmpeg libjxl-utils libwebp-tools file trash-cli libva-utils
 ```
 
 **Debian / Ubuntu / Linux Mint**
 ```bash
 sudo apt install ffmpeg libjxl-tools webp file trash-cli vainfo
 ```
+
+**Fedora Silverblue / Bazzite / Bluefin**
+```bash
+rpm-ostree install libjxl-utils libwebp-tools trash-cli libva-utils
+systemctl reboot
+```
+
+`ffmpeg` and `file` are already part of these images; layering them again can
+conflict on updates. Bazzite ships the full ffmpeg, Silverblue and Bluefin
+ship the stripped `ffmpeg-free`, which has no HEVC encoder — swap it with
+`rpm-ostree override remove ffmpeg-free --install ffmpeg` from RPM Fusion.
 
 `gio` ships with GNOME and KDE, `trash-cli` is the fallback. `libva-utils` is
 only needed to debug GPU encoding. AVIF output needs an AV1 encoder in ffmpeg
@@ -98,6 +109,8 @@ Options that behave the same in several scripts:
       --strict-visual    discard suspicious video outputs instead of warning
       --verify-output    re-check the finished target directory afterwards
       --no-verify-output skip that final check (default)
+      --no-cache         ignore the video cache for this run
+      --cache            use the video cache (default)
       --avif           extra stage: short silent videos to AVIF
       --no-avif        skip that stage (default)
   -y, --yes            no prompts, use defaults
@@ -160,7 +173,9 @@ larger than the original are discarded.
 ### `h264-to-h265.sh`
 
 Re-encodes video to HEVC, switching between hardware (VA-API, Vulkan) and
-software (libx265) based on the source bitrate.
+software (libx265) based on the source bitrate and frame size. Large frames
+always go to the GPU, because a sparsely encoded 4K file has a low bitrate but
+would still stall the batch on `libx265`.
 
 ```
       --extensions <list>  source extensions, space separated
@@ -177,7 +192,10 @@ software (libx265) based on the source bitrate.
       --min-size <mb>      skip files below this size (default: 5)
       --no-probe           no test slice beforehand
       --probe-margin <p>   skip at p % of the original (default: 90)
-      --probe-duration <s> length of the test slice (default: 10)
+      --probe-duration <s> total length of the test material (default: 6)
+      --probe-slices <n>   how many slices it is split into (default: 3)
+      --gpu-min-pixels <n> in auto mode, always use the GPU from this frame
+                           size upwards (default: 2073600, 0 disables)
       --from-list <file|auto>  only the listed source files
       --rename-inplace     drop the _h265 suffix after deleting the original
       --hevc-tag <t>       container tag, e.g. hvc1 (default: none)
@@ -192,7 +210,8 @@ software (libx265) based on the source bitrate.
       --no-verify-visual   no PSNR comparison
       --strict-visual      discard suspicious outputs instead of warning
       --no-faststart       do not move the moov atom to the front
-      --no-cache           ignore the cache file
+      --no-cache           ignore the cache file for this run
+      --cache              use the cache file (default)
 ```
 
 Key behaviours:
@@ -203,10 +222,12 @@ Key behaviours:
   with AAC audio and without subtitles.
 * **Source codecs.** VP9, AV1 and HEVC are already efficient and are skipped by
   default; re-encoding them costs quality without saving space.
-* **Probe slice.** A slice from the middle of the file is encoded and compared
-  against the same slice of the original (both video only, same length,
+* **Probe slices.** Several short slices spread over the runtime are encoded
+  and compared against the same slices of the original (both video only,
   measured by file size). Skipped as soon as less than `100 − --probe-margin`
-  percent savings are expected.
+  percent savings are expected. One slice from the middle is not enough: on a
+  clip with a quiet middle section it predicted "74 % larger" for a file that
+  actually shrank by 53 %.
 * **Damaged sources.** If the decoder reports corruption the intact frames are
   salvaged. For those files the original is always kept, even with `--delete`.
 * **Size check.** Results larger than the original are discarded.
@@ -304,6 +325,52 @@ An explicit setting always wins and is never overwritten: via CLI, environment
 or config file. Both values are commented out in the shipped config for that
 reason.
 
+## Automated Background Processing
+
+To automate media optimization—for example, automatically processing a local ingest directory or an `rclone` VFS cache mount—a `systemd` user service and timer provide the cleanest integration.
+
+**1. Create the Service (`~/.config/systemd/user/media-optimizer.service`):**
+```ini
+[Unit]
+Description=Media Optimizer Batch Processing
+After=network.target
+
+[Service]
+Type=oneshot
+# MO_HOLD=0 prevents interactive prompts and window-hold logic
+Environment="MO_HOLD=0"
+# Example processing an rclone mount. Adjust paths as needed.
+ExecStart=%h/bin/media-optimizer.sh --yes %h/GoogleDrive/Ingest %h/GoogleDrive/Optimized
+```
+
+**2.Create the Timer `(~/.config/systemd/user/media-optimizer.timer)`:**
+```
+[Unit]
+Description=Run Media Optimizer nightly
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+**3. Enable and start the schedule:**
+```bash
+systemctl --user enable --now media-optimizer.timer
+loginctl enable-linger "$USER"    # run even while not logged in
+```
+
+Two things to watch:
+
+* `ExecStart` must point at the script inside the unpacked suite, not at a
+  lone copy. The script resolves `scripts/` relative to its own location, so
+  `%h/bin/media-optimizer.sh` only works if `%h/bin/scripts/` exists as well.
+* If the target lives on an `rclone` mount, guard the unit so it does not run
+  against an empty directory after a failed mount:
+  `ConditionPathIsMountPoint=%h/GoogleDrive`
+
 ### Hardware tuning
 
 The shipped configuration targets a Ryzen 7 9700X with an RX 9070 XT.
@@ -311,6 +378,14 @@ The shipped configuration targets a Ryzen 7 9700X with an RX 9070 XT.
 values itself on 16 threads. `asm=avx512` is enabled since Zen 5 has a full
 512-bit datapath. `CJXL_THREADS=1` avoids 16 parallel cjxl processes each
 spawning 16 threads.
+
+*Note on AVX-512:* it is enabled here because Zen 5 has a full 512-bit
+datapath. On CPUs without AVX-512 at all (Zen 3 and older, most consumer
+Intel since Alder Lake) the flag is simply ignored — x265 masks unsupported
+instruction sets. It only hurts on chips that do support AVX-512 but downclock
+for it, notably Skylake-X and Ice Lake server parts, and on Zen 4, which
+double-pumps 256-bit and gains little. Remove `asm=avx512` from
+`CPU_X265_PARAMS` there.
 
 ### Logging
 
@@ -339,6 +414,12 @@ cache hits; they appear in the per-stage summary.
 | `MO_LOG` | `--no-log` | `true` | write a log at all |
 | `MO_LOG_FILE` | `--log <file>` | next to the script | path |
 | `MO_LOG_MAX_KB` | — | `5120` | rotation limit in KB |
+
+**Systemd/Journalctl Integration:** The internal rotation (`MO_LOG_MAX_KB`) 
+works well for standalone usage. However, if you are running the suite as a 
+background service, you can disable the internal log (`--no-log`) and pipe 
+standard output directly to the system journal (`journalctl`) 
+or manage it externally via `logrotate`.
 
 ## Things to know
 
@@ -448,9 +529,11 @@ Known pitfalls:
 
 * Video runs sequentially. On CPU, x265 saturates the cores itself; on GPU
   parallelism makes little sense anyway.
-* The PSNR comparison is a heuristic. Individual samples can drop sharply from
-  seek offsets, so only the best sample counts and the threshold sits at 15 dB
-  while broken outputs land at 3 to 7 dB. Still inspect reported files yourself.
+* The PSNR comparison is a heuristic. Both files are seeked inside a single
+  ffmpeg process, which keeps the frames aligned, and only the best of several
+  samples counts. Measured separation: sound re-encodes 31-38 dB, even CRF 51
+  still 24 dB, broken colour formats 9-12 dB; the threshold sits at 18 dB.
+  Still inspect reported files yourself.
 * Short probe slices slightly overestimate the new bitrate because the first
   keyframe weighs heavily. `--probe-duration 30` helps more than a looser
   threshold.

@@ -47,6 +47,9 @@ h264-to-h265.sh - re-encodes video to HEVC
                          (default: h264 mpeg4 msmpeg4v3 wmv3 vc1 mpeg2video)
       --encoder <mode>   auto | gpu | cpu   (default: auto)
       --threshold <kbps> CPU/GPU threshold in auto mode (default: 3500)
+      --gpu-min-pixels <n>
+                         in auto mode, always use the GPU from this frame size
+                         upwards (default: 2073600 = 1920x1080, 0 disables it)
       --qp <n>           GPU CQP (default: 26)
       --crf <n>          CPU CRF (default: 22)
       --preset <p>       CPU x265 preset (default: medium)
@@ -55,7 +58,8 @@ h264-to-h265.sh - re-encodes video to HEVC
       --no-probe         no test slice beforehand
       --probe-margin <p> skip when the probe reaches p% of the original
                          (default: 90; 100 = only when it really grows)
-      --probe-duration <s> length of the test slice (default: 10)
+      --probe-duration <s> total length of the test material (default: 6)
+      --probe-slices <n> how many slices that length is split into (default: 3)
       --keep-larger      keep larger results as well
       --delete           move originals to the trash after success
       --no-delete        keep originals
@@ -84,7 +88,8 @@ h264-to-h265.sh - re-encodes video to HEVC
                          line). Ignores cache and existing outputs because the
                          selection was made explicitly. "auto" picks
                          .defekte_videos.txt from the target directory.
-      --no-cache         ignore the cache file
+      --no-cache         ignore the cache file for this run
+      --cache            use the cache file (default)
       --log <file>       log file
       --no-log           do not write a log
       --hold             keep the window open at the end
@@ -147,7 +152,7 @@ GPU_SELFTEST=""
 GPU_ALLOW_10BIT="${GPU_ALLOW_10BIT:-false}"
 VERIFY_VISUAL="${VERIFY_VISUAL:-true}"
 VISUAL_STRICT="${VISUAL_STRICT:-false}"   # true = verdaechtige Ausgaben verwerfen
-VISUAL_PSNR_MIN="${VISUAL_PSNR_MIN:-15}"
+VISUAL_PSNR_MIN="${VISUAL_PSNR_MIN:-18}"
 GPU_FELL_BACK=false
 FASTSTART="${FASTSTART:-true}"
 # Source formats. ffmpeg reads all of these containers; what matters is
@@ -166,8 +171,17 @@ VIDEO_CONTAINER="${VIDEO_CONTAINER:-auto}"
 # efficient; re-encoding them costs quality without saving space.
 SOURCE_CODECS="${SOURCE_CODECS:-h264 mpeg4 msmpeg4v3 wmv3 vc1 mpeg2video}"
 
+# Resolution above which the GPU is used regardless of bitrate. A sparsely
+# encoded 4K file has a low bitrate but is still expensive on the CPU:
+# libx265 at preset medium would stall the whole batch. 0 disables the rule.
+GPU_MIN_PIXELS="${GPU_MIN_PIXELS:-2073600}"   # 1920x1080
+
 RECURSIVE=true
-PROBE_DURATION="${PROBE_DURATION:-10}"
+PROBE_DURATION="${PROBE_DURATION:-6}"
+# Number of slices the probe encodes. One slice from the middle can land on a
+# static title card or an action peak and skew the prediction; several short
+# slices spread over the runtime are both cheaper and more representative.
+PROBE_SLICES="${PROBE_SLICES:-3}"
 PROBE_MIN_DURATION=60
 SKIP_EXISTING=true
 DURATION_TOLERANCE_PCT="${DURATION_TOLERANCE_PCT:-2}"
@@ -179,6 +193,7 @@ while (( $# > 0 )); do
         -o|--output)     OUTPUT_DIR="$2"; shift 2 ;;
         --encoder)       ENCODER_MODE="$2"; shift 2 ;;
         --threshold)     BITRATE_THRESHOLD_KBPS="$2"; shift 2 ;;
+        --gpu-min-pixels) GPU_MIN_PIXELS="$2"; shift 2 ;;
         --qp)            GPU_QP="$2"; shift 2 ;;
         --crf)           CPU_CRF="$2"; shift 2 ;;
         --preset)        CPU_PRESET="$2"; shift 2 ;;
@@ -186,6 +201,7 @@ while (( $# > 0 )); do
         --no-probe)      ENABLE_PROBE=false; shift ;;
         --probe-margin)  PROBE_MARGIN_PCT="$2"; shift 2 ;;
         --probe-duration) PROBE_DURATION="$2"; shift 2 ;;
+        --probe-slices)  PROBE_SLICES="$2"; shift 2 ;;
         --keep-larger)   DISCARD_IF_LARGER=false; shift ;;
         --delete)        DELETE_ORIGINAL=true; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
         --no-delete)     DELETE_ORIGINAL=false; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
@@ -209,6 +225,7 @@ while (( $# > 0 )); do
         --container)     VIDEO_CONTAINER="$2"; shift 2 ;;
         --source-codecs) SOURCE_CODECS="$2"; shift 2 ;;
         --no-cache)      USE_CACHE=false; shift ;;
+        --cache)         USE_CACHE=true; shift ;;
         -n|--dry-run)    DRY_RUN=true; shift ;;
         --log)           MO_LOG_FILE="$2"; shift 2 ;;
         --no-log)        MO_LOG=false; shift ;;
@@ -668,23 +685,13 @@ PREV_ELAPSED=${PREV_ELAPSED:-0}
 START_TIME=$(date +%s)
 
 save_stats() {
-    local tot_elapsed=$(( PREV_ELAPSED + $(date +%s) - START_TIME ))
-    cat > "$STATS_FILE" <<EOF
-COUNT_PROCESSED=$COUNT_PROCESSED
-COUNT_SALVAGED=$COUNT_SALVAGED
-COUNT_SKIPPED=$COUNT_SKIPPED
-COUNT_PROBE_SKIPPED=$COUNT_PROBE_SKIPPED
-COUNT_DISCARDED=$COUNT_DISCARDED
-COUNT_FAILED=$COUNT_FAILED
-COUNT_UNVERIFIED=$COUNT_UNVERIFIED
-COUNT_SUSPECT=$COUNT_SUSPECT
-COUNT_VERIFIED=$COUNT_VERIFIED
-COUNT_GPU=$COUNT_GPU
-COUNT_CPU=$COUNT_CPU
-TOTAL_ORIG_BYTES=$TOTAL_ORIG_BYTES
-TOTAL_NEW_BYTES=$TOTAL_NEW_BYTES
-PREV_ELAPSED=$tot_elapsed
-EOF
+    PREV_ELAPSED=$(( PREV_ELAPSED + $(date +%s) - START_TIME ))
+    START_TIME=$(date +%s)
+    mo_write_vars "$STATS_FILE" \
+        COUNT_PROCESSED COUNT_SALVAGED COUNT_SKIPPED COUNT_PROBE_SKIPPED \
+        COUNT_DISCARDED COUNT_FAILED COUNT_UNVERIFIED COUNT_SUSPECT \
+        COUNT_VERIFIED COUNT_GPU COUNT_CPU TOTAL_ORIG_BYTES TOTAL_NEW_BYTES \
+        PREV_ELAPSED
 }
 
 on_interrupt() {
@@ -745,19 +752,16 @@ add_dest_to_cache() {
 # slice_kbps <datei> <startsekunde> -> Bitrate eines Video-only-Ausschnitts
 # Both comparison values (original and probe) are measured identically:
 # same start, same length, without audio, measured by file size.
-slice_kbps() {
-    local file="$1" start="$2"
-    local tmp; tmp=$(mktemp --suffix=.mkv /tmp/mo_slice_XXXXXX) || return 1
+slice_bytes() {
+    local file="$1" start="$2" len="$3"
+    local tmp; tmp=$(mktemp --suffix=.mkv /tmp/mo_slice_XXXXXX) || { echo 0; return 1; }
     if ffmpeg -nostdin -y -hide_banner -loglevel error \
-        -ss "$start" -t "$PROBE_DURATION" -i "$file" -map 0:v:0 -an -c copy "$tmp" </dev/null 2>/dev/null; then
-        local sz; sz=$(stat -c%s "$tmp" 2>/dev/null || echo 0)
+        -ss "$start" -t "$len" -i "$file" -map 0:v:0 -an -c copy "$tmp" </dev/null 2>/dev/null; then
+        stat -c%s "$tmp" 2>/dev/null || echo 0
         rm -f "$tmp"
-        echo $(( sz * 8 / PROBE_DURATION / 1000 ))
         return 0
     fi
-    rm -f "$tmp"
-    echo 0
-    return 1
+    rm -f "$tmp"; echo 0; return 1
 }
 
 # ------------------------------------------------------------------------------
@@ -833,6 +837,12 @@ while IFS= read -r -d '' -u 9 src_file; do
         -of default=noprint_wrappers=1:nokey=1 "$src_file" 2>/dev/null || echo unknown)
     src_pix_fmt=$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt \
         -of default=noprint_wrappers=1:nokey=1 "$src_file" 2>/dev/null || echo "")
+    src_dims=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
+        -of csv=p=0:s=x "$src_file" 2>/dev/null || echo "")
+    src_pixels=0
+    if [[ "$src_dims" =~ ^([0-9]+)x([0-9]+)$ ]]; then
+        src_pixels=$(( BASH_REMATCH[1] * BASH_REMATCH[2] ))
+    fi
     if [[ " $SOURCE_CODECS " != *" $current_codec "* ]]; then
         COUNT_SKIPPED=$(( COUNT_SKIPPED + 1 ))
         add_to_cache "$src_file"; progress_tick; continue
@@ -873,11 +883,20 @@ while IFS= read -r -d '' -u 9 src_file; do
 
     active_encoder="$ENCODER_MODE"
     if [[ "$ENCODER_MODE" == "auto" ]]; then
-        if (( bitrate_kbps > 0 && bitrate_kbps < BITRATE_THRESHOLD_KBPS )); then
+        if (( GPU_MIN_PIXELS > 0 && src_pixels >= GPU_MIN_PIXELS )); then
+            # Large frames always go to the GPU, no matter how low the
+            # bitrate is. The CPU encoder would otherwise stall the batch.
+            active_encoder="gpu"
+            route_reason="${src_dims:-large frame}"
+        elif (( bitrate_kbps > 0 && bitrate_kbps < BITRATE_THRESHOLD_KBPS )); then
             active_encoder="cpu"
+            route_reason="${bitrate_kbps} kb/s"
         else
             active_encoder="gpu"
+            route_reason="${bitrate_kbps} kb/s"
         fi
+    else
+        route_reason=""
     fi
 
     # Build the encoder arguments for this file BEFORE the probe runs.
@@ -899,52 +918,71 @@ while IFS= read -r -d '' -u 9 src_file; do
         duration_sec="${duration_raw%.*}"; duration_sec="${duration_sec:-0}"
 
         if [[ "$duration_sec" =~ ^[0-9]+$ ]] && (( duration_sec >= PROBE_MIN_DURATION )); then
-            start_sec=$(( (duration_sec - PROBE_DURATION) / 2 ))
-            probe_file=$(mktemp --suffix=.mp4 /tmp/mo_probe_XXXXXX)
-            PROBE_CMD=(ffmpeg -nostdin -y -hide_banner -loglevel error)
-            [[ "$active_encoder" == "gpu" ]] && PROBE_CMD+=("${GPU_HW_ARGS[@]}")
-            PROBE_CMD+=(-reinit_filter 0 -ss "$start_sec" -t "$PROBE_DURATION" -i "$src_file")
-            if [[ "$active_encoder" == "gpu" ]]; then
-                PROBE_CMD+=("${GPU_ENC_ARGS[@]}")
-            else
-                PROBE_CMD+=(-c:v libx265 -crf "$CPU_CRF" -preset "$CPU_PRESET")
-                [[ -n "$CPU_X265_PARAMS" ]] && PROBE_CMD+=(-x265-params "$CPU_X265_PARAMS")
-            fi
-            PROBE_CMD+=(-an -map 0:v:0 "$probe_file")
+            # Several short slices spread over the runtime instead of one long
+            # one from the middle: a single slice can land on a title card or
+            # an action peak and skew the prediction in either direction.
+            slice_len=$(( PROBE_DURATION / PROBE_SLICES ))
+            (( slice_len < 1 )) && slice_len=1
+            probe_bytes=0; ref_bytes=0; probe_ok=true
+            probe_points=""
 
-            if "${PROBE_CMD[@]}" </dev/null; then
-                probe_size=$(stat -c%s "$probe_file" 2>/dev/null || echo 0)
-                probe_kbps=$(( probe_size * 8 / PROBE_DURATION / 1000 ))
-                rm -f "$probe_file"
+            for (( pi = 1; pi <= PROBE_SLICES; pi++ )); do
+                pstart=$(( duration_sec * pi / (PROBE_SLICES + 1) ))
+                (( pstart + slice_len > duration_sec )) && pstart=$(( duration_sec - slice_len ))
+                (( pstart < 0 )) && pstart=0
 
-                # Referenz identisch messen: gleicher Ausschnitt, video-only
-                ref_kbps=$(slice_kbps "$src_file" "$start_sec" || echo 0)
+                probe_file=$(mktemp --suffix=.mkv /tmp/mo_probe_XXXXXX)
+                PROBE_CMD=(ffmpeg -nostdin -y -hide_banner -loglevel error)
+                [[ "$active_encoder" == "gpu" ]] && PROBE_CMD+=("${GPU_HW_ARGS[@]}")
+                PROBE_CMD+=(-reinit_filter 0 -ss "$pstart" -t "$slice_len" -i "$src_file")
+                if [[ "$active_encoder" == "gpu" ]]; then
+                    PROBE_CMD+=("${GPU_ENC_ARGS[@]}")
+                else
+                    PROBE_CMD+=(-c:v libx265 -crf "$CPU_CRF" -preset "$CPU_PRESET")
+                    [[ -n "$CPU_X265_PARAMS" ]] && PROBE_CMD+=(-x265-params "$CPU_X265_PARAMS")
+                fi
+                PROBE_CMD+=(-an -map 0:v:0 "$probe_file")
 
-                if (( ref_kbps > 0 && probe_kbps * 100 >= ref_kbps * PROBE_MARGIN_PCT )); then
-                    probe_delta=$(pct_change "$ref_kbps" "$probe_kbps")
-                    if (( probe_kbps > ref_kbps )); then
+                if "${PROBE_CMD[@]}" </dev/null; then
+                    probe_bytes=$(( probe_bytes + $(stat -c%s "$probe_file" 2>/dev/null || echo 0) ))
+                    rm -f "$probe_file"
+                    # Reference measured the same way: same slice, video only.
+                    ref_bytes=$(( ref_bytes + $(slice_bytes "$src_file" "$pstart" "$slice_len") ))
+                    probe_points="${probe_points:+$probe_points, }${pstart}s"
+                else
+                    rm -f "$probe_file"; probe_ok=false; break
+                fi
+            done
+
+            if [[ "$probe_ok" == true ]] && (( ref_bytes > 0 )); then
+                probe_kbps=$(( probe_bytes * 8 / (slice_len * PROBE_SLICES) / 1000 ))
+                ref_kbps=$(( ref_bytes * 8 / (slice_len * PROBE_SLICES) / 1000 ))
+
+                if (( probe_bytes * 100 >= ref_bytes * PROBE_MARGIN_PCT )); then
+                    probe_delta=$(pct_change "$ref_bytes" "$probe_bytes")
+                    if (( probe_bytes > ref_bytes )); then
                         probe_verdict="would be ${probe_delta#-}% LARGER"
                     else
                         probe_verdict="only ${probe_delta#-}% smaller, threshold ${gain_needed}%"
                     fi
                     progress_clear
-                    printf "%b[SKIPPED]%b %s (probe %s vs original %s kb/s: %s)\n" \
-                        "$C_YELLOW" "$C_RESET" "$filename" "$probe_kbps" "$ref_kbps" "$probe_verdict"
+                    printf "%b[SKIPPED]%b %s (probe %s vs original %s kb/s over %s slices at %s: %s)\n" \
+                        "$C_YELLOW" "$C_RESET" "$filename" "$probe_kbps" "$ref_kbps" \
+                        "$PROBE_SLICES" "$probe_points" "$probe_verdict"
                     mo_log "h265" "PROBE     $src_file ($probe_verdict)"
                     COUNT_PROBE_SKIPPED=$(( COUNT_PROBE_SKIPPED + 1 ))
                     add_to_cache "$src_file"
                     continue
                 fi
-            else
-                rm -f "$probe_file"
             fi
         fi
     fi
 
     # ---------- Encoding ----------
     progress_clear
-    printf "\n%b>>> [%d/%d] Processing:%b %s (%s)\n" \
-        "$C_BOLD" "$IDX" "$TOTAL_TARGETS" "$C_RESET" "$src_file" "${active_encoder^^}"
+    printf "\n%b>>> [%d/%d] Processing:%b %s (%s%s)\n" \
+        "$C_BOLD" "$IDX" "$TOTAL_TARGETS" "$C_RESET" "$src_file" \
+        "${active_encoder^^}" "${route_reason:+, $route_reason}"
     temp_file="${dest_file}.part.$$.${RANDOM}.${dest_file##*.}"
     err_log=$(mktemp /tmp/mo_enc_err_XXXXXX)
 

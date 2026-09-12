@@ -87,13 +87,13 @@ export -f format_bytes format_duration pct_change
 MO_CONFIG_VARS=(
     MAX_WORKERS DELETE_ORIGINAL FORCE_DELETE VERIFY_DEEP JXL_EFFORT
     IMG_TARGET IMG_WEBP_QUALITY IMG_DISCARD_IF_LARGER PNG_MODE PNG_QUALITY CJXL_THREADS COMPRESSION_METHOD GIF_KMIN
-    ENCODER_MODE BITRATE_THRESHOLD_KBPS GPU_QP CPU_CRF CPU_PRESET
+    ENCODER_MODE BITRATE_THRESHOLD_KBPS GPU_MIN_PIXELS GPU_QP CPU_CRF CPU_PRESET
     CPU_X265_PARAMS VAAPI_DEVICE ENABLE_PROBE PROBE_MARGIN_PCT
     DISCARD_IF_LARGER KEEP_SALVAGED_CORRUPT VIDEO_EXTENSIONS VIDEO_CONTAINER SOURCE_CODECS AVIF_SOURCE_CODECS MIN_SIZE_MB FASTSTART USE_CACHE
     GIF_TARGET GIF_AVIF_CRF AVIF_MAX_SECONDS AVIF_CRF AVIF_CRF_RETRY
     AVIF_PRESET AVIF_PIX_FMT AVIF_REQUIRE_SILENT ENABLE_AVIF_STAGE
     DELETE_ORIGINAL_EXPLICIT RENAME_INPLACE_EXPLICIT MO_LOG MO_LOG_FILE
-    MO_LOG_MAX_KB DURATION_TOLERANCE_PCT PROBE_DURATION RENAME_INPLACE
+    MO_LOG_MAX_KB DURATION_TOLERANCE_PCT PROBE_DURATION PROBE_SLICES RENAME_INPLACE
     GPU_ALLOW_10BIT VERIFY_VISUAL VISUAL_PSNR_MIN VISUAL_SAMPLES
     VISUAL_STRICT CHECK_VISUAL ENABLE_VERIFY_OUTPUT AUTO_FIX_LIST HEVC_TAG GPU_CODEC VULKAN_DEVICE
     GPU_RC_MODE GPU_BF GPU_LOW_POWER GPU_ASYNC_DEPTH GPU_BITRATE
@@ -401,71 +401,81 @@ mo_install_exit_handler() {
 }
 
 # ------------------------------------------------------------------------------
-# Bildinhalt gegenpruefen
+# Comparing picture content
 #
-# The runtime check catches truncated files but no content
-# damage: a green picture with artefacts has the correct duration. So
-# stills from source and target are compared at three positions.
-# A real re-encode lands at 35-45 dB PSNR, broken colour formats below.
+# The runtime check catches truncated files but no content damage: a green
+# picture with artefacts still has the correct duration. So source and target
+# are compared at several positions.
 #
-# verify_visual <quelle> <ziel> [min_psnr]
+# One ffmpeg call per sample does the comparison directly in memory. Writing
+# the frames out first is not only slower (three processes per sample instead
+# of one), it is also less accurate: seeking both files inside a single
+# process aligns the frames far better, which removes the false alarms that
+# variable frame rates used to produce.
+#
+# Stills are written only when VISUAL_KEEP_DIR is set (--keep-samples).
+#
+# verify_visual <source> <target> [min_psnr]
 # 0 = fine or not measurable, 1 = broken (VISUAL_PSNR set)
 # ------------------------------------------------------------------------------
-VISUAL_PSNR=""        # bester Messwert
-VISUAL_PSNR_ALL=""    # alle Stichproben, zum Nachvollziehen
+VISUAL_PSNR=""        # best sample
+VISUAL_PSNR_ALL=""    # every sample, for traceability
+
+_visual_sample() {
+    local src="$1" dst="$2" t="$3"
+    ffmpeg -nostdin -hide_banner -noautorotate -ss "$t" -i "$dst" \
+           -noautorotate -ss "$t" -i "$src" \
+        -lavfi "[0:v]select=eq(n\,0),setpts=0[x];[1:v]select=eq(n\,0),setpts=0[y];[x][y]scale2ref=flags=bilinear[a][b];[a][b]psnr" \
+        -frames:v 1 -f null - </dev/null 2>&1 |
+        grep -oE 'average:[0-9]+\.[0-9]+' | head -1 | cut -d: -f2
+}
+
+_visual_keep() {
+    local src="$1" dst="$2" t="$3" base="$4"
+    mkdir -p "$VISUAL_KEEP_DIR" 2>/dev/null || return 0
+    ffmpeg -nostdin -y -v error -noautorotate -ss "$t" -i "$src" -map 0:v:0 \
+        -frames:v 1 "$VISUAL_KEEP_DIR/${base}_${t}s_source.png" </dev/null 2>/dev/null || true
+    ffmpeg -nostdin -y -v error -noautorotate -ss "$t" -i "$dst" -map 0:v:0 \
+        -frames:v 1 "$VISUAL_KEEP_DIR/${base}_${t}s_target.png" </dev/null 2>/dev/null || true
+    return 0
+}
+
 verify_visual() {
-    local src="$1" dst="$2" minp="${3:-20}"
+    local src="$1" dst="$2" minp="${3:-18}"
     VISUAL_PSNR=""; VISUAL_PSNR_ALL=""
     local dur; dur=$(media_duration "$src")
     [[ -n "$dur" && "$dur" != "N/A" ]] || return 0
 
     local samples="${VISUAL_SAMPLES:-3}"
-    local keep="${VISUAL_KEEP_DIR:-}"
-    [[ -n "$keep" ]] && mkdir -p "$keep" 2>/dev/null
+    local base; base="$(basename "$dst")"; base="${base%.*}"
 
-    local i frac t a b p best="" measured=0
+    local i frac t p best="" measured=0
     for (( i = 1; i <= samples; i++ )); do
         frac=$(( 100 * i / (samples + 1) ))
         t=$(awk -v d="$dur" -v f="$frac" 'BEGIN { printf "%.2f", d * f / 100 }')
-        a=$(mktemp --suffix=.png /tmp/mo_vv_a_XXXXXX) || return 0
-        b=$(mktemp --suffix=.png /tmp/mo_vv_b_XXXXXX) || { rm -f "$a"; return 0; }
 
-        # -map 0:v:0 pins the real video stream (not an embedded
-        # Vorschaubild), -noautorotate haelt beide Seiten gleich orientiert.
-        if ffmpeg -nostdin -y -v error -noautorotate -ss "$t" -i "$src" \
-                  -map 0:v:0 -frames:v 1 "$a" </dev/null 2>/dev/null \
-        && ffmpeg -nostdin -y -v error -noautorotate -ss "$t" -i "$dst" \
-                  -map 0:v:0 -frames:v 1 "$b" </dev/null 2>/dev/null; then
-            p=$(ffmpeg -nostdin -hide_banner -i "$b" -i "$a" \
-                -lavfi "scale2ref=flags=bilinear[x][y];[x][y]psnr" -f null - 2>&1 \
-                | grep -oE 'average:[0-9]+\.[0-9]+' | head -1 | cut -d: -f2)
-            if [[ "$p" =~ ^[0-9]+\.[0-9]+$ ]]; then
-                measured=1
-                VISUAL_PSNR_ALL="${VISUAL_PSNR_ALL:+$VISUAL_PSNR_ALL, }${t}s=${p%.*} dB"
-                if [[ -z "$best" ]] || awk -v n="$p" -v o="$best" 'BEGIN { exit (n > o) ? 0 : 1 }'; then
-                    best="$p"
-                fi
+        p=$(_visual_sample "$src" "$dst" "$t")
+        if [[ "$p" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            measured=1
+            VISUAL_PSNR_ALL="${VISUAL_PSNR_ALL:+$VISUAL_PSNR_ALL, }${t}s=${p%.*} dB"
+            if [[ -z "$best" ]] || awk -v n="$p" -v o="$best" 'BEGIN { exit (n > o) ? 0 : 1 }'; then
+                best="$p"
             fi
         fi
-        if [[ -n "$keep" ]]; then
-            mv "$a" "$keep/$(basename "$dst" .mp4)_${t}s_quelle.png" 2>/dev/null || rm -f "$a"
-            mv "$b" "$keep/$(basename "$dst" .mp4)_${t}s_ziel.png"   2>/dev/null || rm -f "$b"
-        else
-            rm -f "$a" "$b"
-        fi
+
+        [[ -n "${VISUAL_KEEP_DIR:-}" ]] && _visual_keep "$src" "$dst" "$t" "$base"
     done
 
     (( measured == 1 )) || return 0
     VISUAL_PSNR="${best%.*}"
 
-    # The BEST sample decides. A single bad measurement can come from a
-    # seek offset; a genuinely broken
-    # picture is bad at EVERY position. This avoids false alarms.
+    # The BEST sample decides. A single bad measurement can still come from a
+    # seek offset; a genuinely broken picture is bad at every position.
     awk -v p="$best" -v m="$minp" 'BEGIN { exit (p < m) ? 0 : 1 }' && return 1
     return 0
 }
 
-export -f media_duration verify_video verify_visual
+export -f media_duration verify_video verify_visual _visual_sample _visual_keep
 
 # ------------------------------------------------------------------------------
 # Mode-dependent presets for DELETE_ORIGINAL and RENAME_INPLACE
@@ -656,3 +666,39 @@ mo_log_close() {
 }
 
 export -f mo_log_enabled mo_log mo_log_file
+
+# ------------------------------------------------------------------------------
+# Writing state files
+#
+# State files are read back with "source", so every value must be quoted in a
+# way that bash cannot interpret. printf '%q' does exactly that: a directory
+# named  x"; rm -rf ~; #  would otherwise end up as executable code.
+#
+# mo_write_vars <file> <VAR> [<VAR> ...]
+# ------------------------------------------------------------------------------
+mo_write_vars() {
+    local file="$1"; shift
+    local v
+    : > "$file" || return 1
+    for v in "$@"; do
+        printf '%s=%q\n' "$v" "${!v-}" >> "$file"
+    done
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Fatal versus per-file failure
+#
+# xargs keeps going on exit codes 1-124 and aborts the whole batch on 255.
+# A missing or non-executable encoder is not a per-file problem: every
+# following file would fail the same way. Workers therefore return 255 in
+# that case and 1 for an ordinary failure.
+# ------------------------------------------------------------------------------
+mo_encoder_missing() {
+    local cmd="$1"
+    command -v "$cmd" >/dev/null 2>&1 && return 1
+    printf "%b[FATAL]%b %s not found. Aborting the batch.\n" \
+        "$C_RED" "$C_RESET" "$cmd" >&2
+    return 0
+}
+export -f mo_encoder_missing

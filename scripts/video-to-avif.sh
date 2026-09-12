@@ -73,7 +73,7 @@ DELETE_ORIGINAL="${DELETE_ORIGINAL:-false}"
 FORCE_DELETE="${FORCE_DELETE:-false}"
 DISCARD_IF_LARGER="${DISCARD_IF_LARGER:-true}"
 VERIFY_VISUAL="${VERIFY_VISUAL:-true}"
-VISUAL_PSNR_MIN="${VISUAL_PSNR_MIN:-15}"
+VISUAL_PSNR_MIN="${VISUAL_PSNR_MIN:-18}"
 DRY_RUN="${DRY_RUN:-false}"
 SKIP_EXISTING=true
 
@@ -182,16 +182,10 @@ finalize_stats() {
     TOTAL_ORIG_BYTES=$(( TOTAL_ORIG_BYTES + c_orig )); TOTAL_NEW_BYTES=$(( TOTAL_NEW_BYTES + c_new ))
 
     if [[ $exit_code -eq 130 ]]; then
-        cat > "$STATS_FILE" <<EOF
-TOTAL_PROCESSED=$TOTAL_PROCESSED
-TOTAL_SKIPPED=$TOTAL_SKIPPED
-TOTAL_FAILED=$TOTAL_FAILED
-TOTAL_DISCARDED=$TOTAL_DISCARDED
-TOTAL_SUSPECT=$TOTAL_SUSPECT
-TOTAL_ORIG_BYTES=$TOTAL_ORIG_BYTES
-TOTAL_NEW_BYTES=$TOTAL_NEW_BYTES
-PREV_ELAPSED=$tot_elapsed
-EOF
+        PREV_ELAPSED="$tot_elapsed"
+        mo_write_vars "$STATS_FILE" \
+            TOTAL_PROCESSED TOTAL_SKIPPED TOTAL_FAILED TOTAL_DISCARDED \
+            TOTAL_SUSPECT TOTAL_ORIG_BYTES TOTAL_NEW_BYTES PREV_ELAPSED
         resolve_pending_deletes
         exit 130
     fi
@@ -309,6 +303,7 @@ convert_to_avif() {
         mo_log_file "$MO_LOG_TAG" "ERROR" "$src"
         printf "%b[ERROR]%b '%s' (original kept)\n" "$C_RED" "$C_RESET" "$filename" >&2
         rmdir "$lockdir" 2>/dev/null || true
+        mo_encoder_missing ffmpeg && return 255
         return 1
     done
 
@@ -372,6 +367,13 @@ FIND_OPTS+=(\) ! -name "*.part.*")
 find "$SOURCE_DIR" "${FIND_OPTS[@]}" -print0 |
     xargs -0 -r -n 1 -P "$MAX_WORKERS" bash -c 'convert_wrapper "$1"' _ || exit_code=$?
 
+# 255 means a worker reported a fatal problem and xargs aborted the batch.
+if (( exit_code == 255 )); then
+    printf "\n%b[ABORT]%b Batch stopped: a required encoder is missing.\n" \
+        "$C_RED" "$C_RESET" >&2
+    finalize_stats 0
+    exit 255
+fi
 if (( exit_code == 124 || exit_code == 125 || exit_code == 130 )); then
     finalize_stats 130
 else
