@@ -281,9 +281,12 @@ convert_to_avif() {
     local rc=0 crf="$AVIF_CRF" new_size=0 attempt
 
     encode_avif() {   # $1 = crf
+        # -map_metadata 0 carries creation_time, title, comment and location
+        # over. Without it the AVIF would lose every container tag.
         ffmpeg -nostdin -y -v error -i "$src" \
             -c:v "$AV1_ENCODER" -crf "$1" "${AV1_SPEED[@]}" \
-            -pix_fmt "$AVIF_PIX_FMT" -an -f avif -loop 0 "$tmp" </dev/null 2>/dev/null
+            -pix_fmt "$AVIF_PIX_FMT" -an -map_metadata 0 \
+            -f avif -loop 0 "$tmp" </dev/null 2>/dev/null
     }
 
     for attempt in 1 2; do

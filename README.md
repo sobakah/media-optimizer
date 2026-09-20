@@ -44,6 +44,8 @@ conflict on updates. Bazzite ships the full ffmpeg, Silverblue and Bluefin
 ship the stripped `ffmpeg-free`, which has no HEVC encoder — swap it with
 `rpm-ostree override remove ffmpeg-free --install ffmpeg` from RPM Fusion.
 
+`exiftool` (`perl-Image-ExifTool` on Fedora, `libimage-exiftool-perl` on
+Debian) is optional and only used to carry EXIF out of PNG sources.
 `gio` ships with GNOME and KDE, `trash-cli` is the fallback. `libva-utils` is
 only needed to debug GPU encoding. AVIF output needs an AV1 encoder in ffmpeg
 (`libsvtav1` or `libaom-av1`). Dependencies are checked at startup.
@@ -141,6 +143,7 @@ with a quality setting; if that fails a lossless WebP fallback kicks in.
       --target <f>       jxl | webp (default: jxl)
       --webp-quality <q> quality for lossy WebP (default: 85)
       --discard-larger   discard the result if larger than the original
+      --copy-metadata <m> auto | always | never: copy EXIF from PNG sources
   -e, --effort <1-9>     JXL effort (default: 7)
       --png-mode <m>     lossless | lossy (default: lossless)
       --png-quality <q>  only with lossy (default: 90)
@@ -152,6 +155,27 @@ with a quality setting; if that fails a lossless WebP fallback kicks in.
 re-encoded lossily then, because lossless WebP from an already DCT-compressed
 JPEG would be larger than the source. `PNG_MODE` still decides whether PNG is
 lossless.
+
+### Metadata
+
+File timestamps are preserved everywhere: every script applies `touch -r`
+after the conversion, so the output inherits the modification time of its
+source.
+
+| Path | embedded metadata |
+|---|---|
+| JPEG → JXL | fully preserved, the JPEG is repacked bit-exactly |
+| JPEG → WebP | fully preserved via `cwebp -metadata all` |
+| PNG → JXL / WebP | copied afterwards with `exiftool` if installed |
+| GIF → WebP | GIF carries practically none |
+| video → HEVC | fully preserved via `-map_metadata 0` |
+| video → AVIF | container tags such as `creation_time` preserved; AVIF has no field for a title |
+
+Neither `cjxl` nor `cwebp` reads the `eXIf` chunk of a PNG, so capture date,
+GPS position and copyright would be lost. `IMG_COPY_METADATA="auto"` copies
+them over with `exiftool` when it is installed; `always` warns when it is
+missing, `never` turns it off. The timestamp is restored afterwards, because
+exiftool updates it.
 
 When the extension does not match the content (a WebP named `.jpg`), behaviour
 depends on the mode. **With a target directory the source stays untouched** and

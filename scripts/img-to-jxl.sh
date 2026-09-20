@@ -38,6 +38,8 @@ img-to-jxl.sh - converts JPG/PNG to JPEG XL or WebP
       --target <f>       jxl | webp (default: jxl)
       --webp-quality <q> quality for lossy WebP (default: 85)
       --discard-larger   discard the result if larger than the original
+      --copy-metadata <m> auto | always | never: copy EXIF from PNG sources
+                         with exiftool (default: auto)
   -e, --effort  <1-9>    JXL effort (default: 7)
       --png-mode  <m>    lossless | lossy (default: lossless)
       --png-quality <q>  only with --png-mode lossy (default: 90)
@@ -76,6 +78,16 @@ JXL_EFFORT="${JXL_EFFORT:-7}"
 IMG_TARGET="${IMG_TARGET:-jxl}"
 IMG_WEBP_QUALITY="${IMG_WEBP_QUALITY:-85}"
 IMG_DISCARD_IF_LARGER="${IMG_DISCARD_IF_LARGER:-false}"
+
+# PNG carries EXIF in an eXIf chunk, but neither cjxl nor cwebp reads it, so
+# capture date, GPS and copyright would be lost. exiftool can copy them into
+# the finished file afterwards.
+#   auto   copy when exiftool is installed (default)
+#   always copy, and warn when exiftool is missing
+#   never  do not copy
+# JPEG sources need none of this: the JXL path repacks the JPEG bit-exactly
+# and cwebp reads JPEG metadata by itself.
+IMG_COPY_METADATA="${IMG_COPY_METADATA:-auto}"
 PNG_MODE="${PNG_MODE:-lossless}"
 PNG_QUALITY="${PNG_QUALITY:-90}"
 DRY_RUN="${DRY_RUN:-false}"
@@ -97,6 +109,7 @@ while (( $# > 0 )); do
         --target)         IMG_TARGET="$2"; shift 2 ;;
         --webp-quality)   IMG_WEBP_QUALITY="$2"; shift 2 ;;
         --discard-larger) IMG_DISCARD_IF_LARGER=true; shift ;;
+        --copy-metadata)  IMG_COPY_METADATA="$2"; shift 2 ;;
         --png-mode)       PNG_MODE="$2"; shift 2 ;;
         --png-quality)    PNG_QUALITY="$2"; shift 2 ;;
         --delete)         DELETE_ORIGINAL=true; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
@@ -150,6 +163,10 @@ require_cmds cjxl cwebp file || exit 1
     echo "--png-mode muss 'lossless' oder 'lossy' sein." >&2; exit 2; }
 [[ "$IMG_TARGET" == "jxl" || "$IMG_TARGET" == "webp" ]] || {
     echo "--target muss 'jxl' oder 'webp' sein." >&2; exit 2; }
+if [[ "$IMG_COPY_METADATA" == "always" ]] && ! command -v exiftool >/dev/null 2>&1; then
+    printf "%b[NOTE]%b --copy-metadata always needs exiftool; PNG metadata will be lost.\n" \
+        "$C_YELLOW" "$C_RESET" >&2
+fi
 [[ "$IMG_TARGET" == "webp" ]] && printf "%b[IMAGES]%b target: WebP (JPEG lossy at q%s, PNG %s)\n" \
     "$C_CYAN" "$C_RESET" "$IMG_WEBP_QUALITY" "$PNG_MODE"
 
@@ -254,6 +271,20 @@ trap 'printf "\n%b[ABORT]%b image conversion stopped.\n" "$C_RED" "$C_RESET"; fi
 # ------------------------------------------------------------------------------
 # WORKER
 # ------------------------------------------------------------------------------
+# Copies EXIF, XMP and ICC from a PNG source into the finished file. Only for
+# PNG: JPEG sources keep their metadata on their own. exiftool exits cleanly
+# with "0 image files updated" when the source has nothing to copy, so no
+# extra probing call is needed.
+copy_png_metadata() {
+    local src="$1" dest="$2"
+    [[ "$ext" == "png" ]] || return 0
+    [[ "$IMG_COPY_METADATA" == "never" ]] && return 0
+    command -v exiftool >/dev/null 2>&1 || return 0
+    exiftool -overwrite_original -quiet -quiet \
+        -tagsFromFile "$src" -all:all "$dest" >/dev/null 2>&1 || true
+    return 0
+}
+
 # Wrapper: computes the target names and claims them with a lock directory
 # concurrent access by a second worker (e.g. foo.jpg + foo.png,
 # which would both map to foo.jxl).
@@ -381,6 +412,9 @@ _convert_image_locked() {
             return 1
         fi
         mv "$tmp" "$dest"
+        copy_png_metadata "$src" "$dest"
+        # After exiftool the timestamp must be restored again, so this stays
+        # the last step.
         touch -r "$src" "$dest"
         echo "SUCCESS $orig_size $new_size" >> "$CURRENT_RUN_LOG"
         [[ "$DELETE_ORIGINAL" == true ]] && safe_remove "$src"
@@ -516,8 +550,8 @@ _convert_image_locked() {
 
 export SOURCE_DIR OUTPUT_DIR SKIP_EXISTING DELETE_ORIGINAL
 export JXL_EFFORT PNG_MODE PNG_QUALITY WEBP_FALLBACK_METHOD CJXL_THREADS
-export IMG_TARGET IMG_WEBP_QUALITY IMG_DISCARD_IF_LARGER
-export -f convert_image _convert_image_locked _handle_wrong_extension
+export IMG_TARGET IMG_WEBP_QUALITY IMG_DISCARD_IF_LARGER IMG_COPY_METADATA
+export -f convert_image _convert_image_locked _handle_wrong_extension copy_png_metadata
 
 exit_code=0
 find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) -print0 |
