@@ -12,13 +12,23 @@
 # INVARIANTS
 #   - Target names are claimed with a lock directory. "foto.jpg" and
 #     "foto.png" both map to "foto.jxl"; without the lock two workers would
-#     write the same file.
+#     write the same file. The existing-output check is repeated under the
+#     lock and the final move never overwrites (mo_w_claim, mo_w_commit).
 #   - Temp files carry PID and a random number so parallel workers never
 #     share one.
+#   - The encoder settings follow the real file type, never the extension.
+#     cjxl and cwebp detect the format by content, so a PNG named .jpg would
+#     otherwise get the JPEG settings, which for cjxl means lossy.
 #   - JPEG is transcoded bit-exactly lossless in the JXL path. PNG_MODE only
-#     affects PNG.
+#     affects PNG. There is deliberately no pixel-based fallback for JPEGs
+#     cjxl cannot transcode: for a truncated JPEG it would "succeed" and
+#     replace the damaged original with an equally damaged copy.
 #   - With a target directory the source directory is never modified, not
-#     even when an extension has to be corrected.
+#     even when an extension has to be corrected, and no state files are
+#     written there.
+#   - Workers run with set -euo pipefail (mo_worker_start). An unexpected
+#     error ends the worker before the deletion step; its EXIT trap records
+#     FAIL.
 # ==============================================================================
 set -euo pipefail
 
@@ -29,25 +39,26 @@ _MO_ROOT="$(dirname "$SCRIPT_DIR")"; load_config
 mo_install_exit_handler
 
 usage() {
-    cat <<'EOF'
+    cat <<'USAGE'
 img-to-jxl.sh - converts JPG/PNG to JPEG XL or WebP
 
   -i, --input   <dir>    source directory
   -o, --output  <dir>    target directory (empty = in place)
   -j, --workers <n>      parallel workers (default: nproc)
       --target <f>       jxl | webp (default: jxl)
-      --webp-quality <q> quality for lossy WebP (default: 85)
+      --webp-quality <q> quality for lossy WebP, 0-100 (default: 85)
       --discard-larger   discard the result if larger than the original
-      --copy-metadata <m> auto | always | never: copy EXIF from PNG sources
+      --copy-metadata <m> auto | always | never: copy PNG metadata
                          with exiftool (default: auto)
-  -e, --effort  <1-9>    JXL effort (default: 7)
+  -e, --effort  <1-10>   JXL effort (default: 7)
       --png-mode  <m>    lossless | lossy (default: lossless)
-      --png-quality <q>  only with --png-mode lossy (default: 90)
+      --png-quality <q>  only with --png-mode lossy, 1-100 (default: 90)
       --cjxl-threads <n> threads per cjxl process (default: 1)
       --delete           move originals to the trash after success
       --no-delete        keep originals
       --force-delete     if the trash fails, rm without asking
       --verify-deep      fully decode the output (slower, safer)
+  -y, --yes              do not ask, keep the settings as given
       --log <file>       log file
       --no-log           do not write a log
       --hold             keep the window open at the end
@@ -56,7 +67,8 @@ img-to-jxl.sh - converts JPG/PNG to JPEG XL or WebP
   -h, --help             this help
 
 Positional arguments are still accepted: img-to-jxl.sh <input> [output]
-EOF
+Hidden files and folders are skipped unless INCLUDE_HIDDEN=true.
+USAGE
 }
 
 # ------------------------------------------------------------------------------
@@ -65,8 +77,8 @@ EOF
 SOURCE_DIR="${SOURCE_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 MAX_WORKERS="${MAX_WORKERS:-$(nproc)}"
-# No fixed default: the preset depends on whether a target
-# Zielverzeichnis angegeben wurde (siehe mo_apply_inplace_defaults).
+# No fixed default: the preset depends on whether a target directory was
+# given (see mo_apply_inplace_defaults).
 # A value from the environment or config file counts as explicit.
 if [[ -n "${DELETE_ORIGINAL+x}" ]]; then DELETE_ORIGINAL_EXPLICIT=true; fi
 DELETE_ORIGINAL="${DELETE_ORIGINAL:-false}"
@@ -79,14 +91,18 @@ IMG_TARGET="${IMG_TARGET:-jxl}"
 IMG_WEBP_QUALITY="${IMG_WEBP_QUALITY:-85}"
 IMG_DISCARD_IF_LARGER="${IMG_DISCARD_IF_LARGER:-false}"
 
-# PNG carries EXIF in an eXIf chunk, but neither cjxl nor cwebp reads it, so
-# capture date, GPS and copyright would be lost. exiftool can copy them into
-# the finished file afterwards.
+# Metadata. cjxl 0.11 and cwebp copy EXIF and XMP, but not the PNG text
+# chunks, where many tools put Artist and Copyright. cjxl also Brotli-
+# compresses the metadata boxes by default, which many readers (exiftool
+# without an extra Perl module, for one) cannot decode. So cjxl always writes
+# them uncompressed, for JPEG and PNG alike; measured: JPEG reconstruction
+# stays bit-exact. For PNG, exiftool then adds the text chunks into the temp
+# file, before verification.
 #   auto   copy when exiftool is installed (default)
-#   always copy, and warn when exiftool is missing
+#   always copy; refuse to start when exiftool is missing
 #   never  do not copy
-# JPEG sources need none of this: the JXL path repacks the JPEG bit-exactly
-# and cwebp reads JPEG metadata by itself.
+# If exiftool fails on a file, that file counts as failed and its original
+# is kept, so metadata is never lost silently.
 IMG_COPY_METADATA="${IMG_COPY_METADATA:-auto}"
 PNG_MODE="${PNG_MODE:-lossless}"
 PNG_QUALITY="${PNG_QUALITY:-90}"
@@ -96,29 +112,32 @@ VERIFY_DEEP="${VERIFY_DEEP:-false}"
 # many threads as there are cores (16 workers x 16 threads
 # on an 8C/16T chip). One thread per process avoids the oversubscription.
 CJXL_THREADS="${CJXL_THREADS:-1}"
+ASSUME_YES="${ASSUME_YES:-false}"
 SKIP_EXISTING=true
 WEBP_FALLBACK_METHOD=6
+SOURCE_FROM_CLI=false
 
 POSITIONAL=()
 while (( $# > 0 )); do
     case "$1" in
-        -i|--input)       SOURCE_DIR="$2"; shift 2 ;;
-        -o|--output)      OUTPUT_DIR="$2"; shift 2 ;;
-        -j|--workers)     MAX_WORKERS="$2"; shift 2 ;;
-        -e|--effort)      JXL_EFFORT="$2"; shift 2 ;;
-        --target)         IMG_TARGET="$2"; shift 2 ;;
-        --webp-quality)   IMG_WEBP_QUALITY="$2"; shift 2 ;;
+        -i|--input)       mo_need_value "$@"; SOURCE_DIR="$2"; SOURCE_FROM_CLI=true; shift 2 ;;
+        -o|--output)      mo_need_value "$@"; OUTPUT_DIR="$2"; shift 2 ;;
+        -j|--workers)     mo_need_value "$@"; MAX_WORKERS="$2"; shift 2 ;;
+        -e|--effort)      mo_need_value "$@"; JXL_EFFORT="$2"; shift 2 ;;
+        --target)         mo_need_value "$@"; IMG_TARGET="$2"; shift 2 ;;
+        --webp-quality)   mo_need_value "$@"; IMG_WEBP_QUALITY="$2"; shift 2 ;;
         --discard-larger) IMG_DISCARD_IF_LARGER=true; shift ;;
-        --copy-metadata)  IMG_COPY_METADATA="$2"; shift 2 ;;
-        --png-mode)       PNG_MODE="$2"; shift 2 ;;
-        --png-quality)    PNG_QUALITY="$2"; shift 2 ;;
+        --copy-metadata)  mo_need_value "$@"; IMG_COPY_METADATA="$2"; shift 2 ;;
+        --png-mode)       mo_need_value "$@"; PNG_MODE="$2"; shift 2 ;;
+        --png-quality)    mo_need_value "$@"; PNG_QUALITY="$2"; shift 2 ;;
         --delete)         DELETE_ORIGINAL=true; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
         --no-delete)      DELETE_ORIGINAL=false; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
         --force-delete)   FORCE_DELETE=true; shift ;;
-        --cjxl-threads)   CJXL_THREADS="$2"; shift 2 ;;
+        --cjxl-threads)   mo_need_value "$@"; CJXL_THREADS="$2"; shift 2 ;;
         --verify-deep)    VERIFY_DEEP=true; shift ;;
+        -y|--yes)         ASSUME_YES=true; shift ;;
         -n|--dry-run)     DRY_RUN=true; shift ;;
-        --log)            MO_LOG_FILE="$2"; shift 2 ;;
+        --log)            mo_need_value "$@"; MO_LOG_FILE="$2"; shift 2 ;;
         --no-log)         MO_LOG=false; shift ;;
         --hold)           MO_HOLD=1; shift ;;
         --no-hold)        MO_HOLD=0; shift ;;
@@ -128,23 +147,32 @@ while (( $# > 0 )); do
         *)                POSITIONAL+=("$1"); shift ;;
     esac
 done
-[[ -n "${POSITIONAL[0]:-}" ]] && SOURCE_DIR="${POSITIONAL[0]}"
+if [[ -n "${POSITIONAL[0]:-}" ]]; then SOURCE_DIR="${POSITIONAL[0]}"; SOURCE_FROM_CLI=true; fi
 [[ -n "${POSITIONAL[1]:-}" ]] && OUTPUT_DIR="${POSITIONAL[1]}"
 
-if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" ]]; then
+# The settings menu is for interactive use without arguments. Whoever names
+# the source on the command line has already chosen, and is not asked again.
+if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" && "$SOURCE_FROM_CLI" != true \
+      && "$ASSUME_YES" != true ]]; then
+    _banner="JPG/PNG -> JXL (with WebP fallback)"
+    [[ "$IMG_TARGET" == "webp" ]] && _banner="JPG/PNG -> WebP"
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
-    printf "%bImage converter: JPG/PNG -> JXL (with WebP fallback)%b\n" "$C_BOLD" "$C_RESET"
+    printf "%bImage converter: %s%b\n" "$C_BOLD" "$_banner" "$C_RESET"
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
     read -rp "Run with the default settings? [Y/n]: " start_choice || start_choice=""
     if [[ "${start_choice,,}" =~ ^(n|nein|no)$ ]]; then
         read -rp "  Source directory [$SOURCE_DIR]: " x && SOURCE_DIR="${x:-$SOURCE_DIR}"
         read -rp "  Target directory (empty = in place) [$OUTPUT_DIR]: " x && OUTPUT_DIR="${x:-$OUTPUT_DIR}"
-        read -rp "  Move originals to trash? [y/N]: " x
-        [[ "${x,,}" =~ ^(j|ja|y|yes)$ ]] && DELETE_ORIGINAL=true || DELETE_ORIGINAL=false
-        read -rp "  JXL effort (1-9) [$JXL_EFFORT]: " x && JXL_EFFORT="${x:-$JXL_EFFORT}"
+        mo_prompt_delete_original "$OUTPUT_DIR"
+        read -rp "  JXL effort (1-10) [$JXL_EFFORT]: " x && JXL_EFFORT="${x:-$JXL_EFFORT}"
         read -rp "  PNG mode (lossless/lossy) [$PNG_MODE]: " x && PNG_MODE="${x:-$PNG_MODE}"
     fi
 fi
+
+# After config file, command line and prompts: every source of a value.
+mo_validate MAX_WORKERS JXL_EFFORT IMG_TARGET IMG_WEBP_QUALITY IMG_DISCARD_IF_LARGER \
+    IMG_COPY_METADATA PNG_MODE PNG_QUALITY CJXL_THREADS DELETE_ORIGINAL FORCE_DELETE \
+    VERIFY_DEEP DRY_RUN INCLUDE_HIDDEN
 
 [[ -z "$SOURCE_DIR" ]] && { echo "No source directory given." >&2; exit 1; }
 [[ -d "$SOURCE_DIR" ]] || { echo "Source directory not found: $SOURCE_DIR" >&2; exit 1; }
@@ -159,32 +187,47 @@ export MO_LOG_TAG="img"
 mo_log_init "img-to-jxl.sh" "$SOURCE_DIR" "$OUTPUT_DIR"
 
 require_cmds cjxl cwebp file || exit 1
-[[ "$PNG_MODE" == "lossless" || "$PNG_MODE" == "lossy" ]] || {
-    echo "--png-mode muss 'lossless' oder 'lossy' sein." >&2; exit 2; }
-[[ "$IMG_TARGET" == "jxl" || "$IMG_TARGET" == "webp" ]] || {
-    echo "--target muss 'jxl' oder 'webp' sein." >&2; exit 2; }
 if [[ "$IMG_COPY_METADATA" == "always" ]] && ! command -v exiftool >/dev/null 2>&1; then
-    printf "%b[NOTE]%b --copy-metadata always needs exiftool; PNG metadata will be lost.\n" \
-        "$C_YELLOW" "$C_RESET" >&2
+    printf "%b[MISSING]%b --copy-metadata always needs exiftool, which was not found.\n" \
+        "$C_RED" "$C_RESET" >&2
+    exit 1
 fi
+
+# Uncompressed metadata boxes, only when this cjxl knows the option: an
+# unknown option would make every file fail (and every PNG fall back to WebP).
+# Not "cjxl -h | grep -q": grep exits at the first match, cjxl may then die
+# of SIGPIPE, and pipefail turns that into "not supported" - measured as a
+# test that failed only sometimes.
+CJXL_META_ARGS=""
+_cjxl_help="$(cjxl -h -v -v -v 2>&1 || true)"
+if [[ "$_cjxl_help" == *"--compress_boxes"* ]]; then
+    CJXL_META_ARGS="--compress_boxes=0"
+fi
+
 [[ "$IMG_TARGET" == "webp" ]] && printf "%b[IMAGES]%b target: WebP (JPEG lossy at q%s, PNG %s)\n" \
     "$C_CYAN" "$C_RESET" "$IMG_WEBP_QUALITY" "$PNG_MODE"
 
 [[ "$DRY_RUN" == true ]] && printf "%b[DRY-RUN]%b Nothing will be written or deleted.\n" "$C_CYAN" "$C_RESET"
 
-cleanup_stale_parts "${OUTPUT_DIR:-$SOURCE_DIR}" "*.part.*.jxl" "*.part.*.webp"
+# Everything this script writes besides the outputs (stats, pending deletes,
+# temp and lock files) lives in the working directory: the target directory,
+# or the source directory in place. The source is never written in target
+# mode.
+WORK_DIR="${OUTPUT_DIR:-$SOURCE_DIR}"
+mo_lock_workdir "$WORK_DIR"
+cleanup_stale_parts "$WORK_DIR" "*.part.*.jxl" "*.part.*.webp"
 
 # ------------------------------------------------------------------------------
 # STATISTICS
 # ------------------------------------------------------------------------------
-STATS_FILE="${SOURCE_DIR}/.img_stats.env"
-PENDING_DELETE_LOG="${SOURCE_DIR}/.img_pending_deletes.txt"
-CURRENT_RUN_LOG=$(mktemp /tmp/img_stats_XXXXXX)
+STATS_FILE="${WORK_DIR}/.img_stats.env"
+PENDING_DELETE_LOG="${WORK_DIR}/.img_pending_deletes.txt"
+mo_mktemp CURRENT_RUN_LOG img_stats
 export CURRENT_RUN_LOG PENDING_DELETE_LOG DRY_RUN VERIFY_DEEP FORCE_DELETE
 
 if [[ "${RESUMING:-false}" == "true" && -f "$STATS_FILE" ]]; then
     source "$STATS_FILE" 2>/dev/null || true
-else
+elif [[ "$DRY_RUN" != true ]]; then
     rm -f "$STATS_FILE"
 fi
 
@@ -221,6 +264,7 @@ finalize_stats() {
     TOTAL_NEW_BYTES=$(( TOTAL_NEW_BYTES + c_new ))
 
     if [[ $exit_code -eq 130 ]]; then
+        [[ "$DRY_RUN" == true ]] && exit 130
         PREV_ELAPSED="$tot_elapsed"
         mo_write_vars "$STATS_FILE" \
             TOTAL_PROCESSED TOTAL_SKIPPED TOTAL_FAILED TOTAL_COLLISION \
@@ -228,7 +272,7 @@ finalize_stats() {
         resolve_pending_deletes
         exit 130
     fi
-    rm -f "$STATS_FILE"
+    [[ "$DRY_RUN" == true ]] || rm -f "$STATS_FILE"
 
     if [[ "$DRY_RUN" == true ]]; then
         printf "\n%b[DRY-RUN]%b %s file(s) would be converted, %s skipped.\n" \
@@ -266,307 +310,284 @@ finalize_stats() {
     resolve_pending_deletes
 }
 
-trap 'printf "\n%b[ABORT]%b image conversion stopped.\n" "$C_RED" "$C_RESET"; finalize_stats 130' SIGINT SIGTERM
+# Ctrl+C and SIGTERM: stop the workers first, so their results are counted
+# and their temp files removed, then save the counters for a resume.
+on_stop() {
+    trap '' INT TERM
+    printf "\n%b[ABORT]%b image conversion stopped.\n" "$C_RED" "$C_RESET"
+    mo_job_stop
+    finalize_stats 130
+}
+trap on_stop SIGINT SIGTERM
 
 # ------------------------------------------------------------------------------
 # WORKER
+#
+# One file per "bash -c", on the scaffold from common.sh (mo_worker_start and
+# the mo_w_* helpers). Values are passed as arguments.
+#
+# Per file:
+#   1. detect the real type from the content
+#   2. claim the target name (lock), then check again for an existing output
+#   3. encode into a temp file, copy PNG metadata into that temp file
+#   4. verify and size-check the temp file, which is now the final artefact
+#   5. move it into place without overwriting, then delete the original
 # ------------------------------------------------------------------------------
-# Copies EXIF, XMP and ICC from a PNG source into the finished file. Only for
-# PNG: JPEG sources keep their metadata on their own. exiftool exits cleanly
-# with "0 image files updated" when the source has nothing to copy, so no
-# extra probing call is needed.
-copy_png_metadata() {
-    local src="$1" dest="$2"
-    [[ "$ext" == "png" ]] || return 0
-    [[ "$IMG_COPY_METADATA" == "never" ]] && return 0
-    command -v exiftool >/dev/null 2>&1 || return 0
-    exiftool -overwrite_original -quiet -quiet \
-        -tagsFromFile "$src" -all:all "$dest" >/dev/null 2>&1 || true
+
+_img_want_metadata() {
+    [[ "$IMG_COPY_METADATA" != "never" ]] && command -v exiftool >/dev/null 2>&1
+}
+
+# _img_unique_name <dir> <stem> <ext>  -> first free <stem>[_n].<ext>
+_img_unique_name() {
+    local d="$1" s="$2" e="$3" n=1 c
+    c="$d/$s.$e"
+    while [[ -e "$c" ]]; do c="$d/${s}_$n.$e"; n=$(( n + 1 )); done
+    printf '%s' "$c"
+}
+
+# _img_take_over <src> <real_type> <target_folder> <stem>
+# The file is already WebP, JXL or GIF under a wrong extension: nothing to
+# convert. In place it gets the correct extension; with a target directory a
+# correctly named copy goes there and the source stays untouched.
+_img_take_over() {
+    local src="$1" real="$2" folder="$3" stem="$4" cand file
+    file="$(basename -- "$src")"
+    if [[ -n "${OUTPUT_DIR:-}" ]]; then
+        cand="$(_img_unique_name "$folder" "$stem" "$real")"
+        if ! cp -p -- "$src" "$cand"; then
+            mo_w_fail "$src" "could not copy to '$cand'"; return 0
+        fi
+        printf "%b[CORRECTED]%b '%s' is %s -> target '%s', source unchanged\n" \
+            "$C_MAGENTA" "$C_RESET" "$file" "$real" "$(basename -- "$cand")"
+    else
+        cand="$(_img_unique_name "$(dirname -- "$src")" "$stem" "$real")"
+        mv -n -- "$src" "$cand"
+        printf "%b[CORRECTED]%b '%s' is %s -> '%s'\n" \
+            "$C_MAGENTA" "$C_RESET" "$file" "$real" "$(basename -- "$cand")"
+    fi
+    mo_log_file "$MO_LOG_TAG" "CORRECTED" "$src" "$(basename -- "$cand")"
+    mo_w_result SKIP
+}
+
+# _img_unsupported <src> <reason>  - a known limitation, not an error: SKIP
+# with the reason, so it does not fail every run again.
+_img_unsupported() {
+    mo_w_result SKIP
+    mo_log_file "$MO_LOG_TAG" "UNSUPPORTED" "$1"
+    printf "%b[UNSUPPORTED]%b '%s': %s, original kept.\n" \
+        "$C_YELLOW" "$C_RESET" "$(basename -- "$1")" "$2" >&2
+}
+
+# _img_commit <src> <real_type> <tmp> <dest> <orig_size> <label>
+_img_commit() {
+    local src="$1" real="$2" tmp="$3" dest="$4" orig_size="$5" label="$6"
+    local file new_size
+    file="$(basename -- "$src")"
+
+    # Metadata first, so that verification and the size check see the file
+    # exactly as it will be kept. With -m, exiftool returns 0 also when
+    # there was nothing to copy; anything else is a real error.
+    if [[ "$real" == "png" ]] && _img_want_metadata; then
+        if ! exiftool -m -overwrite_original -quiet -quiet \
+                -tagsFromFile "$src" -all "$tmp" >/dev/null 2>&1; then
+            mo_w_fail "$src" "could not copy metadata (exiftool)"
+            return 0
+        fi
+    fi
+
+    if ! verify_output_image "$tmp"; then
+        mo_w_fail "$src" "output not verifiable"
+        return 0
+    fi
+
+    new_size=$(stat -c%s -- "$tmp")
+    if [[ "$IMG_DISCARD_IF_LARGER" == true ]] && (( orig_size > 0 && new_size >= orig_size )); then
+        mo_w_result DISCARD
+        mo_log_file "$MO_LOG_TAG" "DISCARDED" "$src" "" "$orig_size" "$new_size"
+        printf "%b[DISCARDED]%b '%s': result would be larger, original kept.\n" \
+            "$C_YELLOW" "$C_RESET" "$file"
+        return 0
+    fi
+
+    mo_w_commit "$src" "$tmp" "$dest" || return 0
+
+    mo_w_result SUCCESS "$orig_size" "$new_size"
+    mo_log_file "$MO_LOG_TAG" "OK" "$src" "$(basename -- "$dest")" "$orig_size" "$new_size"
+    printf "%b%s%b '%s' -> '%s'\n" "$C_GREEN" "$label" "$C_RESET" "$file" "$(basename -- "$dest")"
+    # Only now, with the output in place and verified.
+    if [[ "$DELETE_ORIGINAL" == true ]]; then safe_remove "$src"; fi
     return 0
 }
 
-# Wrapper: computes the target names and claims them with a lock directory
-# concurrent access by a second worker (e.g. foo.jpg + foo.png,
-# which would both map to foo.jxl).
+# _img_encode <src> <real_type> <dest> <orig_size>
+_img_encode() {
+    local src="$1" real="$2" dest="$3" orig_size="$4"
+    local tmp label errs
+    local -a cmd
+
+    mo_w_temp "$dest"; tmp="$_MO_W_TEMP"
+    if [[ "$IMG_TARGET" == "webp" ]]; then
+        cmd=(cwebp -quiet -m "$WEBP_FALLBACK_METHOD" -metadata all)
+        if [[ "$real" == "png" && "$PNG_MODE" == "lossless" ]]; then
+            cmd+=(-lossless -z 9); label="[PNG->WEBP-LOSSLESS]"
+        else
+            # JPEG: lossless WebP would be larger than the source, so always -q.
+            cmd+=(-q "$IMG_WEBP_QUALITY"); label="[${real^^}->WEBP-q${IMG_WEBP_QUALITY}]"
+        fi
+        cmd+=("$src" -o "$tmp")
+    elif [[ "$real" == "jpg" ]]; then
+        cmd=(cjxl "$src" "$tmp" -e "$JXL_EFFORT" --num_threads="$CJXL_THREADS"
+             --lossless_jpeg=1 --quiet)
+        label="[JXL-LOSSLESS]"
+    else
+        cmd=(cjxl "$src" "$tmp" -e "$JXL_EFFORT" --num_threads="$CJXL_THREADS" --quiet)
+        if [[ "$PNG_MODE" == "lossy" ]]; then
+            cmd+=(-q "$PNG_QUALITY"); label="[PNG->JXL-q${PNG_QUALITY}]"
+        else
+            cmd+=(-d 0); label="[PNG->JXL-LOSSLESS]"
+        fi
+    fi
+    if [[ "${cmd[0]}" == cjxl && -n "$CJXL_META_ARGS" ]]; then cmd+=("$CJXL_META_ARGS"); fi
+
+    if "${cmd[@]}" 2>/dev/null && [[ -s "$tmp" ]]; then
+        _img_commit "$src" "$real" "$tmp" "$dest" "$orig_size" "$label"
+        return 0
+    fi
+    rm -f -- "$tmp"
+
+    # JPEG that the encoder cannot read. CMYK is a known limitation of both
+    # cjxl and cwebp: report it as unsupported instead of failing every run.
+    # Anything else (truncated, damaged) stays a failure.
+    if [[ "$real" == "jpg" ]]; then
+        errs="$(file -b -- "$src" 2>/dev/null || true)"
+        if [[ "$errs" == *"components 4"* ]]; then
+            _img_unsupported "$src" "CMYK JPEG, ${cmd[0]} cannot convert it"
+        else
+            mo_w_fail "$src" "JPEG could not be decoded (damaged or an unsupported variant)"
+        fi
+        if mo_encoder_missing "${cmd[0]}"; then exit 255; fi
+        return 0
+    fi
+
+    # PNG that cjxl cannot handle: lossless WebP including metadata.
+    if [[ "$IMG_TARGET" == "jxl" && "$real" == "png" ]]; then
+        local wdest="${dest%.*}.webp"
+        if [[ -e "$wdest" ]]; then
+            mo_w_conflict "$src" "JXL failed and '$(basename -- "$wdest")' already exists"
+            return 0
+        fi
+        printf "%b[FALLBACK]%b '%s' failed -> trying WebP...\n" \
+            "$C_YELLOW" "$C_RESET" "$(basename -- "$src")"
+        mo_w_temp "$wdest"; tmp="$_MO_W_TEMP"
+        if cwebp -quiet -lossless -z 9 -m "$WEBP_FALLBACK_METHOD" -metadata all \
+                 "$src" -o "$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
+            _img_commit "$src" "$real" "$tmp" "$wdest" "$orig_size" "[PNG->WEBP]"
+            return 0
+        fi
+        rm -f -- "$tmp"
+    fi
+
+    mo_w_fail "$src" "conversion failed"
+    if mo_encoder_missing cjxl || mo_encoder_missing cwebp; then exit 255; fi
+    return 0
+}
+
 convert_image() {
     local src="$1"
-    local orig_size; orig_size=$(stat -c%s "$src" 2>/dev/null || echo 0)
-    local dir; dir="$(dirname "$src")"
-    local file; file="$(basename "$src")"
-    local stem="${file%.*}"
-    local ext="${file##*.}"; ext="${ext,,}"
+    local dir file stem ext real orig_size target_folder dest
+    dir="$(dirname -- "$src")"
+    file="$(basename -- "$src")"
+    stem="$(mo_stem "$file")"
+    ext="${file##*.}"; ext="${ext,,}"
+    if [[ "$ext" == "jpeg" ]]; then ext="jpg"; fi
 
-    local target_folder dest_jxl dest_webp
-    if [[ -n "${OUTPUT_DIR:-}" ]]; then
-        local rel_dir; rel_dir="$(dirname "${src#"$SOURCE_DIR"/}")"
-        [[ "$rel_dir" == "." ]] && target_folder="$OUTPUT_DIR" || target_folder="$OUTPUT_DIR/$rel_dir"
-        [[ "$DRY_RUN" == true ]] || mkdir -p "$target_folder"
-    else
-        target_folder="$dir"
-    fi
-    dest_jxl="$target_folder/${stem}.jxl"
-    dest_webp="$target_folder/${stem}.webp"
+    target_folder="$(mo_w_target_folder "$src")"
+    dest="$target_folder/${stem}.${IMG_TARGET}"
 
-    if [[ "$SKIP_EXISTING" == true && ( -s "$dest_jxl" || -s "$dest_webp" ) ]]; then
-        echo "SKIP" >> "$CURRENT_RUN_LOG"; return 0
+    # Cheap check without the lock, for resumed runs. Only the configured
+    # target format counts: an unrelated foo.webp must not stop foo.png from
+    # becoming foo.jxl.
+    if [[ "$SKIP_EXISTING" == true && -s "$dest" ]]; then
+        mo_w_result SKIP; return 0
     fi
 
-    if [[ "${DRY_RUN:-false}" == "true" ]]; then
-        echo "DRY" >> "$CURRENT_RUN_LOG"
-        printf "%b[DRY-RUN]%b '%s' -> '%s'\n" "$C_CYAN" "$C_RESET" "$file" "$(basename "$dest_jxl")"
+    if [[ "$DRY_RUN" == true ]]; then
+        mo_w_result DRY
+        printf "%b[DRY-RUN]%b '%s' -> '%s'\n" "$C_CYAN" "$C_RESET" "$file" "$(basename -- "$dest")"
         return 0
     fi
 
-    # Unique temp names: two workers must never share the same .part file
-    local uniq="$$.${RANDOM}"
-    local temp_jxl="${dest_jxl}.part.${uniq}.jxl"
-    local temp_webp="${dest_webp}.part.${uniq}.webp"
+    real="$(mo_real_type "$src")"
+    orig_size=$(stat -c%s -- "$src")
 
-    # Zielnamen exklusiv beanspruchen
-    local lockdir="$target_folder/.${stem}.molock"
-    if ! mkdir "$lockdir" 2>/dev/null; then
-        echo "COLLISION" >> "$CURRENT_RUN_LOG"
-        mo_log_file "$MO_LOG_TAG" "CONFLICT" "$src"
-        printf "%b[CONFLICT]%b '%s': target name '%s' already claimed, original kept.\n" \
-            "$C_YELLOW" "$C_RESET" "$file" "$(basename "$dest_jxl")" >&2
-        return 0
-    fi
+    mo_w_claim "$src" "$target_folder" "$stem" "$dest" || return 0
 
-    local rc=0
-    _convert_image_locked || rc=$?
-    rmdir "$lockdir" 2>/dev/null || true
-    return $rc
-}
-
-# Handles a file whose extension does not match its actual content.
-#
-# In place: the source file is renamed, which is the whole point.
-# With a target directory: THE SOURCE STAYS UNTOUCHED. Everything that
-# should be corrected lands under the correct name in the target. Otherwise
-# a separate target directory would be pointless, because the source
-# veraendert wuerde.
-#
-# Returns: 0 = handled (caller should return)
-#            1 = weiterverarbeiten, Variablen src/file/ext wurden angepasst
-_handle_wrong_extension() {
-    local real_mime="$1" correct_ext="$2"
-    local cand n=1
-
-    if [[ -n "${OUTPUT_DIR:-}" ]]; then
-        cand="$target_folder/${stem}.${correct_ext}"
-        while [[ -e "$cand" ]]; do cand="$target_folder/${stem}_${n}.${correct_ext}"; n=$(( n + 1 )); done
-        printf "%b[CORRECTED]%b '%s' (%s) -> target '%s', source unchanged\n" \
-            "$C_MAGENTA" "$C_RESET" "$file" "$real_mime" "$(basename "$cand")"
-
-        case "$correct_ext" in
-            webp|jxl|gif)
-                # Bereits ein modernes Format: unveraendert uebernehmen.
-                cp -p "$src" "$cand"
-                mo_log_file "$MO_LOG_TAG" "CORRECTED" "$src" "$(basename "$cand")"
-                echo "SKIP" >> "$CURRENT_RUN_LOG"
-                return 0 ;;
-            png|jpg)
-                # Keep processing, but from the unchanged source.
-                ext="$correct_ext"
-                return 1 ;;
-        esac
-        echo "SKIP" >> "$CURRENT_RUN_LOG"
-        return 0
-    fi
-
-    # In-Place: umbenennen
-    cand="$dir/${stem}.${correct_ext}"
-    while [[ -e "$cand" ]]; do cand="$dir/${stem}_${n}.${correct_ext}"; n=$(( n + 1 )); done
-    mv "$src" "$cand"
-    printf "%b[CORRECTED]%b '%s' (%s) -> '%s'\n" \
-        "$C_MAGENTA" "$C_RESET" "$file" "$real_mime" "$(basename "$cand")"
-    mo_log_file "$MO_LOG_TAG" "CORRECTED" "$src" "$(basename "$cand")"
-
-    case "$correct_ext" in
-        webp|jxl|gif) echo "SKIP" >> "$CURRENT_RUN_LOG"; return 0 ;;
+    case "$real" in
+        jpg|png) ;;
+        webp|jxl|gif) _img_take_over "$src" "$real" "$target_folder" "$stem"; return 0 ;;
+        *) mo_w_fail "$src" "not a JPEG or PNG ($(file -b --mime-type -- "$src" 2>/dev/null || echo unknown))"
+           return 0 ;;
     esac
-    src="$cand"; file="$(basename "$src")"; ext="$correct_ext"
-    return 1
-}
 
-# Inner function: uses the wrapper's locals (dynamic scoping).
-_convert_image_locked() {
-    local new_size
-
-    _commit() {   # _commit <tempdatei> <zieldatei> <label>
-        local tmp="$1" dest="$2" label="$3"
-        if ! verify_output_image "$tmp"; then
-            rm -f "$tmp"
-            echo "FAIL" >> "$CURRENT_RUN_LOG"
-            printf "%b[ERROR]%b output not verifiable: '%s' (original kept)\n" \
-                "$C_RED" "$C_RESET" "$file" >&2
-            return 1
-        fi
-        new_size=$(stat -c%s "$tmp" 2>/dev/null || echo 0)
-        if [[ "$IMG_DISCARD_IF_LARGER" == true ]] && (( orig_size > 0 && new_size >= orig_size )); then
-            rm -f "$tmp"
-            echo "DISCARD" >> "$CURRENT_RUN_LOG"
-            mo_log_file "$MO_LOG_TAG" "DISCARDED" "$src" "" "$orig_size" "$new_size"
-            printf "%b[DISCARDED]%b '%s': result would be larger, original kept.\n" \
-                "$C_YELLOW" "$C_RESET" "$file"
-            return 1
-        fi
-        mv "$tmp" "$dest"
-        copy_png_metadata "$src" "$dest"
-        # After exiftool the timestamp must be restored again, so this stays
-        # the last step.
-        touch -r "$src" "$dest"
-        echo "SUCCESS $orig_size $new_size" >> "$CURRENT_RUN_LOG"
-        [[ "$DELETE_ORIGINAL" == true ]] && safe_remove "$src"
-        mo_log_file "$MO_LOG_TAG" "OK" "$src" "$(basename "$dest")" "$orig_size" "$new_size"
-        printf "%b%s%b '%s' -> '%s'\n" "$C_GREEN" "$label" "$C_RESET" "$file" "$(basename "$dest")"
-        return 0
-    }
-
-    # ---------------- Zielformat WebP ----------------
-    if [[ "$IMG_TARGET" == "webp" ]]; then
-        local -a webp_args=(-quiet -m "$WEBP_FALLBACK_METHOD" -metadata all)
-        local label
-        if [[ "$ext" == "png" && "$PNG_MODE" == "lossless" ]]; then
-            webp_args+=(-lossless -z 9); label="[PNG->WEBP-LOSSLESS]"
-        elif [[ "$ext" == "png" ]]; then
-            webp_args+=(-q "$IMG_WEBP_QUALITY"); label="[PNG->WEBP-q${IMG_WEBP_QUALITY}]"
-        else
-            # JPEG: lossless would be larger than the source, so always -q.
-            webp_args+=(-q "$IMG_WEBP_QUALITY"); label="[JPG->WEBP-q${IMG_WEBP_QUALITY}]"
-        fi
-        if cwebp "${webp_args[@]}" "$src" -o "$temp_webp" 2>/dev/null && [[ -s "$temp_webp" ]]; then
-            _commit "$temp_webp" "$dest_webp" "$label" && return 0
-            return 1
-        fi
-        rm -f "$temp_webp"
-        # Failed: usually a wrong extension.
-        local real_mime; real_mime=$(file -b --mime-type "$src" 2>/dev/null || echo unknown)
-        local correct_ext=""
-        case "$real_mime" in
-            image/webp) correct_ext="webp" ;; image/png)  correct_ext="png" ;;
-            image/jxl)  correct_ext="jxl"  ;; image/gif)  correct_ext="gif" ;;
-            image/jpeg) correct_ext="jpg"  ;;
-        esac
-        if [[ -n "$correct_ext" && "$correct_ext" != "$ext" ]]; then
-            _handle_wrong_extension "$real_mime" "$correct_ext" && return 0
-            if cwebp -quiet -m "$WEBP_FALLBACK_METHOD" -metadata all \
-                     -q "$IMG_WEBP_QUALITY" "$src" -o "$temp_webp" 2>/dev/null \
-               && [[ -s "$temp_webp" ]]; then
-                _commit "$temp_webp" "$dest_webp" "[WEBP-q${IMG_WEBP_QUALITY}]" && return 0
-                return 1
-            fi
-            rm -f "$temp_webp"
-        fi
-        printf "%b[ERROR]%b conversion failed: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
-        mo_log_file "$MO_LOG_TAG" "ERROR" "$src"
-        echo "FAIL" >> "$CURRENT_RUN_LOG"; return 1
+    if [[ "$real" != "$ext" && -n "${OUTPUT_DIR:-}" ]]; then
+        printf "%b[CORRECTED]%b '%s' is actually %s, converted as such, source unchanged\n" \
+            "$C_MAGENTA" "$C_RESET" "$file" "$real"
     fi
 
+    _img_encode "$src" "$real" "$dest" "$orig_size"
 
-    # ---------------- JPEG: verlustfreies JXL-Recompress ----------------
-    if [[ "$ext" == "jpg" || "$ext" == "jpeg" ]]; then
-        if cjxl "$src" "$temp_jxl" -e "$JXL_EFFORT" --num_threads="$CJXL_THREADS" --quiet 2>/dev/null && [[ -s "$temp_jxl" ]]; then
-            _commit "$temp_jxl" "$dest_jxl" "[JXL-LOSSLESS]" && return 0
-            return 1
-        fi
-        rm -f "$temp_jxl"
-
-        # Wrong extension? Check the MIME type and correct it.
-        local real_mime; real_mime=$(file -b --mime-type "$src" 2>/dev/null || echo unknown)
-        if [[ "$real_mime" != "image/jpeg" ]]; then
-            local correct_ext=""
-            case "$real_mime" in
-                image/webp) correct_ext="webp" ;; image/png) correct_ext="png" ;;
-                image/jxl)  correct_ext="jxl"  ;; image/gif) correct_ext="gif" ;;
-            esac
-            if [[ -n "$correct_ext" ]]; then
-                _handle_wrong_extension "$real_mime" "$correct_ext" && return 0
-            fi
-        fi
-        if [[ "$ext" != "png" ]]; then
-            printf "%b[ERROR]%b JXL-Transcoding failed: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
-            echo "FAIL" >> "$CURRENT_RUN_LOG"; return 1
+    # In place, a kept original gets the extension that matches its content.
+    # This runs after the conversion, so the worker never has to follow a
+    # renamed source. Not after a successful conversion with deletion: if
+    # the trash failed, the original sits in the pending-delete list under
+    # its current name, and a rename would make that entry miss it.
+    local doomed=false
+    if [[ "$_MO_W_RESULT" == "SUCCESS" && "$DELETE_ORIGINAL" == true ]]; then doomed=true; fi
+    if [[ "$real" != "$ext" && -z "${OUTPUT_DIR:-}" && "$doomed" == false && -e "$src" ]]; then
+        local cand; cand="$(_img_unique_name "$dir" "$stem" "$real")"
+        if mv -n -- "$src" "$cand" && [[ ! -e "$src" ]]; then
+            printf "%b[CORRECTED]%b '%s' (%s) -> '%s'\n" \
+                "$C_MAGENTA" "$C_RESET" "$file" "$real" "$(basename -- "$cand")"
+            mo_log_file "$MO_LOG_TAG" "CORRECTED" "$src" "$(basename -- "$cand")"
         fi
     fi
-
-    # ---------------- PNG ----------------
-    if [[ "$ext" == "png" ]]; then
-        local -a cjxl_args=(-e "$JXL_EFFORT" --num_threads="$CJXL_THREADS" --quiet)
-        local label="[PNG->JXL-LOSSLESS]"
-        if [[ "$PNG_MODE" == "lossy" ]]; then
-            cjxl_args+=(-q "$PNG_QUALITY"); label="[PNG->JXL-q${PNG_QUALITY}]"
-        else
-            cjxl_args+=(-d 0)
-        fi
-
-        if cjxl "$src" "$temp_jxl" "${cjxl_args[@]}" 2>/dev/null && [[ -s "$temp_jxl" ]]; then
-            _commit "$temp_jxl" "$dest_jxl" "$label" && return 0
-            return 1
-        fi
-        rm -f "$temp_jxl"
-
-        local real_mime; real_mime=$(file -b --mime-type "$src" 2>/dev/null || echo unknown)
-        if [[ "$real_mime" != "image/png" ]]; then
-            local correct_ext=""
-            case "$real_mime" in
-                image/jpeg) correct_ext="jpg" ;; image/webp) correct_ext="webp" ;;
-                image/jxl)  correct_ext="jxl" ;; image/gif)  correct_ext="gif"  ;;
-            esac
-            if [[ -n "$correct_ext" ]]; then
-                _handle_wrong_extension "$real_mime" "$correct_ext" && return 0
-                # It is actually a JPEG: transcode losslessly.
-                if [[ "$ext" == "jpg" ]]; then
-                    if cjxl "$src" "$temp_jxl" -e "$JXL_EFFORT" \
-                            --num_threads="$CJXL_THREADS" --quiet 2>/dev/null \
-                       && [[ -s "$temp_jxl" ]]; then
-                        _commit "$temp_jxl" "$dest_jxl" "[JXL-LOSSLESS]" && return 0
-                        return 1
-                    fi
-                    rm -f "$temp_jxl"
-                fi
-                echo "SKIP" >> "$CURRENT_RUN_LOG"; return 0
-            fi
-        fi
-
-        # Fallback: verlustfreies WebP inkl. Metadaten
-        printf "%b[FALLBACK]%b '%s' failed -> trying WebP...\n" "$C_YELLOW" "$C_RESET" "$file"
-        if cwebp -quiet -lossless -z 9 -m "$WEBP_FALLBACK_METHOD" -metadata all \
-                 "$src" -o "$temp_webp" 2>/dev/null && [[ -s "$temp_webp" ]]; then
-            _commit "$temp_webp" "$dest_webp" "[PNG->WEBP]" && return 0
-            return 1
-        fi
-        rm -f "$temp_webp"
-        printf "%b[ERROR]%b conversion failed: '%s'\n" "$C_RED" "$C_RESET" "$file" >&2
-        mo_log_file "$MO_LOG_TAG" "ERROR" "$src"
-        echo "FAIL" >> "$CURRENT_RUN_LOG"
-        mo_encoder_missing cjxl && return 255
-        mo_encoder_missing cwebp && return 255
-        return 1
-    fi
-
-    echo "FAIL" >> "$CURRENT_RUN_LOG"; return 1
+    return 0
 }
 
 export SOURCE_DIR OUTPUT_DIR SKIP_EXISTING DELETE_ORIGINAL
-export JXL_EFFORT PNG_MODE PNG_QUALITY WEBP_FALLBACK_METHOD CJXL_THREADS
+export JXL_EFFORT PNG_MODE PNG_QUALITY WEBP_FALLBACK_METHOD CJXL_THREADS CJXL_META_ARGS
 export IMG_TARGET IMG_WEBP_QUALITY IMG_DISCARD_IF_LARGER IMG_COPY_METADATA
-export -f convert_image _convert_image_locked _handle_wrong_extension copy_png_metadata
+export -f convert_image _img_encode _img_commit _img_take_over _img_unsupported \
+    _img_unique_name _img_want_metadata
+
+run_batch() {
+    mo_find_files "$SOURCE_DIR" -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" |
+        xargs -0 -r -n 1 -P "$MAX_WORKERS" \
+            bash -c 'mo_worker_start "$1"; convert_image "$1"' _
+}
 
 exit_code=0
-find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) -print0 |
-    xargs -0 -r -n 1 -P "$MAX_WORKERS" bash -c 'convert_image "$1"' _ || exit_code=$?
+mo_job_start run_batch
+mo_job_wait || exit_code=$?
 
-# xargs reports 124/125 on abort, 123 on worker errors (not an abort)
-# 255 means a worker reported a fatal problem and xargs aborted the batch.
-if (( exit_code == 255 )); then
-    printf "\n%b[ABORT]%b Batch stopped: a required encoder is missing.\n" \
-        "$C_RED" "$C_RESET" >&2
-    finalize_stats 0
-    exit 255
-fi
-if (( exit_code == 124 || exit_code == 125 || exit_code == 130 )); then
-    finalize_stats 130
-else
-    finalize_stats 0
-fi
+# Exit codes of xargs: see "Fatal versus per-file failure" in common.sh.
+# Per-file failures are counted from the FAIL tokens, not from xargs.
+case "$exit_code" in
+    0|123) ;;
+    124)
+        printf "\n%b[ABORT]%b Batch stopped: a required encoder is missing.\n" \
+            "$C_RED" "$C_RESET" >&2
+        finalize_stats 0
+        exit 255 ;;
+    125|130)
+        finalize_stats 130 ;;
+    *)
+        printf "\n%b[ERROR]%b xargs failed (code %d), the batch did not run completely.\n" \
+            "$C_RED" "$C_RESET" "$exit_code" >&2
+        finalize_stats 0
+        exit 1 ;;
+esac
+finalize_stats 0
+if (( TOTAL_FAILED > 0 )); then exit "$MO_RC_PARTIAL"; fi
+exit 0

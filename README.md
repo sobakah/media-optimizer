@@ -61,11 +61,18 @@ scripts/h264-to-h265.sh     video    -> HEVC (GPU or CPU)
 scripts/video-to-avif.sh    short silent clips -> AVIF   (optional)
 scripts/verify-output.sh    check outputs against the originals
 scripts/lib/common.sh       shared functions, sourced
+tests/run-tests.sh          regression tests against real files
 ```
 
 Stages run in this order, numbering adapts: images, GIFs, AVIF, video. AVIF
 runs **before** HEVC so short silent clips end up as AVIF; the HEVC stage then
 skips any source that already has an AVIF output.
+
+`tests/run-tests.sh` generates its own test files in a temporary directory and
+checks conversions, failure handling (forced with stub commands), dry run,
+signals and the orchestrator. It never touches the real trash or the config
+file. A full run takes several minutes; `tests/run-tests.sh img-` runs one
+group.
 
 ## Usage
 
@@ -137,14 +144,21 @@ command rather than acting on its own.
 ### `img-to-jxl.sh`
 
 JPEG is transcoded to JXL bit-exactly lossless. PNG is converted losslessly or
-with a quality setting; if that fails a lossless WebP fallback kicks in.
+with a quality setting; if that fails a lossless WebP fallback kicks in. The
+settings follow the real file type, not the extension: a PNG named `.jpg` is
+still converted losslessly.
+
+CMYK JPEGs cannot be transcoded by `cjxl` or `cwebp`; they are reported as
+`[UNSUPPORTED]` and skipped. There is deliberately no pixel-based fallback
+for JPEGs: for a truncated file it would "succeed" and replace the damaged
+original with an equally damaged copy, so such files count as failed.
 
 ```
       --target <f>       jxl | webp (default: jxl)
       --webp-quality <q> quality for lossy WebP (default: 85)
       --discard-larger   discard the result if larger than the original
-      --copy-metadata <m> auto | always | never: copy EXIF from PNG sources
-  -e, --effort <1-9>     JXL effort (default: 7)
+      --copy-metadata <m> auto | always | never: copy PNG metadata
+  -e, --effort <1-10>    JXL effort (default: 7)
       --png-mode <m>     lossless | lossy (default: lossless)
       --png-quality <q>  only with lossy (default: 90)
       --cjxl-threads <n> threads per cjxl process (default: 1)
@@ -164,18 +178,21 @@ source.
 
 | Path | embedded metadata |
 |---|---|
-| JPEG → JXL | fully preserved, the JPEG is repacked bit-exactly |
+| JPEG → JXL | fully preserved, the JPEG is repacked bit-exactly; metadata boxes stored uncompressed so ordinary readers see them |
 | JPEG → WebP | fully preserved via `cwebp -metadata all` |
 | PNG → JXL / WebP | copied afterwards with `exiftool` if installed |
 | GIF → WebP | GIF carries practically none |
 | video → HEVC | fully preserved via `-map_metadata 0` |
 | video → AVIF | container tags such as `creation_time` preserved; AVIF has no field for a title |
 
-Neither `cjxl` nor `cwebp` reads the `eXIf` chunk of a PNG, so capture date,
-GPS position and copyright would be lost. `IMG_COPY_METADATA="auto"` copies
-them over with `exiftool` when it is installed; `always` warns when it is
-missing, `never` turns it off. The timestamp is restored afterwards, because
-exiftool updates it.
+`cjxl` and `cwebp` carry EXIF and XMP over from a PNG, but not the PNG text
+chunks where many programs store `Artist` and `Copyright`. `cjxl` also
+Brotli-compresses the metadata, which many readers (exiftool without an extra
+Perl module, for one) cannot decode. `IMG_COPY_METADATA="auto"` therefore has
+`cjxl` write the metadata uncompressed and copies the rest with `exiftool` when
+it is installed; `always` refuses to start without exiftool, `never` turns it
+off. The copy goes into the temp file, before verification and the size check.
+If exiftool fails, the file counts as failed and its original is kept.
 
 When the extension does not match the content (a WebP named `.jpg`), behaviour
 depends on the mode. **With a target directory the source stays untouched** and
@@ -298,11 +315,12 @@ relative path, falling back to the base name when the container differs, since
 
 | Message | Meaning |
 |---|---|
-| `[UNLESBAR]` | `ffprobe` finds no video stream |
-| `[DAUER]` | runtime deviates beyond the tolerance |
-| `[BILD?]` | runtime fine, picture comparison below the PSNR threshold |
+| `[UNREADABLE]` | `ffprobe` finds no video stream |
+| `[DURATION]` | runtime deviates beyond the tolerance |
+| `[PICTURE?]` | runtime fine, picture comparison below the PSNR threshold |
 
-Called without `-y` on a terminal the script offers an interactive setup.
+Called on a terminal without directory arguments the script offers an
+interactive setup.
 `--keep-samples` is only offered there when the picture comparison is
 actually going to run, since without it there would be no stills to store;
 combining `--no-visual` with `--keep-samples` prints a note instead of
@@ -313,7 +331,7 @@ A low PSNR is a **suspicion, not proof**. Without `--fix` nothing is changed.
 `--run` starts the repair with `--from-list` on the defect list and archives
 that list afterwards.
 
-`[DAUER]` also catches **salvaged** files that are legitimately shorter. The
+`[DURATION]` also catches **salvaged** files that are legitimately shorter. The
 message therefore prints both runtimes; `--duration-tol` raises the limit.
 
 ## Configuration
@@ -326,7 +344,15 @@ Precedence: **CLI flag > interactive input > environment variable > config file
 > default.**
 
 The interactive prompts (answer `n` to "use default settings?") show the config
-values as presets. Everything else is reachable through the config file,
+values as presets. They only appear when the source directory was not given
+on the command line; whoever names it has already chosen. `-y` suppresses
+every question, also in the sub-scripts.
+
+Every value is checked before anything runs, whichever source it came from
+(flag, prompt, environment, config file): a number out of range, an unknown
+word or a boolean that is not `true`/`false` stops the script with exit code 2
+and one `[SETTING]` line per bad value. The rules are in `MO_RULES` in
+`scripts/lib/common.sh`. Everything else is reachable through the config file,
 environment or flags; `MO_CONFIG_VARS` in `scripts/lib/common.sh` lists all
 supported names.
 
@@ -342,8 +368,10 @@ whether a target directory was given:
 
 In place the original would otherwise sit next to the output and the `_h265`
 suffix would stay forever. Because that is destructive, a notice appears with
-both values and the option to change them. It also appears after choosing "use
-default settings". With `-y` or without a terminal it is only printed.
+the values and the option to change them. It also appears after choosing "use
+default settings". With `-y`, without a terminal, or when the values were set
+explicitly (flag, environment, config file, an earlier prompt) it is only
+printed.
 
 An explicit setting always wins and is never overwritten: via CLI, environment
 or config file. Both values are commented out in the shipped config for that
@@ -455,9 +483,28 @@ or manage it externally via `logrotate`.
   in `.<type>_pending_deletes.txt` and one prompt appears at the end.
 * **Leftovers.** `.part` files and lock directories from hard aborts are
   removed at the next start.
-* **State files** live hidden in the source directory: `.img_stats.env`,
+* **State files** live hidden in the working directory: the target
+  directory, or the source directory in place. `.img_stats.env`,
   `.gif_stats.env`, `.h265_stats.env`, `.avif_stats.env`,
-  `.video_conversion_cache.txt` and the pending lists.
+  `.video_conversion_cache.txt`, `.video_suspect.txt` and the pending lists.
+  With a target directory the source is not written at all. A video cache
+  left in the source by an older version is copied over once.
+  `.broken_videos.txt` (from `verify-output.sh`) lives in the target
+  directory. Lists with the older German names are renamed once.
+* **Hidden and system folders are skipped.** Trash folders (`.Trash-*`,
+  `$RECYCLE.BIN`, `#recycle`), NAS folders (`@eaDir`, `#snapshot`),
+  `lost+found` and AppleDouble files (`._name`) are never processed;
+  converting a trashed file would bring it back elsewhere. Other hidden files
+  and folders are skipped too unless `INCLUDE_HIDDEN=true`.
+* **One run per directory.** Each script locks its working directory
+  (`flock`); a second run on the same tree stops with `[BUSY]` instead of
+  deleting the first run's temp files.
+* **Stopping.** Ctrl+C and `SIGTERM` stop the running workers or the current
+  ffmpeg encode at once, save the counters and leave the run resumable.
+* **Exit codes.** `0` everything done, `3` finished but some files failed
+  (originals kept; the orchestrator continues with the next stage and exits
+  `3` at the end), `130` interrupted and resumable, `255` batch aborted
+  because an encoder is missing.
 * **Video cache.** `.video_conversion_cache.txt` remembers finished files so a
   later run does not run `ffprobe` over everything again. It is purely a
   speed-up; deleting it only changes runtime. Since absolute paths are stored,

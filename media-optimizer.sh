@@ -75,10 +75,10 @@ OUTPUT_DIR=""
 CHECK_EXTENSIONS_PREFLIGHT="${CHECK_EXTENSIONS_PREFLIGHT:-false}"
 MAX_WORKERS="${MAX_WORKERS:-$(nproc)}"
 # No fixed default: the preset depends on whether a target
-# Zielverzeichnis angegeben wurde (siehe mo_apply_inplace_defaults).
+# directory was given (see mo_apply_inplace_defaults).
 # A value from the environment or config file counts as explicit.
 if [[ -n "${DELETE_ORIGINAL+x}" ]]; then DELETE_ORIGINAL_EXPLICIT=true; fi
-DELETE_ORIGINAL="${DELETE_ORIGINAL:-false}"      # destruktiver Default entschaerft
+DELETE_ORIGINAL="${DELETE_ORIGINAL:-false}"      # destructive default defused
 FORCE_DELETE="${FORCE_DELETE:-false}"
 JXL_EFFORT="${JXL_EFFORT:-7}"
 IMG_TARGET="${IMG_TARGET:-jxl}"
@@ -133,13 +133,13 @@ MO_ORIGINAL_ARGS=("$@")
 POSITIONAL=()
 while (( $# > 0 )); do
     case "$1" in
-        -i|--input)     INPUT_DIR="$2"; shift 2 ;;
-        -o|--output)    OUTPUT_DIR="$2"; shift 2 ;;
+        -i|--input)     mo_need_value "$@"; INPUT_DIR="$2"; shift 2 ;;
+        -o|--output)    mo_need_value "$@"; OUTPUT_DIR="$2"; shift 2 ;;
         --delete)       DELETE_ORIGINAL=true; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
         --no-delete)    DELETE_ORIGINAL=false; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
         --force-delete) FORCE_DELETE=true; shift ;;
         --verify-deep)  VERIFY_DEEP=true; shift ;;
-        --log)          MO_LOG_FILE="$2"; shift 2 ;;
+        --log)          mo_need_value "$@"; MO_LOG_FILE="$2"; shift 2 ;;
         --no-log)       MO_LOG=false; shift ;;
         --verify-visual)    VERIFY_VISUAL=true; shift ;;
         --no-verify-visual) VERIFY_VISUAL=false; shift ;;
@@ -190,8 +190,11 @@ save_state() {
 }
 
 handle_interrupt() {
+    trap '' INT TERM
+    # Stop the running stage first and let it save its own counters.
+    mo_job_stop
     printf "\n\n%b[INTERRUPTED] Aborted by user.%b\n" "$C_YELLOW" "$C_RESET"
-    mo_log "abbruch" "Aborted by user"
+    mo_log "abort" "Aborted by user"
     mo_log_close 130
     save_state "INTERRUPTED"
     printf "%bProgress and settings have been saved.%b\n" "$C_CYAN" "$C_RESET"
@@ -269,13 +272,15 @@ if [[ "$RESUMING" == false ]]; then
         read -rp "Target directory (Enter = in place): " OUTPUT_DIR || OUTPUT_DIR=""
     fi
 
-    if [[ -t 0 && "$ASSUME_YES" == false ]]; then
+    # The settings menu is for interactive use: not when the source was given
+    # on the command line.
+    if [[ -t 0 && "$ASSUME_YES" == false && -z "$CLI_INPUT" ]]; then
         echo ""
         read -rp "Use the default settings for all media types? [Y/n]: " std_choice || std_choice=""
         if [[ "${std_choice,,}" =~ ^(n|nein|no)$ ]]; then
             printf "\n%b─── GLOBAL SETTINGS ───%b\n" "$C_YELLOW" "$C_RESET"
             prompt_bool "Correct wrong file extensions by MIME type first?" "$CHECK_EXTENSIONS_PREFLIGHT" CHECK_EXTENSIONS_PREFLIGHT
-            prompt_bool "Move originals to the trash after a successful conversion?" "$DELETE_ORIGINAL" DELETE_ORIGINAL
+            mo_prompt_delete_original "$OUTPUT_DIR"
             prompt_bool "Fully decode image outputs to verify them (slower)?" "$VERIFY_DEEP" VERIFY_DEEP
             prompt_bool "Also convert short silent videos to AVIF?" "$ENABLE_AVIF_STAGE" ENABLE_AVIF_STAGE
             prompt_val  "Parallel workers for images/GIFs" "$MAX_WORKERS" MAX_WORKERS
@@ -311,13 +316,22 @@ if [[ "$RESUMING" == false ]]; then
     fi
 fi
 
+# After config file, command line, state file and prompts: every source of
+# a value. The stages validate again, but failing here means failing before
+# anything was converted.
+mo_validate MAX_WORKERS DELETE_ORIGINAL FORCE_DELETE VERIFY_DEEP JXL_EFFORT IMG_TARGET \
+    IMG_WEBP_QUALITY IMG_DISCARD_IF_LARGER PNG_MODE PNG_QUALITY CJXL_THREADS \
+    COMPRESSION_METHOD ENCODER_MODE BITRATE_THRESHOLD_KBPS GPU_QP CPU_CRF CPU_PRESET \
+    ENABLE_PROBE PROBE_MARGIN_PCT DISCARD_IF_LARGER KEEP_SALVAGED_CORRUPT \
+    VERIFY_VISUAL VISUAL_STRICT USE_CACHE ENABLE_AVIF_STAGE DRY_RUN INCLUDE_HIDDEN
+
 INPUT_DIR="${INPUT_DIR%/}"
 if [[ -n "$OUTPUT_DIR" ]]; then
     OUTPUT_DIR="${OUTPUT_DIR%/}"
     [[ "$DRY_RUN" == true ]] || mkdir -p "$OUTPUT_DIR"
 fi
 
-mo_apply_inplace_defaults "$OUTPUT_DIR"
+mo_apply_inplace_defaults "$OUTPUT_DIR" true
 
 mo_log_init "media-optimizer.sh ${MO_ORIGINAL_ARGS[*]}" "$INPUT_DIR" "$OUTPUT_DIR"
 mo_log_settings DELETE_ORIGINAL RENAME_INPLACE FORCE_DELETE MAX_WORKERS \
@@ -369,12 +383,7 @@ if [[ "$CHECK_EXTENSIONS_PREFLIGHT" == true && "$RESUMING" == false ]]; then
     while IFS= read -r -d '' filepath; do
         mime=$(file -b --mime-type "$filepath" 2>/dev/null || echo unknown)
         ext="${filepath##*.}"; ext="${ext,,}"
-        correct_ext=""
-        case "$mime" in
-            image/jpeg) correct_ext="jpg" ;;  image/png) correct_ext="png" ;;
-            image/webp) correct_ext="webp" ;; image/jxl) correct_ext="jxl" ;;
-            image/gif)  correct_ext="gif" ;;  video/mp4) correct_ext="mp4" ;;
-        esac
+        correct_ext="$(mo_real_type "$filepath")"
         [[ "$correct_ext" == "jpg" && "$ext" == "jpeg" ]] && continue
         if [[ -n "$correct_ext" && "$ext" != "$correct_ext" ]]; then
             target="${filepath%.*}.${correct_ext}"
@@ -391,8 +400,8 @@ if [[ "$CHECK_EXTENSIONS_PREFLIGHT" == true && "$RESUMING" == false ]]; then
                 [[ "$DRY_RUN" == true ]] || mv "$filepath" "$target"
             fi
         fi
-    done < <(find "$INPUT_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \
-             -o -iname "*.gif" -o -iname "*.webp" -o -iname "*.jxl" -o -iname "*.mp4" \) -print0 2>/dev/null)
+    done < <(mo_find_files "$INPUT_DIR" -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \
+             -o -iname "*.gif" -o -iname "*.webp" -o -iname "*.jxl" -o -iname "*.mp4" 2>/dev/null)
 fi
 
 # ------------------------------------------------------------------------------
@@ -400,9 +409,9 @@ fi
 # foo.jpg and foo.png both map to foo.jxl. The workers lock the
 # target name, but it is better to surface this beforehand.
 # ------------------------------------------------------------------------------
-collisions=$(find "$INPUT_DIR" -type f \
-    \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" \) 2>/dev/null |
-    sed 's/\.[^.\/]*$//' | sort | uniq -d || true)
+collisions=$(mo_find_files "$INPUT_DIR" \
+    -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" 2>/dev/null |
+    tr '\0' '\n' | sed 's/\.[^.\/]*$//' | sort | uniq -d || true)
 if [[ -n "$collisions" ]]; then
     printf "\n%b[WARNING]%b Files share a base name with different extensions.\n" "$C_YELLOW" "$C_RESET"
     printf "          Only the first is converted, the others are left untouched:\n"
@@ -414,17 +423,19 @@ fi
 # ------------------------------------------------------------------------------
 # PIPELINE
 # ------------------------------------------------------------------------------
-COUNT_IMG=$(find "$INPUT_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) 2>/dev/null | wc -l || true)
-COUNT_GIF=$(find "$INPUT_DIR" -type f -iname "*.gif" 2>/dev/null | wc -l || true)
+# The same file filter as the stages (mo_find_files), so the counts match
+# what the stages will actually see. NUL-separated: counted by NUL bytes.
+COUNT_IMG=$(mo_find_files "$INPUT_DIR" -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" 2>/dev/null | tr -dc '\0' | wc -c || true)
+COUNT_GIF=$(mo_find_files "$INPUT_DIR" -iname "*.gif" 2>/dev/null | tr -dc '\0' | wc -c || true)
 VIDEO_EXTENSIONS="${VIDEO_EXTENSIONS:-mp4 m4v mov mkv webm avi ts m2ts wmv flv}"
-_vid_find=(-type f \()
+_vid_find=(\()
 _first=true
 for _ext in $VIDEO_EXTENSIONS; do
     [[ "$_first" == true ]] || _vid_find+=(-o)
     _vid_find+=(-iname "*.${_ext}"); _first=false
 done
 _vid_find+=(\) ! -name "*.part.*")
-COUNT_VID=$(find "$INPUT_DIR" "${_vid_find[@]}" 2>/dev/null | wc -l || true)
+COUNT_VID=$(mo_find_files "$INPUT_DIR" "${_vid_find[@]}" 2>/dev/null | tr -dc '\0' | wc -c || true)
 
 (( COUNT_IMG == 0 )) && STAGE_1_DONE=true
 (( COUNT_GIF == 0 )) && STAGE_2_DONE=true
@@ -448,16 +459,29 @@ save_state "RUNNING"
 STAGE_ARGS=(--input "$INPUT_DIR")
 [[ -n "$OUTPUT_DIR" ]] && STAGE_ARGS+=(--output "$OUTPUT_DIR")
 
+STAGES_WITH_FAILURES=()
 run_stage() {
     local label="$1"; shift
     local e=0
     # MO_HOLD=0 for the sub-script only: otherwise every stage waits.
     # The orchestrator handles keeping the window open at the end.
-    env MO_HOLD=0 "$@" || e=$?
-    # 130 = SIGINT, 124/125 = timeout bzw. xargs-Abbruch.
+    # As a background job, so that SIGTERM reaches the stage at once
+    # (see mo_job_start). stdin stays the terminal for the stage's prompts.
+    mo_job_start env MO_HOLD=0 "$@"
+    mo_job_wait || e=$?
+    # 130 = SIGINT, 124/125 = xargs abort (the xargs scripts translate their
+    # own 124 into 255, so this only catches a stage that does not).
     # 126/127 are execution errors (not executable / not found)
     # and must NOT count as a user abort.
     if (( e == 130 || e == 124 || e == 125 )); then handle_interrupt; fi
+    # The stage ran to the end but some files failed. Their originals are
+    # kept, so the next stage can still run; the end result reports it.
+    if (( e == MO_RC_PARTIAL )); then
+        printf "\n%b[WARNING]%b Stage '%s' finished, but some files failed.\n" \
+            "$C_YELLOW" "$C_RESET" "$label" >&2
+        STAGES_WITH_FAILURES+=("$label")
+        return 0
+    fi
     if (( e == 126 || e == 127 )); then
         printf "\n%b[ERROR]%b Stage '%s' could not be started (code %d).\n" \
             "$C_RED" "$C_RESET" "$label" "$e" >&2
@@ -477,7 +501,7 @@ if (( COUNT_IMG > 0 )) && [[ "$STAGE_1_DONE" != true ]]; then
     printf "\n%b▶ [%d/%d] Starting image conversion (%d files)...%b\n" \
         "$C_CYAN" "$STAGE_NO" "$STAGE_TOTAL" "$COUNT_IMG" "$C_RESET"
     mo_log "start" "stage images ($COUNT_IMG candidates)"
-    run_stage "Bilder" "$SCRIPT_IMG" "${STAGE_ARGS[@]}"
+    run_stage "Images" "$SCRIPT_IMG" "${STAGE_ARGS[@]}"
     STAGE_1_DONE=true; save_state "RUNNING"
 fi
 
@@ -575,9 +599,20 @@ if [[ "$ENABLE_VERIFY_OUTPUT" == true && "$DRY_RUN" != true ]]; then
 fi
 
 rm -f "$STATE_FILE"
-mo_log_close 0
-printf "\n%b╔══════════════════════════════════════════════════════════════╗%b\n" "$C_GREEN" "$C_RESET"
-printf "%b║%b              %bALL STAGES COMPLETED SUCCESSFULLY%b               %b║%b\n" "$C_GREEN" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_GREEN" "$C_RESET"
-printf "%b╚══════════════════════════════════════════════════════════════╝%b\n" "$C_GREEN" "$C_RESET"
+final_rc=0
+if (( ${#STAGES_WITH_FAILURES[@]} > 0 )); then
+    final_rc=$MO_RC_PARTIAL
+    mo_log_close "$final_rc"
+    printf "\n%b╔══════════════════════════════════════════════════════════════╗%b\n" "$C_YELLOW" "$C_RESET"
+    printf "%b║%b             %bALL STAGES COMPLETED, WITH FAILURES%b              %b║%b\n" "$C_YELLOW" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_YELLOW" "$C_RESET"
+    printf "%b║%b  %-21s %-37s %b║%b\n" "$C_YELLOW" "$C_RESET" "Failed files in:" "${STAGES_WITH_FAILURES[*]}" "$C_YELLOW" "$C_RESET"
+    printf "%b╚══════════════════════════════════════════════════════════════╝%b\n" "$C_YELLOW" "$C_RESET"
+else
+    mo_log_close 0
+    printf "\n%b╔══════════════════════════════════════════════════════════════╗%b\n" "$C_GREEN" "$C_RESET"
+    printf "%b║%b              %bALL STAGES COMPLETED SUCCESSFULLY%b               %b║%b\n" "$C_GREEN" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_GREEN" "$C_RESET"
+    printf "%b╚══════════════════════════════════════════════════════════════╝%b\n" "$C_GREEN" "$C_RESET"
+fi
 
 offer_restart
+exit "$final_rc"

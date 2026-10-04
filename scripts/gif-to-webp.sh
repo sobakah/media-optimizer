@@ -3,7 +3,8 @@
 # gif-to-webp.sh  -  GIF -> animated WebP, or AVIF with --target avif
 #
 # STRUCTURE: CONFIGURATION -> STATISTICS -> WORKER -> xargs call at the end.
-# Parallelisation and export rules are the same as in img-to-jxl.sh.
+# Parallelisation, export rules and the worker scaffold (mo_worker_start,
+# mo_w_*) are the same as in img-to-jxl.sh.
 #
 # INVARIANTS
 #   - gif2webp encodes losslessly by default. A "-lossless" flag does NOT
@@ -11,6 +12,9 @@
 #   - With GIF_TARGET=avif, ffmpeg takes over with an AV1 encoder. That path
 #     is lossy, unlike the WebP one.
 #   - Results larger than the original are discarded.
+#   - The existing-output check is repeated under the lock and the final move
+#     never overwrites. Workers run with set -euo pipefail.
+#   - With a target directory no state files are written to the source.
 # ==============================================================================
 set -euo pipefail
 
@@ -21,7 +25,7 @@ _MO_ROOT="$(dirname "$SCRIPT_DIR")"; load_config
 mo_install_exit_handler
 
 usage() {
-    cat <<'EOF'
+    cat <<'USAGE'
 gif-to-webp.sh - converts GIF to animated WebP or AVIF
 
   -i, --input   <dir>   source directory
@@ -29,26 +33,29 @@ gif-to-webp.sh - converts GIF to animated WebP or AVIF
   -j, --workers <n>     parallel workers (default: nproc)
   -m, --method  <0-6>   WebP compression level (default: 6)
       --target <f>      webp | avif (default: webp)
-      --avif-crf <n>    AV1 quality with --target avif (default: 20)
+      --avif-crf <n>    AV1 quality with --target avif, 0-63 (default: 20)
       --delete          move originals to the trash after success
       --no-delete       keep originals
       --force-delete    if the trash fails, rm without asking
       --keep-larger     keep the result even when it is larger
       --verify-deep     check the output with webpinfo
+  -y, --yes             do not ask, keep the settings as given
       --log <file>      log file
       --no-log          do not write a log
       --hold            keep the window open at the end
       --no-hold         never keep the window open
   -n, --dry-run         preview only, write nothing
   -h, --help            this help
-EOF
+
+Hidden files and folders are skipped unless INCLUDE_HIDDEN=true.
+USAGE
 }
 
 SOURCE_DIR="${SOURCE_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 MAX_WORKERS="${MAX_WORKERS:-$(nproc)}"
-# No fixed default: the preset depends on whether a target
-# Zielverzeichnis angegeben wurde (siehe mo_apply_inplace_defaults).
+# No fixed default: the preset depends on whether a target directory was
+# given (see mo_apply_inplace_defaults).
 # A value from the environment or config file counts as explicit.
 if [[ -n "${DELETE_ORIGINAL+x}" ]]; then DELETE_ORIGINAL_EXPLICIT=true; fi
 DELETE_ORIGINAL="${DELETE_ORIGINAL:-false}"
@@ -65,24 +72,27 @@ GIF_TARGET="${GIF_TARGET:-webp}"
 GIF_AVIF_CRF="${GIF_AVIF_CRF:-20}"
 DRY_RUN="${DRY_RUN:-false}"
 VERIFY_DEEP="${VERIFY_DEEP:-false}"
+ASSUME_YES="${ASSUME_YES:-false}"
 SKIP_EXISTING=true
+SOURCE_FROM_CLI=false
 
 POSITIONAL=()
 while (( $# > 0 )); do
     case "$1" in
-        -i|--input)     SOURCE_DIR="$2"; shift 2 ;;
-        -o|--output)    OUTPUT_DIR="$2"; shift 2 ;;
-        -j|--workers)   MAX_WORKERS="$2"; shift 2 ;;
-        -m|--method)    COMPRESSION_METHOD="$2"; shift 2 ;;
-        --target)       GIF_TARGET="$2"; shift 2 ;;
-        --avif-crf)     GIF_AVIF_CRF="$2"; shift 2 ;;
+        -i|--input)     mo_need_value "$@"; SOURCE_DIR="$2"; SOURCE_FROM_CLI=true; shift 2 ;;
+        -o|--output)    mo_need_value "$@"; OUTPUT_DIR="$2"; shift 2 ;;
+        -j|--workers)   mo_need_value "$@"; MAX_WORKERS="$2"; shift 2 ;;
+        -m|--method)    mo_need_value "$@"; COMPRESSION_METHOD="$2"; shift 2 ;;
+        --target)       mo_need_value "$@"; GIF_TARGET="$2"; shift 2 ;;
+        --avif-crf)     mo_need_value "$@"; GIF_AVIF_CRF="$2"; shift 2 ;;
         --delete)       DELETE_ORIGINAL=true; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
         --no-delete)    DELETE_ORIGINAL=false; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
         --force-delete) FORCE_DELETE=true; shift ;;
         --keep-larger)  DISCARD_IF_LARGER=false; shift ;;
         --verify-deep)  VERIFY_DEEP=true; shift ;;
+        -y|--yes)       ASSUME_YES=true; shift ;;
         -n|--dry-run)   DRY_RUN=true; shift ;;
-        --log)          MO_LOG_FILE="$2"; shift 2 ;;
+        --log)          mo_need_value "$@"; MO_LOG_FILE="$2"; shift 2 ;;
         --no-log)       MO_LOG=false; shift ;;
         --hold)         MO_HOLD=1; shift ;;
         --no-hold)      MO_HOLD=0; shift ;;
@@ -92,23 +102,29 @@ while (( $# > 0 )); do
         *)              POSITIONAL+=("$1"); shift ;;
     esac
 done
-[[ -n "${POSITIONAL[0]:-}" ]] && SOURCE_DIR="${POSITIONAL[0]}"
+if [[ -n "${POSITIONAL[0]:-}" ]]; then SOURCE_DIR="${POSITIONAL[0]}"; SOURCE_FROM_CLI=true; fi
 [[ -n "${POSITIONAL[1]:-}" ]] && OUTPUT_DIR="${POSITIONAL[1]}"
 
-if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" ]]; then
+# The settings menu is for interactive use without arguments.
+if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" && "$SOURCE_FROM_CLI" != true \
+      && "$ASSUME_YES" != true ]]; then
+    _banner="GIF to animated WebP (via gif2webp)"
+    [[ "$GIF_TARGET" == "avif" ]] && _banner="GIF to animated AVIF (via ffmpeg, lossy)"
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
-    printf "%bBatch GIF to WebP converter (via gif2webp)%b\n" "$C_BOLD" "$C_RESET"
+    printf "%bBatch converter: %s%b\n" "$C_BOLD" "$_banner" "$C_RESET"
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
     read -rp "Run with the default settings? [Y/n]: " start_choice || start_choice=""
     if [[ "${start_choice,,}" =~ ^(n|nein|no)$ ]]; then
         read -rp "  Source folder [$SOURCE_DIR]: " x && SOURCE_DIR="${x:-$SOURCE_DIR}"
         read -rp "  Target folder (empty = in place) [$OUTPUT_DIR]: " x && OUTPUT_DIR="${x:-$OUTPUT_DIR}"
-        read -rp "  Move originals to trash? [y/N]: " x
-        [[ "${x,,}" =~ ^(j|ja|y|yes)$ ]] && DELETE_ORIGINAL=true || DELETE_ORIGINAL=false
+        mo_prompt_delete_original "$OUTPUT_DIR"
         read -rp "  Parallel workers [$MAX_WORKERS]: " x && MAX_WORKERS="${x:-$MAX_WORKERS}"
         read -rp "  Compression level (0-6) [$COMPRESSION_METHOD]: " x && COMPRESSION_METHOD="${x:-$COMPRESSION_METHOD}"
     fi
 fi
+
+mo_validate MAX_WORKERS COMPRESSION_METHOD GIF_TARGET GIF_AVIF_CRF GIF_KMIN \
+    DISCARD_IF_LARGER DELETE_ORIGINAL FORCE_DELETE VERIFY_DEEP DRY_RUN INCLUDE_HIDDEN
 
 [[ -z "$SOURCE_DIR" ]] && { echo "No source directory given." >&2; exit 1; }
 [[ -d "$SOURCE_DIR" ]] || { echo "Source directory not found: $SOURCE_DIR" >&2; exit 1; }
@@ -122,6 +138,7 @@ mo_apply_inplace_defaults "$OUTPUT_DIR"
 export MO_LOG_TAG="gif"
 mo_log_init "gif-to-webp.sh" "$SOURCE_DIR" "$OUTPUT_DIR"
 
+GIF_AV1_ENCODER=""; GIF_AV1_SPEED=()
 if [[ "$GIF_TARGET" == "avif" ]]; then
     require_cmds ffmpeg || exit 1
     _enc=$(ffmpeg -hide_banner -encoders 2>/dev/null || true)
@@ -140,19 +157,23 @@ else
 fi
 [[ "$DRY_RUN" == true ]] && printf "%b[DRY-RUN]%b Nothing will be written or deleted.\n" "$C_CYAN" "$C_RESET"
 
-cleanup_stale_parts "${OUTPUT_DIR:-$SOURCE_DIR}" "*.part.*.webp" "*.part.*.avif"
+# State, temp and lock files live in the target directory, or in the source
+# directory in place; see img-to-jxl.sh.
+WORK_DIR="${OUTPUT_DIR:-$SOURCE_DIR}"
+mo_lock_workdir "$WORK_DIR"
+cleanup_stale_parts "$WORK_DIR" "*.part.*.webp" "*.part.*.avif"
 
 # ------------------------------------------------------------------------------
 # STATISTICS
 # ------------------------------------------------------------------------------
-STATS_FILE="${SOURCE_DIR}/.gif_stats.env"
-PENDING_DELETE_LOG="${SOURCE_DIR}/.gif_pending_deletes.txt"
-CURRENT_RUN_LOG=$(mktemp /tmp/gif_stats_XXXXXX)
+STATS_FILE="${WORK_DIR}/.gif_stats.env"
+PENDING_DELETE_LOG="${WORK_DIR}/.gif_pending_deletes.txt"
+mo_mktemp CURRENT_RUN_LOG gif_stats
 export CURRENT_RUN_LOG PENDING_DELETE_LOG DRY_RUN VERIFY_DEEP FORCE_DELETE
 
 if [[ "${RESUMING:-false}" == "true" && -f "$STATS_FILE" ]]; then
     source "$STATS_FILE" 2>/dev/null || true
-else
+elif [[ "$DRY_RUN" != true ]]; then
     rm -f "$STATS_FILE"
 fi
 
@@ -189,6 +210,7 @@ finalize_stats() {
     TOTAL_NEW_BYTES=$(( TOTAL_NEW_BYTES + c_new ))
 
     if [[ $exit_code -eq 130 ]]; then
+        [[ "$DRY_RUN" == true ]] && exit 130
         PREV_ELAPSED="$tot_elapsed"
         mo_write_vars "$STATS_FILE" \
             TOTAL_PROCESSED TOTAL_SKIPPED TOTAL_FAILED TOTAL_DISCARDED \
@@ -196,7 +218,7 @@ finalize_stats() {
         resolve_pending_deletes
         exit 130
     fi
-    rm -f "$STATS_FILE"
+    [[ "$DRY_RUN" == true ]] || rm -f "$STATS_FILE"
 
     if [[ "$DRY_RUN" == true ]]; then
         printf "\n%b[DRY-RUN]%b %s GIF(s) would be converted, %s skipped.\n" \
@@ -233,114 +255,118 @@ finalize_stats() {
     resolve_pending_deletes
 }
 
-trap 'printf "\n%b[ABORT]%b GIF conversion stopped.\n" "$C_RED" "$C_RESET"; finalize_stats 130' SIGINT SIGTERM
+on_stop() {
+    trap '' INT TERM
+    printf "\n%b[ABORT]%b GIF conversion stopped.\n" "$C_RED" "$C_RESET"
+    mo_job_stop
+    finalize_stats 130
+}
+trap on_stop SIGINT SIGTERM
 
 # ------------------------------------------------------------------------------
-# WORKER
+# WORKER (one GIF per "bash -c", scaffold from common.sh)
 # ------------------------------------------------------------------------------
+
+# _gif_encode <src> <tmp>
+# gif2webp encodes losslessly by default. A "-lossless" flag does not exist
+# and makes the whole call fail.
+_gif_encode() {
+    local src="$1" tmp="$2"
+    local -a speed=()
+    if [[ "$GIF_TARGET" == "avif" ]]; then
+        read -r -a speed <<< "$GIF_AV1_SPEED_STR"
+        ffmpeg -nostdin -y -v error -i "$src" -c:v "$GIF_AV1_ENCODER" \
+            -crf "$GIF_AVIF_CRF" "${speed[@]}" -pix_fmt yuv420p \
+            -an -f avif -loop 0 "$tmp" </dev/null 2>/dev/null
+    else
+        gif2webp -m "$COMPRESSION_METHOD" -kmin "$GIF_KMIN" -metadata all -quiet \
+            "$src" -o "$tmp" 2>/dev/null
+    fi
+}
+
 convert_gif() {
     local src="$1"
-    local orig_size; orig_size=$(stat -c%s "$src" 2>/dev/null || echo 0)
-    local filename; filename="$(basename "$src")"
-    local stem="${filename%.*}"
+    local filename stem ext target_folder dest tmp orig_size new_size
+    filename="$(basename -- "$src")"
+    stem="$(mo_stem "$filename")"
+    ext="webp"; [[ "$GIF_TARGET" == "avif" ]] && ext="avif"
+    target_folder="$(mo_w_target_folder "$src")"
+    dest="$target_folder/${stem}.${ext}"
 
-    local target_folder
-    if [[ -n "${OUTPUT_DIR:-}" ]]; then
-        local rel_dir; rel_dir="$(dirname "${src#"$SOURCE_DIR"/}")"
-        [[ "$rel_dir" == "." ]] && target_folder="$OUTPUT_DIR" || target_folder="$OUTPUT_DIR/$rel_dir"
-        [[ "$DRY_RUN" == true ]] || mkdir -p "$target_folder"
-    else
-        target_folder="$(dirname "$src")"
+    if [[ "$SKIP_EXISTING" == true && -s "$dest" ]]; then
+        mo_w_result SKIP; return 0
     fi
-    local ext="webp"; [[ "$GIF_TARGET" == "avif" ]] && ext="avif"
-    local final_dest="$target_folder/${stem}.${ext}"
-
-    if [[ "$SKIP_EXISTING" == true && -s "$final_dest" ]]; then
-        echo "SKIP" >> "$CURRENT_RUN_LOG"; return 0
-    fi
-
-    if [[ "${DRY_RUN:-false}" == "true" ]]; then
-        echo "DRY" >> "$CURRENT_RUN_LOG"
-        printf "%b[DRY-RUN]%b '%s' -> '%s'\n" "$C_CYAN" "$C_RESET" "$filename" "$(basename "$final_dest")"
+    if [[ "$DRY_RUN" == true ]]; then
+        mo_w_result DRY
+        printf "%b[DRY-RUN]%b '%s' -> '%s'\n" "$C_CYAN" "$C_RESET" "$filename" "$(basename -- "$dest")"
         return 0
     fi
 
-    local lockdir="$target_folder/.${stem}.molock"
-    if ! mkdir "$lockdir" 2>/dev/null; then
-        echo "COLLISION" >> "$CURRENT_RUN_LOG"
-        printf "%b[CONFLICT]%b '%s': target name already claimed, original kept.\n" \
-            "$C_YELLOW" "$C_RESET" "$filename" >&2
-        return 0
-    fi
+    orig_size=$(stat -c%s -- "$src")
+    mo_w_claim "$src" "$target_folder" "$stem" "$dest" || return 0
+    mo_w_temp "$dest"; tmp="$_MO_W_TEMP"
 
-    local temp_dest="${final_dest}.part.$$.${RANDOM}.${ext}"
-    local rc=0
-
-    # Hinweis: gif2webp encoded per Default verlustfrei. Ein Flag "-lossless"
-    # does not exist and makes the whole call fail.
-    encode_gif() {
+    # verify_output_image checks WebP; for AVIF it only checks the size.
+    if ! { _gif_encode "$src" "$tmp" && [[ -s "$tmp" ]] && verify_output_image "$tmp"; }; then
+        mo_w_fail "$src" "conversion failed"
         if [[ "$GIF_TARGET" == "avif" ]]; then
-            ffmpeg -nostdin -y -v error -i "$src" -c:v "$GIF_AV1_ENCODER" \
-                -crf "$GIF_AVIF_CRF" "${GIF_AV1_SPEED[@]}" -pix_fmt yuv420p \
-                -an -f avif -loop 0 "$temp_dest" </dev/null 2>/dev/null
-        else
-            gif2webp -m "$COMPRESSION_METHOD" -kmin "$GIF_KMIN" -metadata all -quiet \
-                "$src" -o "$temp_dest" 2>/dev/null
+            if mo_encoder_missing ffmpeg; then exit 255; fi
+        elif mo_encoder_missing gif2webp; then
+            exit 255
         fi
-    }
-
-    if encode_gif && [[ -s "$temp_dest" ]] \
-       && { [[ "$GIF_TARGET" == "avif" ]] || verify_output_image "$temp_dest"; }; then
-
-        local new_size; new_size=$(stat -c%s "$temp_dest" 2>/dev/null || echo 0)
-
-        if [[ "$DISCARD_IF_LARGER" == true ]] && (( new_size >= orig_size )); then
-            rm -f "$temp_dest"
-            echo "DISCARD" >> "$CURRENT_RUN_LOG"
-            mo_log_file "$MO_LOG_TAG" "DISCARDED" "$src" "" "$orig_size" "$new_size"
-            printf "%b[DISCARDED]%b '%s': WebP would be %s larger, original kept.\n" \
-                "$C_YELLOW" "$C_RESET" "$filename" "$(format_bytes $(( new_size - orig_size )))"
-        else
-            mv "$temp_dest" "$final_dest"
-            touch -r "$src" "$final_dest"
-            echo "SUCCESS $orig_size $new_size" >> "$CURRENT_RUN_LOG"
-            mo_log_file "$MO_LOG_TAG" "OK" "$src" "$(basename "$final_dest")" "$orig_size" "$new_size"
-            [[ "$DELETE_ORIGINAL" == true ]] && safe_remove "$src"
-            printf "%b[OK]%b   '%s' -> '%s'\n" "$C_GREEN" "$C_RESET" "$filename" "$(basename "$final_dest")"
-        fi
-    else
-        rm -f "$temp_dest"
-        echo "FAIL" >> "$CURRENT_RUN_LOG"
-        mo_log_file "$MO_LOG_TAG" "ERROR" "$src"
-        if [[ "$GIF_TARGET" == "avif" ]]; then mo_encoder_missing ffmpeg && rc=255
-        else mo_encoder_missing gif2webp && rc=255; fi
-        printf "%b[ERROR]%b '%s' (original kept)\n" "$C_RED" "$C_RESET" "$filename" >&2
-        rc=1
+        return 0
     fi
 
-    rmdir "$lockdir" 2>/dev/null || true
-    return $rc
+    new_size=$(stat -c%s -- "$tmp")
+    if [[ "$DISCARD_IF_LARGER" == true ]] && (( new_size >= orig_size )); then
+        mo_w_result DISCARD
+        mo_log_file "$MO_LOG_TAG" "DISCARDED" "$src" "" "$orig_size" "$new_size"
+        printf "%b[DISCARDED]%b '%s': %s would be %s larger, original kept.\n" \
+            "$C_YELLOW" "$C_RESET" "$filename" "${ext^^}" "$(format_bytes $(( new_size - orig_size )))"
+        return 0
+    fi
+
+    mo_w_commit "$src" "$tmp" "$dest" || return 0
+    mo_w_result SUCCESS "$orig_size" "$new_size"
+    mo_log_file "$MO_LOG_TAG" "OK" "$src" "$(basename -- "$dest")" "$orig_size" "$new_size"
+    printf "%b[OK]%b   '%s' -> '%s'\n" "$C_GREEN" "$C_RESET" "$filename" "$(basename -- "$dest")"
+    if [[ "$DELETE_ORIGINAL" == true ]]; then safe_remove "$src"; fi
+    return 0
 }
 
 export SOURCE_DIR OUTPUT_DIR SKIP_EXISTING DELETE_ORIGINAL COMPRESSION_METHOD DISCARD_IF_LARGER GIF_KMIN
-export GIF_TARGET GIF_AVIF_CRF GIF_AV1_ENCODER="${GIF_AV1_ENCODER:-}"
+export GIF_TARGET GIF_AVIF_CRF GIF_AV1_ENCODER
+# GIF_AV1_SPEED is an array and does not survive export; rebuilt in the worker.
 export GIF_AV1_SPEED_STR="${GIF_AV1_SPEED[*]:-}"
-export -f convert_gif
+export -f convert_gif _gif_encode
+
+run_batch() {
+    mo_find_files "$SOURCE_DIR" -iname "*.gif" |
+        xargs -0 -r -n 1 -P "$MAX_WORKERS" \
+            bash -c 'mo_worker_start "$1"; convert_gif "$1"' _
+}
 
 exit_code=0
-find "$SOURCE_DIR" -type f -iname "*.gif" -print0 |
-    xargs -0 -r -n 1 -P "$MAX_WORKERS" bash -c 'read -r -a GIF_AV1_SPEED <<< "$GIF_AV1_SPEED_STR"; convert_gif "$1"' _ || exit_code=$?
+mo_job_start run_batch
+mo_job_wait || exit_code=$?
 
-# xargs reports 124/125 on abort, 123 on worker errors (not an abort)
-# 255 means a worker reported a fatal problem and xargs aborted the batch.
-if (( exit_code == 255 )); then
-    printf "\n%b[ABORT]%b Batch stopped: a required encoder is missing.\n" \
-        "$C_RED" "$C_RESET" >&2
-    finalize_stats 0
-    exit 255
-fi
-if (( exit_code == 124 || exit_code == 125 || exit_code == 130 )); then
-    finalize_stats 130
-else
-    finalize_stats 0
-fi
+# Exit codes of xargs: see "Fatal versus per-file failure" in common.sh.
+# Per-file failures are counted from the FAIL tokens, not from xargs.
+case "$exit_code" in
+    0|123) ;;
+    124)
+        printf "\n%b[ABORT]%b Batch stopped: a required encoder is missing.\n" \
+            "$C_RED" "$C_RESET" >&2
+        finalize_stats 0
+        exit 255 ;;
+    125|130)
+        finalize_stats 130 ;;
+    *)
+        printf "\n%b[ERROR]%b xargs failed (code %d), the batch did not run completely.\n" \
+            "$C_RED" "$C_RESET" "$exit_code" >&2
+        finalize_stats 0
+        exit 1 ;;
+esac
+finalize_stats 0
+if (( TOTAL_FAILED > 0 )); then exit "$MO_RC_PARTIAL"; fi
+exit 0

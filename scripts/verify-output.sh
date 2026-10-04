@@ -65,19 +65,20 @@ CHECK_VISUAL="${CHECK_VISUAL:-true}"
 VIDEO_EXTENSIONS="${VIDEO_EXTENSIONS:-mp4 m4v mov mkv webm avi ts m2ts wmv flv}"
 DO_FIX=false
 DO_RUN=false
+SOURCE_FROM_CLI=false
 
 POSITIONAL=()
 while (( $# > 0 )); do
     case "$1" in
-        -i|--input)     SOURCE_DIR="$2"; shift 2 ;;
-        -o|--output)    OUTPUT_DIR="$2"; shift 2 ;;
-        -j|--workers)   MAX_WORKERS="$2"; shift 2 ;;
-        --psnr-min)     PSNR_MIN="$2"; shift 2 ;;
-        --duration-tol) DURATION_TOL="$2"; shift 2 ;;
-        --samples)      SAMPLES="$2"; shift 2 ;;
-        --keep-samples) VISUAL_KEEP_DIR="$2"; shift 2 ;;
+        -i|--input)     mo_need_value "$@"; SOURCE_DIR="$2"; SOURCE_FROM_CLI=true; shift 2 ;;
+        -o|--output)    mo_need_value "$@"; OUTPUT_DIR="$2"; shift 2 ;;
+        -j|--workers)   mo_need_value "$@"; MAX_WORKERS="$2"; shift 2 ;;
+        --psnr-min)     mo_need_value "$@"; PSNR_MIN="$2"; shift 2 ;;
+        --duration-tol) mo_need_value "$@"; DURATION_TOL="$2"; shift 2 ;;
+        --samples)      mo_need_value "$@"; SAMPLES="$2"; shift 2 ;;
+        --keep-samples) mo_need_value "$@"; VISUAL_KEEP_DIR="$2"; shift 2 ;;
         --no-visual)    CHECK_VISUAL=false; shift ;;
-        --extensions)   VIDEO_EXTENSIONS="$2"; shift 2 ;;
+        --extensions)   mo_need_value "$@"; VIDEO_EXTENSIONS="$2"; shift 2 ;;
         --fix)          DO_FIX=true; shift ;;
         --run)          DO_RUN=true; shift ;;
         --hold)         MO_HOLD=1; shift ;;
@@ -88,16 +89,17 @@ while (( $# > 0 )); do
         *)              POSITIONAL+=("$1"); shift ;;
     esac
 done
-[[ -n "${POSITIONAL[0]:-}" ]] && SOURCE_DIR="${POSITIONAL[0]}"
+if [[ -n "${POSITIONAL[0]:-}" ]]; then SOURCE_DIR="${POSITIONAL[0]}"; SOURCE_FROM_CLI=true; fi
 [[ -n "${POSITIONAL[1]:-}" ]] && OUTPUT_DIR="${POSITIONAL[1]}"
 
 # ------------------------------------------------------------------------------
 # INTERACTIVE SETUP
-# Only when there is a terminal and the script was not started by another one.
+# Only when there is a terminal, the script was not started by another one,
+# and the directories were not given on the command line.
 # --keep-samples is offered only if the picture comparison is actually going
 # to run; without it there would be no stills to store.
 # ------------------------------------------------------------------------------
-if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" ]]; then
+if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" && "$SOURCE_FROM_CLI" != true ]]; then
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
     printf "%bOutput check: compare converted videos with their originals%b\n" "$C_BOLD" "$C_RESET"
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
@@ -128,6 +130,8 @@ if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" ]]; then
     fi
 fi
 
+mo_validate MAX_WORKERS PSNR_MIN SAMPLES DURATION_TOL CHECK_VISUAL INCLUDE_HIDDEN
+
 # --keep-samples without the picture comparison would never produce anything.
 if [[ "$CHECK_VISUAL" != true && -n "$VISUAL_KEEP_DIR" ]]; then
     printf "%b[NOTE]%b --keep-samples has no effect without the picture comparison.\n" \
@@ -146,8 +150,9 @@ SOURCE_DIR="${SOURCE_DIR%/}"; OUTPUT_DIR="${OUTPUT_DIR%/}"
 
 require_cmds ffmpeg ffprobe || exit 1
 
-RESULT_LOG=$(mktemp /tmp/mo_verify_XXXXXX)
-BROKEN_LIST="${OUTPUT_DIR}/.defekte_videos.txt"
+mo_mktemp RESULT_LOG mo_verify
+mo_migrate_name "${OUTPUT_DIR}/.defekte_videos.txt" "${OUTPUT_DIR}/.broken_videos.txt"
+BROKEN_LIST="${OUTPUT_DIR}/.broken_videos.txt"
 VISUAL_SAMPLES="$SAMPLES"
 export RESULT_LOG PSNR_MIN SAMPLES VISUAL_SAMPLES VISUAL_KEEP_DIR DURATION_TOL
 export CHECK_VISUAL SOURCE_DIR OUTPUT_DIR VIDEO_EXTENSIONS
@@ -211,7 +216,7 @@ check_one() {
 }
 export -f check_one verify_video verify_visual media_duration
 
-FIND_OPTS=(-type f \()
+FIND_OPTS=(\()
 _first=true
 for _ext in $VIDEO_EXTENSIONS; do
     [[ "$_first" == true ]] || FIND_OPTS+=(-o)
@@ -220,7 +225,7 @@ for _ext in $VIDEO_EXTENSIONS; do
 done
 FIND_OPTS+=(\) ! -name "*.part.*")
 
-TOTAL=$(find "$OUTPUT_DIR" "${FIND_OPTS[@]}" 2>/dev/null | wc -l || true)
+TOTAL=$(mo_find_files "$OUTPUT_DIR" "${FIND_OPTS[@]}" 2>/dev/null | tr -dc '\0' | wc -c || true)
 if (( TOTAL == 0 )); then
     echo "No matching video files found in the target directory."
     rm -f "$RESULT_LOG"
@@ -228,8 +233,15 @@ if (( TOTAL == 0 )); then
 fi
 printf "  checking %d file(s)...\n\n" "$TOTAL"
 
-find "$OUTPUT_DIR" "${FIND_OPTS[@]}" -print0 |
-    xargs -0 -r -n 1 -P "$MAX_WORKERS" bash -c 'check_one "$1"' _ || true
+# As a background job, so that SIGTERM and Ctrl+C stop the checks at once.
+run_checks() {
+    mo_find_files "$OUTPUT_DIR" "${FIND_OPTS[@]}" |
+        xargs -0 -r -n 1 -P "$MAX_WORKERS" bash -c 'check_one "$1"' _
+}
+trap 'trap "" INT TERM; printf "\n%b[ABORT]%b check stopped, nothing was changed.\n" "$C_RED" "$C_RESET"; mo_job_stop; exit 130' INT TERM
+mo_job_start run_checks
+mo_job_wait || true
+trap - INT TERM
 
 # ------------------------------------------------------------------------------
 # SUMMARY
@@ -283,9 +295,17 @@ fi
 # REPAIR
 # Remove only the broken outputs and drop the matching source files from
 # the cache. h264-to-h265.sh skips existing outputs, so the next run
-# so the next run regenerates exactly the deleted ones.
+# regenerates exactly the deleted ones.
 # ------------------------------------------------------------------------------
-CACHE_FILE="${SOURCE_DIR}/.video_conversion_cache.txt"
+# The cache lives in the target directory (h264-to-h265.sh, WORK_DIR). An
+# older version kept it in the source directory; h264-to-h265.sh copies that
+# one over once. Do the same copy here first, otherwise that later copy
+# would bring back the entries pruned now, and the deleted outputs would
+# never be regenerated.
+CACHE_FILE="${OUTPUT_DIR}/.video_conversion_cache.txt"
+if [[ ! -e "$CACHE_FILE" && -f "${SOURCE_DIR}/.video_conversion_cache.txt" ]]; then
+    cp -p "${SOURCE_DIR}/.video_conversion_cache.txt" "$CACHE_FILE" 2>/dev/null || true
+fi
 removed=0
 while IFS=$'\t' read -r status out src _; do
     case "$status" in VISUAL|DURATION|UNREADABLE) ;; *) continue ;; esac
@@ -302,10 +322,10 @@ if [[ -f "$CACHE_FILE" ]]; then
     if grep -Fxv -f "$BROKEN_LIST" "$CACHE_FILE" > "${CACHE_FILE}.tmp" 2>/dev/null; then :; fi
     pruned=$(( $(wc -l < "$CACHE_FILE") - $(wc -l < "${CACHE_FILE}.tmp") ))
     mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
-    printf "\n  %d output(s) deleted, %d Cache-Eintrag/Eintraege entfernt.\n" "$removed" "$pruned"
-    printf "  Sicherung des Cache: %s\n" "${CACHE_FILE}.bak"
+    printf "\n  %d output(s) deleted, %d cache entry/entries removed.\n" "$removed" "$pruned"
+    printf "  Cache backup: %s\n" "${CACHE_FILE}.bak"
 else
-    printf "\n  %d output(s) deleted. Kein Cache vorhanden.\n" "$removed"
+    printf "\n  %d output(s) deleted. No cache present.\n" "$removed"
 fi
 
 rm -f "$RESULT_LOG"
@@ -325,10 +345,10 @@ printf "\n%b▶ Regenerating %d file(s) from the list...%b\n" \
 MO_HOLD=0 "$SCRIPT_DIR/h264-to-h265.sh" -i "$SOURCE_DIR" -o "$OUTPUT_DIR" --from-list "$BROKEN_LIST"
 # Archive the list instead of leaving it. Otherwise a later run with
 # --from-list auto would process a stale selection and silently ignore
-# stillschweigend nie ansehen.
-ARCHIV="${OUTPUT_DIR}/.defekte_videos.erledigt-$(date +%Y%m%d-%H%M%S).txt"
-if mv "$BROKEN_LIST" "$ARCHIV" 2>/dev/null; then
-    printf "\n  Defektliste archiviert als %s\n" "$(basename "$ARCHIV")"
+# the rest of the collection.
+ARCHIVE="${OUTPUT_DIR}/.broken_videos.done-$(date +%Y%m%d-%H%M%S).txt"
+if mv "$BROKEN_LIST" "$ARCHIVE" 2>/dev/null; then
+    printf "\n  List of broken videos archived as %s\n" "$(basename "$ARCHIVE")"
 fi
 
 printf "\n%bRegeneration finished. Check again with:%b\n" "$C_BOLD" "$C_RESET"

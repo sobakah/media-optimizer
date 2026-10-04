@@ -25,6 +25,10 @@
 #     the real encode would run with stale arguments.
 #   - The target container follows the source: MP4 accepts neither Opus nor
 #     SRT, so "auto" writes MKV for anything that is not MP4/MOV/M4V.
+#   - With a target directory no state files are written to the source
+#     (cache, counters and lists live in WORK_DIR).
+#   - The main encode runs as a background job (mo_job_start), so SIGTERM is
+#     handled at once instead of after the current file.
 # ==============================================================================
 set -euo pipefail
 
@@ -87,7 +91,7 @@ h264-to-h265.sh - re-encodes video to HEVC
                          process only the source files listed there (one per
                          line). Ignores cache and existing outputs because the
                          selection was made explicitly. "auto" picks
-                         .defekte_videos.txt from the target directory.
+                         .broken_videos.txt from the target directory.
       --no-cache         ignore the cache file for this run
       --cache            use the cache file (default)
       --log <file>       log file
@@ -104,8 +108,8 @@ EOF
 # ------------------------------------------------------------------------------
 SOURCE_DIR="${SOURCE_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
-# No fixed default: the preset depends on whether a target
-# Zielverzeichnis angegeben wurde (siehe mo_apply_inplace_defaults).
+# No fixed default: the preset depends on whether a target directory was
+# given (see mo_apply_inplace_defaults).
 # A value from the environment or config file counts as explicit.
 if [[ -n "${DELETE_ORIGINAL+x}" ]]; then DELETE_ORIGINAL_EXPLICIT=true; fi
 DELETE_ORIGINAL="${DELETE_ORIGINAL:-false}"
@@ -123,7 +127,7 @@ MIN_SIZE_MB="${MIN_SIZE_MB:-5}"
 USE_CACHE="${USE_CACHE:-true}"
 DRY_RUN="${DRY_RUN:-false}"
 
-VAAPI_DEVICE="${VAAPI_DEVICE:-auto}"   # auto = alle Render-Nodes durchprobieren
+VAAPI_DEVICE="${VAAPI_DEVICE:-auto}"   # auto = try every render node
 # Portable default without hardware assumptions. pools/frame-threads match
 # what x265 picks itself on 16 threads. asm=avx512 is deliberately
 # NOT set here because it slows many CPUs down; on Zen 5 it can help.
@@ -151,17 +155,17 @@ GPU_BITRATE="${GPU_BITRATE:-8M}"
 GPU_SELFTEST=""
 GPU_ALLOW_10BIT="${GPU_ALLOW_10BIT:-false}"
 VERIFY_VISUAL="${VERIFY_VISUAL:-true}"
-VISUAL_STRICT="${VISUAL_STRICT:-false}"   # true = verdaechtige Ausgaben verwerfen
+VISUAL_STRICT="${VISUAL_STRICT:-false}"   # true = discard suspicious outputs
 VISUAL_PSNR_MIN="${VISUAL_PSNR_MIN:-18}"
 GPU_FELL_BACK=false
 FASTSTART="${FASTSTART:-true}"
-# Source formats. ffmpeg reads all of these containers; what matters is
-# Zielcontainer, siehe VIDEO_CONTAINER.
+# Source formats. ffmpeg reads all of these containers; what matters is the
+# target container, see VIDEO_CONTAINER.
 VIDEO_EXTENSIONS="${VIDEO_EXTENSIONS:-mp4 m4v mov mkv webm avi ts m2ts wmv flv}"
 
-# Zielcontainer:
+# Target container:
 # auto = mp4 for mp4/m4v/mov, mkv otherwise
-#   mp4 | mkv = fest
+#   mp4 | mkv = fixed
 # keep = keep the source extension
 # Background: MP4 accepts neither Opus nor SRT streams, both common in MKV
 # and WebM. MKV accepts practically anything.
@@ -185,49 +189,52 @@ PROBE_SLICES="${PROBE_SLICES:-3}"
 PROBE_MIN_DURATION=60
 SKIP_EXISTING=true
 DURATION_TOLERANCE_PCT="${DURATION_TOLERANCE_PCT:-2}"
+ASSUME_YES="${ASSUME_YES:-false}"
+SOURCE_FROM_CLI=false
 
 POSITIONAL=()
 while (( $# > 0 )); do
     case "$1" in
-        -i|--input)      SOURCE_DIR="$2"; shift 2 ;;
-        -o|--output)     OUTPUT_DIR="$2"; shift 2 ;;
-        --encoder)       ENCODER_MODE="$2"; shift 2 ;;
-        --threshold)     BITRATE_THRESHOLD_KBPS="$2"; shift 2 ;;
-        --gpu-min-pixels) GPU_MIN_PIXELS="$2"; shift 2 ;;
-        --qp)            GPU_QP="$2"; shift 2 ;;
-        --crf)           CPU_CRF="$2"; shift 2 ;;
-        --preset)        CPU_PRESET="$2"; shift 2 ;;
-        --min-size)      MIN_SIZE_MB="$2"; shift 2 ;;
+        -i|--input)      mo_need_value "$@"; SOURCE_DIR="$2"; SOURCE_FROM_CLI=true; shift 2 ;;
+        -o|--output)     mo_need_value "$@"; OUTPUT_DIR="$2"; shift 2 ;;
+        --encoder)       mo_need_value "$@"; ENCODER_MODE="$2"; shift 2 ;;
+        --threshold)     mo_need_value "$@"; BITRATE_THRESHOLD_KBPS="$2"; shift 2 ;;
+        --gpu-min-pixels) mo_need_value "$@"; GPU_MIN_PIXELS="$2"; shift 2 ;;
+        --qp)            mo_need_value "$@"; GPU_QP="$2"; shift 2 ;;
+        --crf)           mo_need_value "$@"; CPU_CRF="$2"; shift 2 ;;
+        --preset)        mo_need_value "$@"; CPU_PRESET="$2"; shift 2 ;;
+        --min-size)      mo_need_value "$@"; MIN_SIZE_MB="$2"; shift 2 ;;
         --no-probe)      ENABLE_PROBE=false; shift ;;
-        --probe-margin)  PROBE_MARGIN_PCT="$2"; shift 2 ;;
-        --probe-duration) PROBE_DURATION="$2"; shift 2 ;;
-        --probe-slices)  PROBE_SLICES="$2"; shift 2 ;;
+        --probe-margin)  mo_need_value "$@"; PROBE_MARGIN_PCT="$2"; shift 2 ;;
+        --probe-duration) mo_need_value "$@"; PROBE_DURATION="$2"; shift 2 ;;
+        --probe-slices)  mo_need_value "$@"; PROBE_SLICES="$2"; shift 2 ;;
         --keep-larger)   DISCARD_IF_LARGER=false; shift ;;
         --delete)        DELETE_ORIGINAL=true; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
         --no-delete)     DELETE_ORIGINAL=false; DELETE_ORIGINAL_EXPLICIT=true; shift ;;
         --force-delete)  FORCE_DELETE=true; shift ;;
-        --gpu-device)    VAAPI_DEVICE="$2"; shift 2 ;;
+        --gpu-device)    mo_need_value "$@"; VAAPI_DEVICE="$2"; shift 2 ;;
         --force-gpu)     FORCE_GPU=true; ENCODER_MODE=gpu; shift ;;
-        --x265-params)   CPU_X265_PARAMS="$2"; shift 2 ;;
+        --x265-params)   mo_need_value "$@"; CPU_X265_PARAMS="$2"; shift 2 ;;
         --no-faststart)  FASTSTART=false; shift ;;
         --rename-inplace) RENAME_INPLACE=true; RENAME_INPLACE_EXPLICIT=true; shift ;;
         --gpu-10bit)     GPU_ALLOW_10BIT=true; shift ;;
-        --hevc-tag)      HEVC_TAG="$2"; shift 2 ;;
-        --gpu-codec)     GPU_CODEC="$2"; shift 2 ;;
-        --rc-mode)       GPU_RC_MODE="$2"; shift 2 ;;
-        --bf)            GPU_BF="$2"; shift 2 ;;
+        --hevc-tag)      mo_need_value "$@"; HEVC_TAG="$2"; shift 2 ;;
+        --gpu-codec)     mo_need_value "$@"; GPU_CODEC="$2"; shift 2 ;;
+        --rc-mode)       mo_need_value "$@"; GPU_RC_MODE="$2"; shift 2 ;;
+        --bf)            mo_need_value "$@"; GPU_BF="$2"; shift 2 ;;
         --low-power)     GPU_LOW_POWER=true; shift ;;
-        --gpu-selftest)  GPU_SELFTEST="$2"; shift 2 ;;
+        --gpu-selftest)  mo_need_value "$@"; GPU_SELFTEST="$2"; shift 2 ;;
         --no-verify-visual) VERIFY_VISUAL=false; shift ;;
         --strict-visual) VISUAL_STRICT=true; shift ;;
-        --from-list)     FROM_LIST="$2"; shift 2 ;;
-        --extensions)    VIDEO_EXTENSIONS="$2"; shift 2 ;;
-        --container)     VIDEO_CONTAINER="$2"; shift 2 ;;
-        --source-codecs) SOURCE_CODECS="$2"; shift 2 ;;
+        --from-list)     mo_need_value "$@"; FROM_LIST="$2"; shift 2 ;;
+        --extensions)    mo_need_value "$@"; VIDEO_EXTENSIONS="$2"; shift 2 ;;
+        --container)     mo_need_value "$@"; VIDEO_CONTAINER="$2"; shift 2 ;;
+        --source-codecs) mo_need_value "$@"; SOURCE_CODECS="$2"; shift 2 ;;
         --no-cache)      USE_CACHE=false; shift ;;
         --cache)         USE_CACHE=true; shift ;;
+        -y|--yes)        ASSUME_YES=true; shift ;;
         -n|--dry-run)    DRY_RUN=true; shift ;;
-        --log)           MO_LOG_FILE="$2"; shift 2 ;;
+        --log)           mo_need_value "$@"; MO_LOG_FILE="$2"; shift 2 ;;
         --no-log)        MO_LOG=false; shift ;;
         --hold)          MO_HOLD=1; shift ;;
         --no-hold)       MO_HOLD=0; shift ;;
@@ -237,10 +244,12 @@ while (( $# > 0 )); do
         *)               POSITIONAL+=("$1"); shift ;;
     esac
 done
-[[ -n "${POSITIONAL[0]:-}" ]] && SOURCE_DIR="${POSITIONAL[0]}"
+if [[ -n "${POSITIONAL[0]:-}" ]]; then SOURCE_DIR="${POSITIONAL[0]}"; SOURCE_FROM_CLI=true; fi
 [[ -n "${POSITIONAL[1]:-}" ]] && OUTPUT_DIR="${POSITIONAL[1]}"
 
-if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" ]]; then
+# The settings menu is for interactive use without arguments.
+if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" && "$SOURCE_FROM_CLI" != true \
+      && "$ASSUME_YES" != true && -z "$GPU_SELFTEST" ]]; then
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
     printf "%bBatch video re-encoder (H.264 -> H.265 / HEVC)%b\n" "$C_BOLD" "$C_RESET"
     printf "%b══════════════════════════════════════════════════════════════%b\n" "$C_CYAN" "$C_RESET"
@@ -249,10 +258,14 @@ if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" ]]; then
         read -rp "  Source directory [$SOURCE_DIR]: " x && SOURCE_DIR="${x:-$SOURCE_DIR}"
         read -rp "  Target directory (empty = in place) [$OUTPUT_DIR]: " x && OUTPUT_DIR="${x:-$OUTPUT_DIR}"
         read -rp "  Encoder (auto/gpu/cpu) [$ENCODER_MODE]: " x && ENCODER_MODE="${x:-$ENCODER_MODE}"
-        read -rp "  Move originals to trash? [y/N]: " x
-        [[ "${x,,}" =~ ^(j|ja|y|yes)$ ]] && DELETE_ORIGINAL=true || DELETE_ORIGINAL=false
+        mo_prompt_delete_original "$OUTPUT_DIR"
     fi
 fi
+
+mo_validate ENCODER_MODE BITRATE_THRESHOLD_KBPS GPU_QP CPU_CRF CPU_PRESET MIN_SIZE_MB \
+    PROBE_MARGIN_PCT VIDEO_CONTAINER DELETE_ORIGINAL FORCE_DELETE ENABLE_PROBE \
+    DISCARD_IF_LARGER KEEP_SALVAGED_CORRUPT USE_CACHE VERIFY_VISUAL VISUAL_STRICT \
+    RENAME_INPLACE DRY_RUN INCLUDE_HIDDEN
 
 if [[ -n "$GPU_SELFTEST" && -z "$SOURCE_DIR" ]]; then
     SOURCE_DIR="$(dirname "$GPU_SELFTEST")"   # the self-test only needs the file
@@ -265,16 +278,19 @@ if [[ -n "$OUTPUT_DIR" ]]; then
     [[ "$DRY_RUN" == true ]] || mkdir -p "$OUTPUT_DIR"
 fi
 
-mo_apply_inplace_defaults "$OUTPUT_DIR"
+mo_apply_inplace_defaults "$OUTPUT_DIR" true
 export MO_LOG_TAG="h265"
 mo_log_init "h264-to-h265.sh" "$SOURCE_DIR" "$OUTPUT_DIR"
 
 require_cmds ffmpeg ffprobe || exit 1
 gain_needed=$(( 100 - PROBE_MARGIN_PCT ))
 
-# "auto" or AUTO_FIX_LIST=true takes the defect list from the target directory
-# falls vorhanden. Sonst normaler Volldurchlauf.
-DEFAULT_FIX_LIST="${OUTPUT_DIR:+$OUTPUT_DIR/.defekte_videos.txt}"
+# "auto" or AUTO_FIX_LIST=true takes the list of broken videos from the
+# target directory if there is one. Otherwise a normal full run.
+if [[ -n "$OUTPUT_DIR" ]]; then
+    mo_migrate_name "$OUTPUT_DIR/.defekte_videos.txt" "$OUTPUT_DIR/.broken_videos.txt"
+fi
+DEFAULT_FIX_LIST="${OUTPUT_DIR:+$OUTPUT_DIR/.broken_videos.txt}"
 if [[ "${FROM_LIST,,}" == "auto" || ( -z "$FROM_LIST" && "$AUTO_FIX_LIST" == true ) ]]; then
     if [[ -n "$DEFAULT_FIX_LIST" && -s "$DEFAULT_FIX_LIST" ]]; then
         FROM_LIST="$DEFAULT_FIX_LIST"
@@ -298,39 +314,52 @@ fi
 if [[ -n "$FROM_LIST" ]]; then
     [[ -f "$FROM_LIST" ]] || { echo "List not found: $FROM_LIST" >&2; exit 1; }
     # An explicit list beats cache and existing outputs: the caller wants
-    # Aufrufer will genau diese Dateien neu erzeugen.
+    # exactly these files produced again.
     USE_CACHE=false
     SKIP_EXISTING=false
     printf "%b[LIST]%b processing only the files from %s\n" "$C_CYAN" "$C_RESET" "$FROM_LIST"
 fi
 [[ "$DRY_RUN" == true ]] && printf "%b[DRY-RUN]%b Nothing will be written or deleted.\n" "$C_CYAN" "$C_RESET"
 
-CACHE_FILE="${SOURCE_DIR}/.video_conversion_cache.txt"
-STATS_FILE="${SOURCE_DIR}/.h265_stats.env"
-PENDING_DELETE_LOG="${SOURCE_DIR}/.video_pending_deletes.txt"
-SUSPECT_LIST="${SOURCE_DIR}/.video_verdaechtig.txt"
+# State files live in the target directory, or in the source directory in
+# place. The source is never written in target mode.
+WORK_DIR="${OUTPUT_DIR:-$SOURCE_DIR}"
+CACHE_FILE="${WORK_DIR}/.video_conversion_cache.txt"
+STATS_FILE="${WORK_DIR}/.h265_stats.env"
+PENDING_DELETE_LOG="${WORK_DIR}/.video_pending_deletes.txt"
+SUSPECT_LIST="${WORK_DIR}/.video_suspect.txt"
+mo_migrate_name "${WORK_DIR}/.video_verdaechtig.txt" "$SUSPECT_LIST"
+# Before this version the cache lived in the source directory in target mode
+# too. Copy it once (not move: the source is not written in target mode).
+if [[ -n "$OUTPUT_DIR" && "$DRY_RUN" != true && -f "${SOURCE_DIR}/.video_conversion_cache.txt" \
+      && ! -e "$CACHE_FILE" ]]; then
+    cp -p "${SOURCE_DIR}/.video_conversion_cache.txt" "$CACHE_FILE" 2>/dev/null || true
+fi
 MIN_SIZE_BYTES=$(( MIN_SIZE_MB * 1024 * 1024 ))
 
-# Remove leftovers from aborted runs before find picks them up
-cleanup_stale_parts "${OUTPUT_DIR:-$SOURCE_DIR}" "*.part.*"
+# One run per working directory, then remove leftovers from aborted runs
+# before find picks them up.
+mo_lock_workdir "$WORK_DIR"
+cleanup_stale_parts "$WORK_DIR" "*.part.*"
 
-# Build the find expression from the extension list:
-#   ( -iname "*.mp4" -o -iname "*.mkv" ... ) ! -name "*.part.*"
+# Build the match expression for mo_find_files from the extension list:
+#   [-maxdepth 1] ( -iname "*.mp4" -o -iname "*.mkv" ... ) ! -name "*.part.*"
 build_find_opts() {
     local ext first=true
-    FIND_OPTS=(-type f \()
+    FIND_OPTS=()
+    [[ "$RECURSIVE" != true ]] && FIND_OPTS=(-maxdepth 1)
+    FIND_OPTS+=(\()
     for ext in $VIDEO_EXTENSIONS; do
         [[ "$first" == true ]] || FIND_OPTS+=(-o)
         FIND_OPTS+=(-iname "*.${ext}")
         first=false
     done
     FIND_OPTS+=(\) ! -name "*.part.*")
-    [[ "$RECURSIVE" != true ]] && FIND_OPTS=(-maxdepth 1 "${FIND_OPTS[@]}")
     return 0   # otherwise the [[ ]] status falls through and set -e fires
 }
 build_find_opts
 
-# target_extension <quelldatei> -> Endung des Zielcontainers
+# target_extension <source file> -> extension of the target container
 target_extension() {
     local src_ext="${1##*.}"; src_ext="${src_ext,,}"
     case "${VIDEO_CONTAINER,,}" in
@@ -537,7 +566,7 @@ run_gpu_selftest() {
         "$(basename "$src")" "$VAAPI_DEVICE" "$seclen" "$start"
 
     # Referenzausschnitt, unveraendert kopiert
-    local ref; ref=$(mktemp --suffix=.mp4 /tmp/mo_st_ref_XXXXXX)
+    local ref; ref=$(mktemp --suffix=.mp4 "${TMPDIR:-/tmp}/mo_st_ref_XXXXXX")
     if ! ffmpeg -nostdin -y -v error -ss "$start" -t "$seclen" -i "$src" \
          -map 0:v:0 -an -c copy "$ref" </dev/null 2>/dev/null; then
         echo "Could not create the reference slice." >&2
@@ -615,7 +644,7 @@ run_gpu_selftest() {
             continue
         fi
 
-        out=$(mktemp --suffix=.mp4 /tmp/mo_st_out_XXXXXX)
+        out=$(mktemp --suffix=.mp4 "${TMPDIR:-/tmp}/mo_st_out_XXXXXX")
         st_build "$v" "$out"
         if "${ST_CMD[@]}" </dev/null 2>/dev/null && [[ -s "$out" ]]; then
             if verify_visual "$ref" "$out" "$VISUAL_PSNR_MIN"; then
@@ -666,7 +695,7 @@ run_gpu_selftest() {
 # ------------------------------------------------------------------------------
 if [[ "${RESUMING:-false}" == "true" && -f "$STATS_FILE" ]]; then
     source "$STATS_FILE" 2>/dev/null || true
-else
+elif [[ "$DRY_RUN" != true ]]; then
     rm -f "$STATS_FILE"
 fi
 
@@ -685,6 +714,7 @@ PREV_ELAPSED=${PREV_ELAPSED:-0}
 START_TIME=$(date +%s)
 
 save_stats() {
+    [[ "$DRY_RUN" == true ]] && return 0
     PREV_ELAPSED=$(( PREV_ELAPSED + $(date +%s) - START_TIME ))
     START_TIME=$(date +%s)
     mo_write_vars "$STATS_FILE" \
@@ -695,7 +725,9 @@ save_stats() {
 }
 
 on_interrupt() {
+    trap '' INT TERM
     printf "\n%b[ABORT]%b video encoding stopped.\n" "$C_RED" "$C_RESET"
+    mo_job_stop
     [[ -n "${temp_file:-}" ]] && rm -f "$temp_file"
     [[ -n "${err_log:-}" ]] && rm -f "$err_log"
     save_stats
@@ -749,12 +781,12 @@ add_dest_to_cache() {
     add_to_cache "$dest"
 }
 
-# slice_kbps <datei> <startsekunde> -> Bitrate eines Video-only-Ausschnitts
+# slice_bytes <file> <start second> <length> -> size of a video-only excerpt
 # Both comparison values (original and probe) are measured identically:
 # same start, same length, without audio, measured by file size.
 slice_bytes() {
     local file="$1" start="$2" len="$3"
-    local tmp; tmp=$(mktemp --suffix=.mkv /tmp/mo_slice_XXXXXX) || { echo 0; return 1; }
+    local tmp; tmp=$(mktemp --suffix=.mkv "${TMPDIR:-/tmp}/mo_slice_XXXXXX") || { echo 0; return 1; }
     if ffmpeg -nostdin -y -hide_banner -loglevel error \
         -ss "$start" -t "$len" -i "$file" -map 0:v:0 -an -c copy "$tmp" </dev/null 2>/dev/null; then
         stat -c%s "$tmp" 2>/dev/null || echo 0
@@ -770,7 +802,7 @@ slice_bytes() {
 # ------------------------------------------------------------------------------
 emit_targets() {
     if [[ -z "$FROM_LIST" ]]; then
-        find "$SOURCE_DIR" "${FIND_OPTS[@]}" -print0
+        mo_find_files "$SOURCE_DIR" "${FIND_OPTS[@]}"
         return 0
     fi
     local line
@@ -788,6 +820,15 @@ emit_targets() {
 # ------------------------------------------------------------------------------
 # MAIN LOOP
 # ------------------------------------------------------------------------------
+# The encode runs as a background job so that SIGTERM and Ctrl+C are handled
+# at once (see mo_job_start). pipefail carries into the job, so the status is
+# ffmpeg's, not tee's.
+_encode_pipe() { "${FFMPEG_CMD[@]}" </dev/null 2>&1 | tee "$err_log"; }
+run_encode() {
+    mo_job_start _encode_pipe
+    mo_job_wait
+}
+
 # ------------------------------------------------------------------------------
 # PROGRESS
 # The total count costs one extra pass over the candidates.
@@ -796,14 +837,14 @@ emit_targets() {
 if [[ -n "$FROM_LIST" ]]; then
     TOTAL_TARGETS=$(grep -cvE '^\s*(#|$)' "$FROM_LIST" 2>/dev/null || echo 0)
 else
-    TOTAL_TARGETS=$(find "$SOURCE_DIR" "${FIND_OPTS[@]}" -print0 2>/dev/null | tr -dc '\0' | wc -c || echo 0)
+    TOTAL_TARGETS=$(mo_find_files "$SOURCE_DIR" "${FIND_OPTS[@]}" 2>/dev/null | tr -dc '\0' | wc -c || echo 0)
 fi
 IDX=0
 PROGRESS_OPEN=false
 
 # Single-line progress for files that pass through without output
 # (cache, too small, wrong codec). Only on a terminal so log files stay
-# bleiben.
+# clean.
 progress_tick() {
     [[ -t 1 && -z "${NO_COLOR:-}" ]] || return 0
     printf "\r  [%d/%d] checked, %d skipped\033[K" \
@@ -849,7 +890,7 @@ while IFS= read -r -d '' -u 9 src_file; do
     fi
 
     filename=$(basename "$src_file")
-    stem="${filename%.*}"
+    stem="$(mo_stem "$filename")"
 
     if [[ -n "$OUTPUT_DIR" ]]; then
         rel_dir="$(dirname "${src_file#"$SOURCE_DIR"/}")"
@@ -871,7 +912,7 @@ while IFS= read -r -d '' -u 9 src_file; do
         add_to_cache "$src_file"; add_dest_to_cache "$dest_file"; progress_tick; continue
     fi
 
-    # ---------- Encoder-Wahl ----------
+    # ---------- encoder choice ----------
     bitrate_raw=$(ffprobe -v error -select_streams v:0 -show_entries stream=bit_rate \
         -of default=noprint_wrappers=1:nokey=1 "$src_file" 2>/dev/null || true)
     if [[ -z "$bitrate_raw" || "$bitrate_raw" == "N/A" ]]; then
@@ -931,7 +972,7 @@ while IFS= read -r -d '' -u 9 src_file; do
                 (( pstart + slice_len > duration_sec )) && pstart=$(( duration_sec - slice_len ))
                 (( pstart < 0 )) && pstart=0
 
-                probe_file=$(mktemp --suffix=.mkv /tmp/mo_probe_XXXXXX)
+                probe_file=$(mktemp --suffix=.mkv "${TMPDIR:-/tmp}/mo_probe_XXXXXX")
                 PROBE_CMD=(ffmpeg -nostdin -y -hide_banner -loglevel error)
                 [[ "$active_encoder" == "gpu" ]] && PROBE_CMD+=("${GPU_HW_ARGS[@]}")
                 PROBE_CMD+=(-reinit_filter 0 -ss "$pstart" -t "$slice_len" -i "$src_file")
@@ -984,7 +1025,7 @@ while IFS= read -r -d '' -u 9 src_file; do
         "$C_BOLD" "$IDX" "$TOTAL_TARGETS" "$C_RESET" "$src_file" \
         "${active_encoder^^}" "${route_reason:+, $route_reason}"
     temp_file="${dest_file}.part.$$.${RANDOM}.${dest_file##*.}"
-    err_log=$(mktemp /tmp/mo_enc_err_XXXXXX)
+    err_log=$(mktemp "${TMPDIR:-/tmp}/mo_enc_err_XXXXXX")
 
     build_ffmpeg_cmd() {   # $1 = gpu | cpu
         FFMPEG_CMD=(ffmpeg -nostdin -y -hide_banner -loglevel warning -stats)
@@ -1012,7 +1053,7 @@ while IFS= read -r -d '' -u 9 src_file; do
 
     enc_ok=true
     build_ffmpeg_cmd "$active_encoder"
-    "${FFMPEG_CMD[@]}" </dev/null 2>&1 | tee "$err_log" || enc_ok=false
+    run_encode || enc_ok=false
 
     # If the GPU fails on a real file, that file is immediately retried on
     # CPU and the rest of the run stays on CPU as well.
@@ -1028,7 +1069,7 @@ while IFS= read -r -d '' -u 9 src_file; do
         enc_ok=true
         STREAM_FALLBACK=true
         build_ffmpeg_cmd "$active_encoder"
-        "${FFMPEG_CMD[@]}" </dev/null 2>&1 | tee "$err_log" || enc_ok=false
+        run_encode || enc_ok=false
         STREAM_FALLBACK=false
     fi
 
@@ -1044,7 +1085,7 @@ while IFS= read -r -d '' -u 9 src_file; do
         GPU_FELL_BACK=true
         enc_ok=true
         build_ffmpeg_cmd cpu
-        "${FFMPEG_CMD[@]}" </dev/null 2>&1 | tee "$err_log" || enc_ok=false
+        run_encode || enc_ok=false
     fi
 
     if [[ "$enc_ok" == true ]]; then
@@ -1073,7 +1114,7 @@ while IFS= read -r -d '' -u 9 src_file; do
         fi
 
         # Check the picture content. The runtime is also correct for broken
-        # Farbformaten, deshalb ein Stichprobenvergleich per PSNR.
+        # colour formats, hence a sample comparison by PSNR.
         visual_note=""
         if [[ "$VERIFY_VISUAL" == true && "$is_salvaged" != true ]]; then
             if verify_visual "$src_file" "$temp_file" "$VISUAL_PSNR_MIN"; then
@@ -1202,7 +1243,7 @@ progress_clear
 # FINISH
 # ------------------------------------------------------------------------------
 if [[ "$DRY_RUN" == true ]]; then
-    printf "\n%b[DRY-RUN]%b %s video(s) wuerden reencodiert.\n" "$C_CYAN" "$C_RESET" "$COUNT_DRY"
+    printf "\n%b[DRY-RUN]%b %s video(s) would be re-encoded.\n" "$C_CYAN" "$C_RESET" "$COUNT_DRY"
     exit 0
 fi
 
@@ -1256,7 +1297,12 @@ if (( COUNT_SUSPECT > 0 )); then
     printf "          Please inspect them yourself; the measurement can be wrong.\n"
 fi
 
-mo_log "h265" "summary: $COUNT_PROCESSED encoded, $COUNT_VERIFIED picture-verified (GPU $COUNT_GPU / CPU $COUNT_CPU), $COUNT_SKIPPED skipped, $COUNT_PROBE_SKIPPED per Probe, $COUNT_DISCARDED discarded, $COUNT_FAILED failed"
+mo_log "h265" "summary: $COUNT_PROCESSED encoded, $COUNT_VERIFIED picture-verified (GPU $COUNT_GPU / CPU $COUNT_CPU), $COUNT_SKIPPED skipped, $COUNT_PROBE_SKIPPED by probe, $COUNT_DISCARDED discarded, $COUNT_FAILED failed"
 
 resolve_pending_deletes
 rm -f "$STATS_FILE"
+
+# Files whose encode failed or whose output did not pass verification: their
+# originals are kept, and the caller has to learn about it.
+if (( COUNT_FAILED + COUNT_UNVERIFIED > 0 )); then exit "$MO_RC_PARTIAL"; fi
+exit 0

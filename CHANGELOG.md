@@ -176,3 +176,47 @@ added.
 Lesson for future debugging: when an explanation contradicts a solid
 observation, the explanation is wrong, not the observation. Comparing against a
 version known to work beats any theory.
+
+---
+
+## Review of img-to-jxl.sh
+
+An external review found several ways the image stage could lose originals or
+quality. Each was reproduced against real files before and verified after the
+fix, failures forced with stub commands.
+
+| Finding | Effect |
+|---|---|
+| Interactive "no" to deleting originals | The prompt did not set `DELETE_ORIGINAL_EXPLICIT`, so the in-place default turned the answer back into "yes". All prompting scripts now use `mo_prompt_delete_original`. |
+| PNG named `.jpg` | cjxl detects the format by content; the JPEG branch passed no `-d`, so the PNG was encoded lossily and logged as `[JXL-LOSSLESS]`. The real type is now detected first and decides the settings. |
+| Unchecked `mv` in the worker | A failed move still logged SUCCESS and deleted the original; the only copy left was a `.part` file the next run cleans up. Workers now run with `set -euo pipefail` and an EXIT trap that records FAIL. |
+| Existing-output check before the lock | `foo.png` could replace the `foo.jxl` that `foo.jpg` had just produced. The check is repeated under the lock and the move uses `mv -n`, verified by whether the temp file is gone, because `mv -n` returns 0 when it refuses. |
+| exiftool after verification | Errors were ignored, the size check measured the file before metadata was added, and `-all:all` dropped PNG text chunks. Metadata now goes into the temp file first, with `-all`, and an exiftool error keeps the original. |
+| xargs returns 124, not 255 | The "encoder missing" abort never triggered and was treated as Ctrl+C. Fixed in all three xargs scripts. |
+| Exit 0 despite failures | Scripts now exit 3 when files failed; the orchestrator reports it and carries on with the next stage. |
+| Dry run, target mode, concurrency | A dry run deleted leftovers and wrote the log; target mode wrote state files into the source; two runs deleted each other's temp files. |
+
+`cjxl` turned out to copy PNG EXIF after all, contrary to the earlier comment,
+but Brotli-compressed. With metadata copying enabled it now writes the boxes
+uncompressed so exiftool and other readers can see them.
+
+### Second round: the remaining review points, in all scripts
+
+The first round fixed `img-to-jxl.sh`. The same patterns existed in the other
+scripts, and the review's usability and design points applied to all of them.
+Shared building blocks in `common.sh` now carry the fixes, so the scripts
+cannot drift apart again.
+
+| Finding | Effect |
+|---|---|
+| GIF and AVIF workers | Same unchecked `mv`, missing re-check under the lock and state files in the source as the image stage had. Both now use the worker scaffold from `common.sh`. In `gif-to-webp.sh` the "encoder missing" code 255 was also overwritten by `rc=1` on the next line, so the batch never stopped. |
+| Lock conflict in `video-to-avif.sh` | Counted as a silent skip. Now reported as a conflict. |
+| `h264-to-h265.sh` exit code | 0 even when encodes failed or outputs did not verify. Now 3. |
+| JPEG → JXL metadata | Brotli-compressed by cjxl's default, invisible to readers without Brotli. Now uncompressed; measured that the JPEG reconstruction stays bit-exact. |
+| Unchecked option values | `-j 0` meant unlimited parallelism, a wrong effort made every PNG fall back to WebP, `DELETE_ORIGINAL=yes` silently meant false. All values are now checked against one rule table, whichever way they were set. A flag without its value no longer crashes with "unbound variable". |
+| Prompts | The settings menu appeared even with every option on the command line, and the in-place notice asked again although the user had decided explicitly. |
+| Hidden and system folders | Trash folders were converted, which would bring deleted files back elsewhere; AppleDouble `._` files were treated as images. |
+| SIGTERM | Waited for the whole batch, or the whole ffmpeg encode, before reacting. Background jobs also inherit SIGINT as ignored, and a script started in the background cannot undo that, so stopping now freezes the process tree and sends INT and TERM, then waits until ffmpeg has really finished. |
+| CMYK JPEG | Failed on every run. Now reported as unsupported and skipped. A pixel-based fallback was tested and rejected: for a truncated JPEG it "succeeds" and replaces the damaged original with an equally damaged, larger copy. |
+| An unreadable subfolder | Turned a complete batch into "xargs failed". The shared `find` helper now leaves that to find's own message. |
+| German leftovers | Comments, messages and the state files `.defekte_videos.txt` and `.video_verdaechtig.txt` (now `.broken_videos.txt` and `.video_suspect.txt`, renamed once). |
