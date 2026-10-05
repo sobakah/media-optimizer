@@ -24,6 +24,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Absolute path for restarting this script. "$0" is not usable: started as
+# "bash media-optimizer.sh" it is a bare name, and exec then searches PATH
+# and fails with "not found". Restarts also go through "$BASH", so they do
+# not depend on the execute bit.
+SCRIPT_SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 # shellcheck source=scripts/lib/common.sh
 source "$SCRIPT_DIR/scripts/lib/common.sh"
 _MO_ROOT="$SCRIPT_DIR"; load_config
@@ -251,7 +256,7 @@ if [[ -f "$STATE_FILE" ]]; then
                     restart_args=(--reset)
                     [[ -n "$CLI_INPUT"  ]] && restart_args+=(--input  "$CLI_INPUT")
                     [[ -n "$CLI_OUTPUT" ]] && restart_args+=(--output "$CLI_OUTPUT")
-                    exec "$0" "${restart_args[@]}"
+                    exec "$BASH" "$SCRIPT_SELF" "${restart_args[@]}"
                     ;;
                 *) RESUMING=true; printf -- "-> %bSettings loaded, resuming.%b\n\n" "$C_GREEN" "$C_RESET" ;;
             esac
@@ -552,11 +557,16 @@ offer_restart() {
     MO_HOLD=0   # the question was already asked, do not also wait for Enter
     [[ "${answer,,}" =~ ^(j|ja|y|yes)$ ]] || return 0
 
-    local -a restart=() skip=false a
+    # Options that take a value must keep it: dropping it as if it were a
+    # directory made the new run fail with "--log needs a value".
+    local -a restart=()
+    local skip=false keep=false a
     for a in "${MO_ORIGINAL_ARGS[@]}"; do
         if [[ "$skip" == true ]]; then skip=false; continue; fi
+        if [[ "$keep" == true ]]; then keep=false; restart+=("$a"); continue; fi
         case "$a" in
             -i|--input|-o|--output) skip=true; continue ;;
+            --log) restart+=("$a"); keep=true ;;
             -*) restart+=("$a") ;;
             *)  continue ;;   # positional arguments are the directories
         esac
@@ -568,7 +578,7 @@ offer_restart() {
     unset SOURCE_DIR OUTPUT_DIR
 
     printf "\n%b─── New run ───%b\n\n" "$C_CYAN" "$C_RESET"
-    exec "$0" "${restart[@]}"
+    exec "$BASH" "$SCRIPT_SELF" "${restart[@]}"
 }
 
 # ------------------------------------------------------------------------------

@@ -4,7 +4,7 @@
 #
 # Usage: tests/run-tests.sh [--keep] [filter]
 #   filter   run only test groups whose name contains it, e.g. "img-" or
-#            "sigterm". Groups: img-*, gif-*, avif-*, h264-*, orch
+#            "sigterm". Groups: img-*, gif-*, avif-*, h264-*, orch, orch-restart
 #   --keep   keep the work directory for inspection
 #
 # Everything happens in a fresh directory from mktemp. The tests never touch
@@ -418,6 +418,40 @@ if t orch; then
   check "orchestrator SIGTERM: stage counters saved in target" [ -f $D-out/.img_stats.env ]
   check "orchestrator SIGTERM: no leftovers" leftovers $D-out
   rm -rf $D-out
+fi
+
+if t orch-restart; then
+  # The orchestrator restarts itself ("Process another directory?", and after
+  # discarding a stopped run). Started as "bash media-optimizer.sh", $0 is a
+  # bare name and "exec $0" failed with "not found" (exit 127).
+  D=$S/rs; rm -rf $D; mkdir -p $D/a $D/b $D/repo
+  (cd $R && tar -c --exclude=.git --exclude=tests . ) | tar -x -C $D/repo
+  rm -f $D/repo/.media_optimizer_state.env
+  cp $S/fx/photo.jpg $D/a/; cp $S/fx/photo.jpg $D/b/
+  orch_pty() { # orch_pty "<answers>" args...  - runs from inside the repo copy
+    local answers="$1"; shift
+    OUT=$(cd $D/repo && PATH=$S/stub:$PATH MO_LOG=false MO_HOLD=0 TMPDIR=$S/tmp PTY_IDLE=8 \
+          python3 $TESTS_DIR/lib/pty_run.py "$answers" bash media-optimizer.sh "$@" 2>&1 | tr -d '\r')
+  }
+
+  orch_pty "y|$D/b|$D/b-out||n" -i $D/a -o $D/a-out
+  check "restart after 'another directory' (started as 'bash media-optimizer.sh')" \
+    bash -c "grep -q 'New run' <<< \"\$0\" && [ -f $D/b-out/photo.jxl ]" "$OUT"
+  check "restart: no 'not found' from exec" bash -c "! grep -qiE 'exec:.*(not found|nicht gefunden)' <<< \"\$0\"" "$OUT"
+
+  rm -rf $D/a-out $D/b-out; : > $S/tmp/restart.log
+  OUT=$(cd $D/repo && PATH=$S/stub:$PATH MO_HOLD=0 TMPDIR=$S/tmp PTY_IDLE=8 \
+        python3 $TESTS_DIR/lib/pty_run.py "y|$D/b|$D/b-out||n" bash media-optimizer.sh \
+        --log $S/tmp/restart.log -i $D/a -o $D/a-out 2>&1 | tr -d '\r')
+  check "restart keeps the value of --log" bash -c "! grep -q 'needs a value' <<< \"\$0\" && [ -f $D/b-out/photo.jxl ] && [ \$(grep -c '^RUN .* started' $S/tmp/restart.log) = 2 ]" "$OUT"
+
+  rm -rf $D/a-out $D/b-out
+  { printf 'STATUS=%q\nINPUT_DIR=%q\nOUTPUT_DIR=%q\n' INTERRUPTED "$D/a" "$D/a-out"
+    printf 'STAGE_1_DONE=false\nSTAGE_2_DONE=true\nSTAGE_3_DONE=true\nSTAGE_AVIF_DONE=true\n'; } > $D/repo/.media_optimizer_state.env
+  orch_pty "n|$D/b|$D/b-out||n"
+  check "discarding a stopped run restarts cleanly" \
+    bash -c "grep -q 'Discarding state' <<< \"\$0\" && [ -f $D/b-out/photo.jxl ] && [ ! -e $D/a-out/photo.jxl ]" "$OUT"
+  rm -rf $D
 fi
 
 echo
