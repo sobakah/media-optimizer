@@ -179,7 +179,7 @@ version known to work beats any theory.
 
 ---
 
-## Review of img-to-jxl.sh
+## 1.2 – Review of img-to-jxl.sh
 
 An external review found several ways the image stage could lose originals or
 quality. Each was reproduced against real files before and verified after the
@@ -219,5 +219,17 @@ cannot drift apart again.
 | SIGTERM | Waited for the whole batch, or the whole ffmpeg encode, before reacting. Background jobs also inherit SIGINT as ignored, and a script started in the background cannot undo that, so stopping now freezes the process tree and sends INT and TERM, then waits until ffmpeg has really finished. |
 | CMYK JPEG | Failed on every run. Now reported as unsupported and skipped. A pixel-based fallback was tested and rejected: for a truncated JPEG it "succeeds" and replaces the damaged original with an equally damaged, larger copy. |
 | An unreadable subfolder | Turned a complete batch into "xargs failed". The shared `find` helper now leaves that to find's own message. |
-| Restart crashed | "Process another directory?" and discarding a stopped run restart the orchestrator with `exec "$0"`. Started as `bash media-optimizer.sh`, `$0` is a bare name, exec searched `PATH` and the script died with "not found" (exit 127). Restarts now use the absolute path through `$BASH`. The restart also dropped the value of `--log`, so the new run stopped with "needs a value". |
 | German leftovers | Comments, messages and the state files `.defekte_videos.txt` and `.video_verdaechtig.txt` (now `.broken_videos.txt` and `.video_suspect.txt`, renamed once). |
+
+---
+
+## 1.2.1 – Restart fix
+
+| Finding | Effect |
+|---|---|
+| Restart crashed | "Process another directory?" and discarding a stopped run restart the orchestrator with `exec "$0"`. Started as `bash media-optimizer.sh`, `$0` is a bare name, exec searched `PATH` and the script died with "not found" (exit 127). Restarts now use the absolute path through `$BASH`. |
+| `--log` lost on restart | Rebuilding the command line kept every flag but dropped every plain word as a directory, including the value of `--log`; the new run stopped with "needs a value". |
+
+The tests had missed it because they always started the script as
+`./media-optimizer.sh`. The new group `orch-restart` starts it with `bash`
+and covers both restart paths; all four tests fail against 1.2.
