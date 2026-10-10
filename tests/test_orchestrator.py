@@ -145,6 +145,26 @@ def test_process_another_directory(folder, tmp_path, pty_run):
     assert (tmp_path / "ra-out" / "photo.jxl").exists() and (tmp_path / "rb-out" / "photo.jxl").exists()
 
 
+def test_called_from_keepbest(folder, tmp_path, pty_run):
+    # keepbest passes the folder on, but the run is interactive: the defaults
+    # question is asked, and the closing question says where No leads.
+    d = folder("rk", "photo.jpg")
+    o = tmp_path / "rk-out"
+    out = pty_run([str(o), "", ""], d, env={"MO_CALLER": "keepbest", "MO_HOLD": "0"})
+    assert "Use the default settings for all media types?" in out, out
+    assert "Process another directory? (No: back to keepbest) [y/N]" in out, out
+    assert (o / "photo.jxl").exists(), out
+
+
+def test_source_on_the_command_line_skips_the_defaults_question(folder, tmp_path, pty_run):
+    d = folder("rl", "photo.jpg")
+    o = tmp_path / "rl-out"
+    out = pty_run([str(o), ""], d)
+    assert "Use the default settings" not in out, out
+    assert "Process another directory? [y/N]" in out, out
+    assert (o / "photo.jxl").exists(), out
+
+
 def test_discarding_a_stopped_run(folder, tmp_path, pty_run):
     a = folder("rc", "photo.jpg")
     b = folder("rd", "photo.jpg")

@@ -328,3 +328,10 @@ VAAPI encoder is available, and folders left by the Bash version
 | Misnamed files copied again on every run | In target mode, a GIF named `.png` was copied to the target on every run (`isgif.gif`, `isgif_1.gif`, ...); the 1.x Bash version did the same. The take-over now compares the content with an existing correctly named copy first. |
 | SVT-AV1 hangs on narrow frames | Found while testing the cache with a tiny GIF: libsvtav1 (SVT-AV1 3.1.2) hangs forever on frames narrower than about 31 px; only SIGKILL ends it. Such files are encoded with libaom-av1, and every AV1 encode of a GIF or clip is stopped after 10 minutes. |
 
+---
+
+## Unreleased
+
+| Change | Why |
+|---|---|
+| Started from keepbest (`MO_CALLER=keepbest`) | keepbest offers media-optimizer for the same folder after a run and continues in the terminal afterwards. With a folder on the command line the defaults question was skipped, so the settings could not be changed there; with `MO_CALLER` set it is asked. The closing question says that No goes back to keepbest. |

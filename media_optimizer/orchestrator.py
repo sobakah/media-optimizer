@@ -225,8 +225,9 @@ def run(req: Request) -> tuple[int, bool]:
             out_text = ui.ask("Target directory (Enter = in place): ")
         output = Path(out_text).expanduser() if out_text else None
         # The settings menu is for interactive use: not when the source was
-        # given on the command line.
-        if ui.interactive() and not req.assume_yes and not req.source:
+        # given on the command line, unless another program (keepbest) passed
+        # it on for a run the user started by hand.
+        if ui.interactive() and not req.assume_yes and (not req.source or ui.caller()):
             ui.out()
             if not ui.prompt_bool("Use the default settings for all media types?", True, indent=""):
                 _settings_menu(s, output)
@@ -362,7 +363,9 @@ def run(req: Request) -> tuple[int, bool]:
     another = False
     if ui.interactive() and not req.assume_yes:
         ui.out()
-        another = ui.prompt_bool("Process another directory?", False)
+        caller = ui.caller()
+        question = f"Process another directory? (No: back to {caller})" if caller else "Process another directory?"
+        another = ui.prompt_bool(question, False)
     return rc, another
 
 

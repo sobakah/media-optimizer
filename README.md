@@ -273,6 +273,10 @@ ends. The window therefore stays open unless the parent is an interactive
 shell. `MO_HOLD=1`/`0` (or `--hold`/`--no-hold`) forces it, `MO_HOLD_TIMEOUT=15`
 closes by itself.
 
+### Started from keepbest
+
+[keepbest](https://github.com/sobakah/keepbest) removes duplicate pictures and videos. After a run, its end screen offers `m` to run media-optimizer on the same folder, in the same window. It sets `MO_CALLER=keepbest`: the run still asks whether to use the default settings (normally skipped when the folder is given on the command line), and the closing question reads *Process another directory? (No: back to keepbest)*. keepbest also sets `MO_HOLD=0`, since its window stays open anyway.
+
 ### Automated runs
 
 A systemd user service and timer, e.g. for an ingest folder:

@@ -192,6 +192,12 @@ def interactive() -> bool:
     return sys.stdin.isatty()
 
 
+def caller() -> str | None:
+    """The program that started this one and continues in the terminal
+    afterwards (MO_CALLER, set by keepbest), or None."""
+    return os.environ.get("MO_CALLER", "").strip() or None
+
+
 def ask(question: str) -> str:
     """input() that treats a closed stdin as an empty answer."""
     with _lock:
