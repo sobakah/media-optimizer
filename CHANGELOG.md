@@ -330,7 +330,7 @@ VAAPI encoder is available, and folders left by the Bash version
 
 ---
 
-## Unreleased
+## 2.1.1 – Started from keepbest
 
 | Change | Why |
 |---|---|
