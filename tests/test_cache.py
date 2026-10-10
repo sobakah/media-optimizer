@@ -226,3 +226,58 @@ def test_timeout_stops_a_stuck_tool(tmp_path):
     res = proc.run(["sleep", "30"], timeout=1)
     assert res.returncode == 124 and "timed out" in res.stderr
     assert time.monotonic() - t0 < 15
+
+
+# --- the same folder through a symlink -------------------------------------------------------
+def test_cache_written_through_a_symlink_counts_for_the_real_path(folder, tmp_path, run_cli):
+    """Earlier runs on ~/Videos/Link (-> /mnt/disk/Videos) recorded the link
+    path; a run on /mnt/disk/Videos converted everything again."""
+    d = folder("s1", "sub/l.mp4=long.mp4")
+    link = tmp_path / "s1link"
+    link.symlink_to(d)
+    run_cli("video", link, *FAST, "--no-delete")
+    (d / "sub" / "l_h265.mp4").unlink()                 # only the cache can skip it now
+    out = run_cli("video", d, *FAST, "--no-delete")
+    assert "Cache (this scan):    1 file(s)" in out and not (d / "sub" / "l_h265.mp4").exists(), out
+
+
+def test_old_subfolder_cache_written_through_a_symlink_is_taken_over(folder, tmp_path, run_cli):
+    """The reported case: 1.x caches in subfolders, written under a symlinked
+    path, a run started on the parent's real path."""
+    d = folder("s2", "sub/l.mp4=long.mp4")
+    link = tmp_path / "s2link"
+    link.symlink_to(d)
+    (d / "sub" / ".video_conversion_cache.txt").write_text(f"{link}/sub/l.mp4\n")
+    out = run_cli("video", d, *FAST, "--no-delete")
+    assert "entries taken over" in out and "Cache (this scan):    1 file(s)" in out, out
+    assert not (d / "sub" / "l_h265.mp4").exists()
+    assert _entries(d / ".video_conversion_cache.txt") == {f"{d}/sub/l.mp4": "done"}
+
+
+def test_entries_under_a_symlinked_path_are_rewritten(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    f = real / "x.jpg"
+    f.write_text("x")
+    (tmp_path / "link").symlink_to(real)
+    st = os.stat(f)
+    c = tmp_path / ".img_cache.txt"
+    c.write_text(f"{V2}\n{st.st_size}\t{st.st_mtime_ns}\tfp\tdiscarded\t{tmp_path}/link/x.jpg\n")
+    sc = cache.StageCache(c, enabled=True, dry_run=False, fingerprint="fp")
+    sc.load()
+    assert sc.lookup(f) == "discarded" and sc.lookup(tmp_path / "link" / "x.jpg") == "discarded"
+    assert _entries(c) == {str(f): "discarded"}
+
+
+def test_declined_conversion_still_takes_over_subfolder_caches(folder, tmp_path, pty_run):
+    """With the old root cache kept, entries from subfolders went into the
+    new-format table that an old-format cache never looks at."""
+    d = folder("s3", "sub/l.mp4=long.mp4", "x.mp4=long.mp4")
+    o = tmp_path / "s3out"
+    (o / "sub").mkdir(parents=True)
+    (o / ".video_conversion_cache.txt").write_text(f"{d}/x.mp4\n")
+    (o / "sub" / ".video_conversion_cache.txt").write_text(f"{d}/sub/l.mp4\n")
+    out = pty_run(["n"], "video", d, o, *FAST)
+    assert "Kept as they are" in out and "Cache (this scan):    2 file(s)" in out, out
+    assert not (o / "sub" / "l.mp4").exists() and not (o / "sub" / "l.mkv").exists()
+    assert (o / ".video_conversion_cache.txt").read_text().splitlines()[-1] == f"{d}/sub/l.mp4"

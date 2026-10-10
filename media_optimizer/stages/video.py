@@ -351,7 +351,7 @@ class VideoStage:
             skipped = self.cache_skipped + self.c.skipped + self.c.probe_skipped
             text = f"  [{self.idx}/{self.total}] {skipped} skipped"
             if self.board:
-                text += "  " + " | ".join(self.board[k] for k in sorted(self.board))
+                text += "  │ " + " │ ".join(self.board[k] for k in sorted(self.board))
         ui.progress(text)
 
     def _tick(self) -> None:
@@ -589,16 +589,20 @@ class VideoStage:
             except ValueError:
                 done = 0.0
             speed = state.get("speed", "").strip()
-            name = src.name if len(src.name) <= 24 else src.name[:21] + "..."
+            if speed in ("N/A", "0x"):
+                speed = ""
+            # No file name: the ">>> [n/total] Processing:" line above names
+            # it, and #n refers to it. Short enough for two or three encodes.
+            tag = f"#{job.idx} {encoder.upper()}"
             if duration:
                 pct = min(100.0, done / duration * 100)
                 left = ""
                 elapsed = time.monotonic() - started
                 if pct > 1:
                     left = f" {ui.format_duration(elapsed / pct * (100 - pct))} left"
-                text = f"{encoder.upper()} {name} {pct:.0f}% {speed}{left}"
+                text = f"{tag} {pct:3.0f}% {speed:>5}{left}"
             else:
-                text = f"{encoder.upper()} {name} {ui.format_duration(done)} {speed}"
+                text = f"{tag} {ui.format_duration(done)} {speed}"
             with self.lock:
                 self.board[job.idx] = text
             self._render()

@@ -224,3 +224,13 @@ def test_renamed_settings_are_named(tmp_path, monkeypatch):
 def test_old_command_name_is_explained(run_cli, tmp_path):
     out = run_cli("avif", tmp_path, cwd=tmp_path)
     assert out.rc == 2 and "renamed to 'clips'" in out.text
+
+
+def test_progress_line_is_cut_by_display_width():
+    """CJK and emoji take two columns; cut by characters, the progress line
+    wrapped and every update left a line behind."""
+    from media_optimizer import ui
+    assert ui.fit_width("abc", 2) == "ab"
+    assert ui.fit_width("20歳を掘って", 6) == "20歳を"
+    assert ui.fit_width("a🔥b", 3) == "a🔥"
+    assert ui.fit_width("éx", 2) == "éx"        # combining accent takes no column

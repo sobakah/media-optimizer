@@ -335,3 +335,13 @@ VAAPI encoder is available, and folders left by the Bash version
 | Change | Why |
 |---|---|
 | Started from keepbest (`MO_CALLER=keepbest`) | keepbest offers media-optimizer for the same folder after a run and continues in the terminal afterwards. With a folder on the command line the defaults question was skipped, so the settings could not be changed there; with `MO_CALLER` set it is asked. The closing question says that No goes back to keepbest. |
+
+---
+
+## 2.1.2 – Cache through symlinks, progress line
+
+| Change | Why |
+|---|---|
+| Cache paths are compared with symlinks resolved | Runs on `~/Videos/Link` (a symlink to `/mnt/disk/Videos`) recorded the link path; a run started on `/mnt/disk/Videos` found none of those entries and converted cached videos again, and the subfolder caches were not taken over, since their paths did not start with the real folder. Entries are now written with the folders resolved, and older entries are resolved when read. |
+| Subfolder caches taken over when the conversion was declined | With the old-format cache kept, entries from subfolders went into the new-format table, which an old-format cache never consults, and were appended in the new format to the old file. They are now added as plain paths. |
+| Shorter video progress line, cut by display width | The line was cut by characters; file names with CJK characters or emoji (two columns each) made it wrap, and every update left a new line behind. It is now cut by columns and shows `#n GPU 45% 2.3x 1m 05s left` per running encode; the file name is in the `>>> [n/total] Processing:` line above. |

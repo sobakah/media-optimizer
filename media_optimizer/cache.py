@@ -19,6 +19,11 @@ matches: a short hash of the settings the result depends on (changing the
 PNG quality retries the PNGs that were discarded as larger). Later lines win;
 the file is compacted when it is loaded.
 
+Paths are compared after resolving symlinks in their folders (``canonical``):
+the same folder reached through a symlink (~/Videos/Link -> /mnt/disk/Videos)
+is the same folder. Entries are written resolved; older entries written
+under a symlinked path are resolved when they are read.
+
 The video cache of version 1.x (and of the Bash version) holds bare paths.
 It is converted to v2 only after asking (``find_legacy``, ``convert``);
 converted entries get the fingerprint "*" (matches any settings), because
@@ -42,6 +47,22 @@ from .ui import StyleUI as S
 HEADER = "# media-optimizer cache v2"
 ANY = "*"
 VIDEO_CACHE = ".video_conversion_cache.txt"
+
+
+_real_dirs: dict[str, str] = {}
+
+
+def canonical(path: Path | str) -> str:
+    """The path with symlinks in its folders resolved. The folder part is
+    memoized: thousands of entries share a few folders, and resolving walks
+    every component (slow on a network mount). The file name itself is kept,
+    so a symlinked file stays an entry of its own."""
+    p = os.path.abspath(str(path))
+    folder, name = os.path.split(p)
+    real = _real_dirs.get(folder)
+    if real is None:
+        real = _real_dirs[folder] = os.path.realpath(folder)
+    return os.path.join(real, name)
 
 
 def fingerprint(settings, names: tuple[str, ...]) -> str:
@@ -93,7 +114,8 @@ def convert(path: Path) -> tuple[int, int]:
         if st is None:
             dropped += 1
             continue
-        kept[line] = f"{st[0]}\t{st[1]}\t{ANY}\tdone\t{line}"
+        key = canonical(line)
+        kept[key] = f"{st[0]}\t{st[1]}\t{ANY}\tdone\t{key}"
     shutil.copy2(path, path.with_name(path.name + ".v1.bak"))
     _write(path, [HEADER, *kept.values()])
     return len(kept), dropped
@@ -109,10 +131,14 @@ def prune(path: Path, remove: set[str]) -> int:
     """Remove the entries for the given paths (verify --fix), in either
     format, keeping a .bak. Returns the number of removed entries."""
     lines = _read_lines(path)
+    remove = {canonical(p) for p in remove}
     keep, removed = [], 0
     for line in lines:
-        entry_path = line.split("\t", 4)[4] if line.count("\t") >= 4 and not line.startswith("#") else line
-        if entry_path in remove:
+        if not line or line.startswith("#"):
+            keep.append(line)
+            continue
+        entry_path = line.split("\t", 4)[4] if line.count("\t") >= 4 else line
+        if canonical(entry_path) in remove:
             removed += 1
         else:
             keep.append(line)
@@ -166,11 +192,10 @@ class StageCache:
             return
         if is_legacy(self.path):
             # Not converted (declined, or a dry run): matched by path only.
-            self.legacy = {line for line in _read_lines(self.path)
+            self.legacy = {canonical(line) for line in _read_lines(self.path)
                            if line and not line.startswith("#") and os.path.exists(line)}
             return
-        stale = 0
-        count = 0
+        stale = count = aliased = 0
         for line in _read_lines(self.path):
             if not line or line.startswith("#"):
                 continue
@@ -183,9 +208,11 @@ class StageCache:
             if not os.path.exists(path):
                 stale += 1
                 continue
-            self.entries[path] = entry
+            key = canonical(path)
+            aliased += key != path
+            self.entries[key] = entry
         superseded = count - stale - len(self.entries)
-        if (stale or superseded) and not self.dry_run:
+        if (stale or superseded or aliased) and not self.dry_run:
             self._compact()
             if stale:
                 ui.say("CACHE", S.CYAN, f"{self.path.name}: {stale} stale entries removed.")
@@ -216,7 +243,7 @@ class StageCache:
             return
         taken = caches = 0
         for sub in files.find_state_files(work_dir, self.path.name, include_hidden=include_hidden):
-            prefix = str(source / sub.parent.relative_to(work_dir)) + os.sep
+            prefix = os.path.realpath(source / sub.parent.relative_to(work_dir)) + os.sep
             legacy = is_legacy(sub)
             n = 0
             for line in _read_lines(sub):
@@ -232,7 +259,16 @@ class StageCache:
                     if parsed is None:
                         continue
                     path, entry = parsed
+                path = canonical(path)
                 if not path.startswith(prefix) or path in self.entries or not os.path.exists(path):
+                    continue
+                if self.legacy is not None:
+                    # The working directory's own cache is still in the old
+                    # format (conversion declined): add it the old way.
+                    if path not in self.legacy:
+                        self.legacy.add(path)
+                        self._append(path)
+                        n += 1
                     continue
                 self._store(path, entry)
                 n += 1
@@ -248,7 +284,7 @@ class StageCache:
         """The cached outcome, or None when the file needs handling."""
         if not self.enabled:
             return None
-        key = str(path)
+        key = canonical(path)
         if self.legacy is not None:
             if key in self.legacy:
                 with self._lock:
@@ -270,7 +306,7 @@ class StageCache:
     def add(self, path: Path | str, outcome: str) -> None:
         if not self.enabled or self.dry_run:
             return
-        key = str(path)
+        key = canonical(path)
         if self.legacy is not None:
             with self._lock:
                 if key in self.legacy:

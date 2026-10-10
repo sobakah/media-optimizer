@@ -13,6 +13,7 @@ import re
 import shutil
 import sys
 import threading
+import unicodedata
 
 _ANSI = {
     "RESET": "\033[0m", "BOLD": "\033[1m", "DIM": "\033[2m",
@@ -47,6 +48,24 @@ _progress_open = False
 
 def visible_len(text: str) -> int:
     return len(_ANSI_RE.sub("", text))
+
+
+def _char_width(ch: str) -> int:
+    if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+        return 0                          # accents, zero-width joiner, variation selectors
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def fit_width(text: str, width: int) -> str:
+    """Cut text to at most width terminal columns. CJK characters and most
+    emoji take two columns: cutting by characters let such a line wrap, and
+    every update of the progress line then left a line behind."""
+    used = 0
+    for i, ch in enumerate(text):
+        used += _char_width(ch)
+        if used > width:
+            return text[:i]
+    return text
 
 
 def _clear_progress() -> None:
@@ -84,7 +103,7 @@ def progress(text: str) -> None:
         return
     width = shutil.get_terminal_size((80, 24)).columns
     with _lock:
-        sys.stdout.write("\r" + text[: max(10, width - 1)] + "\033[K")
+        sys.stdout.write("\r" + fit_width(_ANSI_RE.sub("", text), max(10, width - 1)) + "\033[K")
         sys.stdout.flush()
         _progress_open = True
 

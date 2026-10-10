@@ -168,6 +168,11 @@ behaviour still applies):
   SIGKILL ends it — `timeout` without `-k` waits forever too. libaom-av1
   encodes them. `media.av1_encoder(width)` picks accordingly; AV1 encodes of
   GIFs and clips also have a 10-minute limit (`proc.run(timeout=...)`).
+- Cache paths must be compared with symlinks resolved (`cache.canonical`):
+  the owner reaches the same disk as `~/Videos/Link` and `/mnt/...`, and
+  cached videos were converted again after switching.
+- Terminal width is counted in columns, not characters (`ui.fit_width`):
+  emoji and CJK file names take two columns and made the progress line wrap.
 - Re-running a stage used to copy a misnamed file into the target again on
   every run (`isgif.gif`, `isgif_1.gif`, ...); the take-over now compares
   content first.
