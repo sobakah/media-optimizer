@@ -507,6 +507,18 @@ mo_prompt_bool() {
     esac
 }
 
+# mo_prompt_rescan
+# The interactive "scan everything again?" question for the video cache.
+# Asked the other way round than USE_CACHE, because ignoring the cache is the
+# deliberate choice; the default shown is the current setting.
+mo_prompt_rescan() {
+    local rescan=false
+    [[ "${USE_CACHE:-true}" == false ]] && rescan=true
+    mo_prompt_bool "Scan all videos again, ignoring the cache of finished ones (slower)?" \
+        "$rescan" rescan
+    if [[ "$rescan" == true ]]; then USE_CACHE=false; else USE_CACHE=true; fi
+}
+
 # mo_prompt_delete_original <output_dir>
 # The interactive "delete originals?" question. The answer is a deliberate
 # choice, so it sets DELETE_ORIGINAL_EXPLICIT; without the marker
@@ -875,20 +887,33 @@ mo_validate() {
 # must not turn a complete batch into a failed one.
 # Every scanner uses this, so the orchestrator's counts match the stages.
 # ------------------------------------------------------------------------------
+_mo_skip_dirs() {
+    _MO_SKIP=(-name '.Trash' -o -name '.Trash-*' -o -name '$RECYCLE.BIN' -o -name '@eaDir'
+              -o -name '#recycle' -o -name '#snapshot' -o -name 'System Volume Information'
+              -o -name 'lost+found')
+    [[ "${INCLUDE_HIDDEN:-false}" == true ]] || _MO_SKIP+=(-o -name '.*')
+}
+
 mo_find_files() {
     local dir="$1"; shift
-    local -a depth=() skip=() hidden=()
+    local -a depth=() skip=() hidden=() _MO_SKIP=()
     if [[ "${1:-}" == "-maxdepth" ]]; then depth=(-maxdepth "$2"); shift 2; fi
-    skip=(-name '.Trash' -o -name '.Trash-*' -o -name '$RECYCLE.BIN' -o -name '@eaDir'
-          -o -name '#recycle' -o -name '#snapshot' -o -name 'System Volume Information'
-          -o -name 'lost+found')
-    if [[ "${INCLUDE_HIDDEN:-false}" != true ]]; then
-        skip+=(-o -name '.*')
-        hidden=(! -name '.*')
-    fi
+    _mo_skip_dirs; skip=("${_MO_SKIP[@]}")
+    [[ "${INCLUDE_HIDDEN:-false}" == true ]] || hidden=(! -name '.*')
     find "$dir" -mindepth 1 "${depth[@]}" \
         \( -type d \( "${skip[@]}" \) -prune \) -o \
         \( -type f ! -name '._*' "${hidden[@]}" \( "$@" \) -print0 \) || true
+}
+
+# mo_find_state_files <dir> <name>
+# Prints the state files called <name> in subfolders of <dir>, NUL-separated;
+# <dir> itself is not included. The same folders are skipped as in
+# mo_find_files, so a cache in the trash is never picked up. Always returns 0.
+mo_find_state_files() {
+    local dir="$1" name="$2" _MO_SKIP=()
+    _mo_skip_dirs
+    find "$dir" -mindepth 1 \( -type d \( "${_MO_SKIP[@]}" \) -prune \) -o \
+        \( -mindepth 2 -type f -name "$name" -print0 \) 2>/dev/null || true
 }
 
 # mo_stem <filename>  -> name without extension; ".png" stays ".png" instead

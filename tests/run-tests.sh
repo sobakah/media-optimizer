@@ -403,6 +403,66 @@ if t h264-sigterm; then
   rm -rf $D-out
 fi
 
+if t h264-cache; then
+  # Caches from earlier runs on a subfolder are taken over by a run on the
+  # parent, so those videos are not probed again.
+  H=(--encoder cpu --min-size 0 --no-probe --preset ultrafast)
+  D=$S/hc; rm -rf $D $D-out $D-other; mkdir -p $D/sub; cp $S/vfx/long.mp4 $D/sub/l.mp4
+  run h264-to-h265.sh -i $D/sub "${H[@]}" --no-delete
+  sub_before=$(cat $D/sub/.video_conversion_cache.txt)
+  run h264-to-h265.sh -i $D "${H[@]}" --no-delete
+  check "h264 in place: subfolder cache taken over" grep -q 'entries taken over from 1 cache file' <<< "$OUT"
+  check "h264 in place: root cache holds the subfolder's entries" grep -qxF "$D/sub/l.mp4" $D/.video_conversion_cache.txt
+  check "h264 in place: both files are cache hits, nothing re-encoded" \
+    bash -c "grep -q 'Cache (this scan): *2 file' <<< \"\$0\" && grep -q 'Re-encoded: *0 file' <<< \"\$0\"" "$OUT"
+  check "h264: subfolder cache left unchanged" [ "$sub_before" = "$(cat $D/sub/.video_conversion_cache.txt)" ]
+  run h264-to-h265.sh -i $D "${H[@]}" --no-delete
+  check "h264: a second run takes nothing over again" bash -c "! grep -q 'taken over' <<< \"\$0\"" "$OUT"
+
+  rm -f $D/.video_conversion_cache.txt
+  run h264-to-h265.sh -i $D "${H[@]}" --no-delete -n
+  check "h264 dry run: root cache not written" [ ! -e $D/.video_conversion_cache.txt ]
+  run h264-to-h265.sh -i $D "${H[@]}" --no-delete --no-cache
+  check "h264 --no-cache: nothing taken over, ignoring is reported" \
+    bash -c "! grep -q 'taken over' <<< \"\$0\" && grep -q 'Ignored for this run' <<< \"\$0\"" "$OUT"
+
+  # Target mode: <target>/sub describes <source>/sub.
+  rm -rf $D; mkdir -p $D/sub; cp $S/vfx/long.mp4 $D/sub/l.mp4
+  run h264-to-h265.sh -i $D/sub -o $D-out/sub "${H[@]}"
+  run h264-to-h265.sh -i $D -o $D-out "${H[@]}"
+  check "h264 target mode: subfolder cache taken over" grep -q 'entries taken over from 1 cache file' <<< "$OUT"
+  check "h264 target mode: source left untouched" [ ! -e $D/.video_conversion_cache.txt ]
+
+  # A cache in <target>/other from a run on <source>/sub: the output went
+  # elsewhere, so it must not make the parent run skip the video.
+  rm -rf $D-out; run h264-to-h265.sh -i $D/sub -o $D-out/other "${H[@]}"
+  run h264-to-h265.sh -i $D -o $D-out "${H[@]}"
+  check "h264: cache of a run with a different target is not taken over" \
+    bash -c "! grep -q 'taken over' <<< \"\$0\" && [ -f $D-out/sub/l.mp4 ]" "$OUT"
+
+  # verify-output --fix prunes the subfolder caches too, otherwise the next
+  # run would take the broken entry over again and never regenerate it.
+  rm -rf $D-out; run h264-to-h265.sh -i $D/sub -o $D-out/sub "${H[@]}"
+  head -c 20000 $S/vfx/long.mp4 > $D-out/sub/l.mp4
+  run verify-output.sh -i $D -o $D-out --no-visual --fix
+  check "verify --fix: broken entry removed from the subfolder cache" \
+    bash -c "! grep -qxF $D/sub/l.mp4 $D-out/sub/.video_conversion_cache.txt"
+  run h264-to-h265.sh -i $D -o $D-out "${H[@]}"
+  check "h264 after verify --fix: broken output regenerated" \
+    bash -c "grep -q 'Re-encoded: *1 file' <<< \"\$0\" && ffprobe -v error $D-out/sub/l.mp4" "$OUT"
+
+  # Interactive: the rescan question in the custom settings.
+  OUT=$(PATH=$S/stub:$PATH MO_HOLD=0 MO_LOG=false TMPDIR=$S/tmp MIN_SIZE_MB=0 ENABLE_PROBE=false CPU_PRESET=ultrafast \
+        PTY_IDLE=8 python3 $TESTS_DIR/lib/pty_run.py "n|$D|$D-out|cpu||y" bash $R/scripts/h264-to-h265.sh 2>&1 | tr -d '\r')
+  check "h264 interactive: rescan question offered" grep -q 'Scan all videos again' <<< "$OUT"
+  check "h264 interactive: 'y' ignores the cache" \
+    bash -c "grep -q 'Ignored for this run' <<< \"\$0\" && grep -q 'Cache (this scan): *0 file' <<< \"\$0\"" "$OUT"
+  OUT=$(PATH=$S/stub:$PATH MO_HOLD=0 MO_LOG=false TMPDIR=$S/tmp MIN_SIZE_MB=0 ENABLE_PROBE=false CPU_PRESET=ultrafast \
+        PTY_IDLE=8 python3 $TESTS_DIR/lib/pty_run.py "n|$D|$D-out|cpu||" bash $R/scripts/h264-to-h265.sh 2>&1 | tr -d '\r')
+  check "h264 interactive: Enter keeps the cache" grep -q 'Cache (this scan): *1 file' <<< "$OUT"
+  rm -rf $D $D-out
+fi
+
 if t orch; then
   D=$S/o1; fresh $D; rm -rf $D-out; cp $S/fx/photo.jpg $S/fx/garbage.png $D/; cp $S/vfx/anim.gif $D/
   rm -rf $S/repo; mkdir $S/repo; (cd $R && tar -c --exclude=.git . ) | tar -x -C $S/repo

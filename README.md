@@ -508,7 +508,13 @@ or manage it externally via `logrotate`.
 * **Video cache.** `.video_conversion_cache.txt` remembers finished files so a
   later run does not run `ffprobe` over everything again. It is purely a
   speed-up; deleting it only changes runtime. Since absolute paths are stored,
-  it stops matching once the folder is moved.
+  it stops matching once the folder is moved. Caches left in subfolders by
+  earlier runs on a subfolder are taken over into the cache of the folder you
+  run on now, so those videos are not checked again. With a target directory
+  only `<target>/<sub>` caches that describe `<source>/<sub>` count; the
+  subfolder caches themselves are left as they are. To check every video again,
+  use `--no-cache`, or answer `y` to "Scan all videos again…" in the custom
+  settings (shown when you do not use the defaults).
 * **Counters across resumes.** Completed work carries over; cache hits describe
   the current scan and restart at zero.
 * **In place for video.** Source and target would share a path, so the output

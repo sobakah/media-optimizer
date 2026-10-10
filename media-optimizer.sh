@@ -307,7 +307,7 @@ if [[ "$RESUMING" == false ]]; then
                 prompt_val "CPU preset (medium or slow)" "$CPU_PRESET" CPU_PRESET
             fi
             prompt_bool "Encode a few short test slices first to predict the saving?" "$ENABLE_PROBE" ENABLE_PROBE
-            prompt_bool "Use the cache of already finished videos?" "$USE_CACHE" USE_CACHE
+            mo_prompt_rescan
             prompt_bool "Discard a video if the result is larger than the original?" "$DISCARD_IF_LARGER" DISCARD_IF_LARGER
             prompt_bool "Keep videos salvaged from damaged sources even if they grew?" "$KEEP_SALVAGED_CORRUPT" KEEP_SALVAGED_CORRUPT
             prompt_bool "Compare the picture against the source while converting?" "$VERIFY_VISUAL" VERIFY_VISUAL

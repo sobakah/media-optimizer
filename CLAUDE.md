@@ -81,7 +81,11 @@ Breaking any of these has caused real data loss or silent corruption before.
   variants:
   - `mo_find_files` for every scan, so stages and orchestrator counts see
     the same files (skips trash/NAS folders, hidden ones unless
-    `INCLUDE_HIDDEN=true`, always exits 0).
+    `INCLUDE_HIDDEN=true`, always exits 0). `mo_find_state_files` for
+    hidden state files in subfolders, with the same folder rules.
+  - Anything that removes entries from the video cache must do it in the
+    subfolder caches too: `h264-to-h265.sh` takes those over on every run,
+    so an entry left there comes back (see `verify-output.sh --fix`).
   - `mo_worker_start` and `mo_w_*` for xargs workers: one result token per
     file, `mo_w_claim` (lock + re-check), `mo_w_commit` (`mv -n` + check).
   - `mo_job_start`/`mo_job_wait`/`mo_job_stop` for anything long-running

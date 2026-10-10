@@ -259,6 +259,7 @@ if [[ -t 0 && "${NON_INTERACTIVE:-false}" != "true" && "$SOURCE_FROM_CLI" != tru
         read -rp "  Target directory (empty = in place) [$OUTPUT_DIR]: " x && OUTPUT_DIR="${x:-$OUTPUT_DIR}"
         read -rp "  Encoder (auto/gpu/cpu) [$ENCODER_MODE]: " x && ENCODER_MODE="${x:-$ENCODER_MODE}"
         mo_prompt_delete_original "$OUTPUT_DIR"
+        mo_prompt_rescan
     fi
 fi
 
@@ -760,6 +761,41 @@ if [[ "$USE_CACHE" == true && -f "$CACHE_FILE" ]]; then
         printf "%b[CACHE]%b %d stale entries removed.\n" \
             "$C_CYAN" "$C_RESET" "$CACHE_PRUNED"
     fi
+fi
+
+# Caches in subfolders, left by earlier runs on a subfolder of this tree, are
+# taken over into this one, so those videos are not probed again. A cache in
+# <work>/<sub> describes sources in <source>/<sub>; anything else came from
+# a run with a different source or target and is left out, otherwise a video
+# whose output went elsewhere would be skipped here. The subfolder caches are
+# read, not changed, and read again on every run; verify-output.sh --fix
+# prunes broken entries from all of them, so none of those come back.
+CACHE_MERGED=0
+CACHE_MERGED_FILES=0
+if [[ "$USE_CACHE" == true ]]; then
+    while IFS= read -r -d '' sub_cache; do
+        sub_rel="$(dirname "$sub_cache")"; sub_rel="${sub_rel#"$WORK_DIR"/}"
+        n=0
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            [[ "$line" == "$SOURCE_DIR/$sub_rel"/* ]] || continue
+            [[ "${CACHE_MAP["$line"]:-0}" -eq 1 || ! -e "$line" ]] && continue
+            CACHE_MAP["$line"]=1
+            [[ "$DRY_RUN" == true ]] || printf '%s\n' "$line" >> "$CACHE_FILE"
+            n=$(( n + 1 ))
+        done < "$sub_cache"
+        if (( n > 0 )); then
+            CACHE_MERGED=$(( CACHE_MERGED + n ))
+            CACHE_MERGED_FILES=$(( CACHE_MERGED_FILES + 1 ))
+        fi
+    done < <(mo_find_state_files "$WORK_DIR" ".video_conversion_cache.txt")
+    if (( CACHE_MERGED > 0 )); then
+        printf "%b[CACHE]%b %d entries taken over from %d cache file(s) in subfolders.\n" \
+            "$C_CYAN" "$C_RESET" "$CACHE_MERGED" "$CACHE_MERGED_FILES"
+    fi
+elif [[ -z "$FROM_LIST" ]]; then
+    printf "%b[CACHE]%b Ignored for this run: every video is checked again.\n" \
+        "$C_CYAN" "$C_RESET"
 fi
 
 add_to_cache() {

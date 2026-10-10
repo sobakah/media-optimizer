@@ -233,3 +233,16 @@ cannot drift apart again.
 The tests had missed it because they always started the script as
 `./media-optimizer.sh`. The new group `orch-restart` starts it with `bash`
 and covers both restart paths; all four tests fail against 1.2.
+
+---
+
+## Unreleased – Video cache from subfolders
+
+| Change | Effect |
+|---|---|
+| Subfolder caches taken over | A run on a folder reads the `.video_conversion_cache.txt` files that earlier runs on its subfolders left behind and adds their entries to its own cache. Before, a run on the parent probed every one of those videos again. With a target directory only a cache in `<target>/<sub>` with entries below `<source>/<sub>` is used; a cache from a run with a different target would otherwise make the parent skip a video whose output is somewhere else. The subfolder caches are only read, on every run. |
+| `verify-output.sh --fix` prunes subfolder caches too | Otherwise the next run would take the removed entry over again from the subfolder cache and never regenerate the broken output. |
+| Rescan in the interactive settings | The custom settings of `h264-to-h265.sh` had no way to ignore the cache; the orchestrator asked "Use the cache…?". Both now ask "Scan all videos again, ignoring the cache of finished ones?" (default no). A run that ignores the cache says so at the start. |
+
+Test group `h264-cache` (15 tests); 7 fail against 1.2.1, the two
+`verify --fix` checks fail when only the merge is in place.

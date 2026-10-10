@@ -316,14 +316,28 @@ while IFS=$'\t' read -r status out src _; do
     fi
 done < "$RESULT_LOG"
 
+# h264-to-h265.sh also takes over the caches of earlier runs on subfolders
+# (<target>/<sub>/.video_conversion_cache.txt), on every run. Prune those
+# too, or the entries removed here would come back from there.
+caches=()
+[[ -f "$CACHE_FILE" ]] && caches+=("$CACHE_FILE")
+while IFS= read -r -d '' f; do caches+=("$f"); done \
+    < <(mo_find_state_files "$OUTPUT_DIR" ".video_conversion_cache.txt")
 pruned=0
-if [[ -f "$CACHE_FILE" ]]; then
-    cp -p "$CACHE_FILE" "${CACHE_FILE}.bak"
-    if grep -Fxv -f "$BROKEN_LIST" "$CACHE_FILE" > "${CACHE_FILE}.tmp" 2>/dev/null; then :; fi
-    pruned=$(( $(wc -l < "$CACHE_FILE") - $(wc -l < "${CACHE_FILE}.tmp") ))
-    mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
+if (( ${#caches[@]} > 0 )); then
+    for f in "${caches[@]}"; do
+        cp -p "$f" "${f}.bak"
+        if grep -Fxv -f "$BROKEN_LIST" "$f" > "${f}.tmp" 2>/dev/null; then :; fi
+        pruned=$(( pruned + $(wc -l < "$f") - $(wc -l < "${f}.tmp") ))
+        mv "${f}.tmp" "$f"
+    done
     printf "\n  %d output(s) deleted, %d cache entry/entries removed.\n" "$removed" "$pruned"
-    printf "  Cache backup: %s\n" "${CACHE_FILE}.bak"
+    if (( ${#caches[@]} == 1 )); then
+        printf "  Cache backup: %s\n" "${caches[0]}.bak"
+    else
+        printf "  Cache backups: %s.bak (and %d more next to each cache)\n" \
+            "${caches[0]}" "$(( ${#caches[@]} - 1 ))"
+    fi
 else
     printf "\n  %d output(s) deleted. No cache present.\n" "$removed"
 fi
