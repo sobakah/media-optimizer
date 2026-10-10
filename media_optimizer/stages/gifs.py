@@ -50,8 +50,7 @@ class GifStage(BatchStage):
         return None
 
     def files(self) -> Iterator[Path]:
-        return files.find_files(self.ctx.source, files.extension_matcher(["gif"]),
-                                include_hidden=self.s.include_hidden)
+        return files.source_files(self.ctx.source, files.extension_matcher(["gif"]), self.s)
 
     def summary_rows(self) -> list:
         rows = super().summary_rows()

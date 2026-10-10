@@ -42,7 +42,8 @@ safety.py        RunLock, Claim, temp names, commit (no overwrite), Trash
 proc.py          running tools in their own process group, stop_all, Stopped/ToolMissing
 media.py         ffprobe JSON, verify_video, verify_visual (PSNR; WebP via Pillow)
 gpu.py           gpu_args (the only place), device detection, self-test
-files.py         find_files, real_type, jpeg_info, gif_width, names
+files.py         find_files, source_files (folder choice), real_type, jpeg_info, gif_width, names
+folders.py       the subfolder question and the folder picker (keepbest's model)
 cache.py         per-stage caches (v2 format), old-format detection, conversion, pruning
 ui.py            StyleUI, say/badge, boxes, prompts, progress line, hold-open
 runlog.py        the run log
@@ -96,7 +97,12 @@ Breaking any of these has caused real data loss or silent corruption before.
   until it is in sync. CLI flags set settings through `_value`/`_flag` in
   `cli.py`, so they are validated by the same rule. A renamed setting goes
   into `config.RENAMED`.
-- **Scans only through `files.find_files`** (same skip rules everywhere).
+- **Scans of the source only through `files.source_files`** (same skip rules
+  and the same folder choice everywhere: stages, counts, preflight). It wraps
+  `files.find_files`, which the target-side scans (verify, state files) use.
+- **The folder choice** (`subfolders`, `exclude_folders`) is settled by
+  `folders.resolve` before the run state is saved, so a resumed run keeps it.
+  An excluded folder loses only its own files, never its subfolders.
 - **Caches** (`cache.py`): a stage remembers an outcome by returning
   `FileResult(..., cache="<outcome>")`; `BatchStage._guarded` looks entries up
   before `handle` and records them after it. Only outcomes that leave no

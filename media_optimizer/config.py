@@ -60,7 +60,8 @@ class SettingsError(Exception):
 
 # --- rules ---------------------------------------------------------------------
 # A rule is a tuple: ("int", lo, hi), ("num", lo, hi), ("bool",),
-# ("choice", word, ...), ("text",) or ("words",). ("opt", rule) also allows
+# ("choice", word, ...), ("text",), ("words",) or ("paths",) (a list of
+# strings that may contain spaces; ":"-separated or a JSON list as text). ("opt", rule) also allows
 # None, written as "null" in JSON and as an empty value in the environment.
 
 def _setting(default: Any, rule: tuple, doc: str, *, factory=None):
@@ -84,6 +85,8 @@ def _describe(rule: tuple) -> str:
         return "one of: " + ", ".join(rule[1:])
     if kind == "words":
         return "a list of words"
+    if kind == "paths":
+        return "a list of folder paths"
     return "text"
 
 
@@ -104,6 +107,8 @@ def check_value(rule: tuple, value: Any) -> bool:
         return isinstance(value, str) and value in rule[1:]
     if kind == "words":
         return isinstance(value, list) and all(isinstance(w, str) and w and " " not in w for w in value)
+    if kind == "paths":
+        return isinstance(value, list) and all(isinstance(w, str) and w.strip() for w in value)
     return isinstance(value, str)
 
 
@@ -127,6 +132,12 @@ def parse_value(rule: tuple, text: str) -> Any:
             value = float(text)
         elif kind == "words":
             value = text.split()
+        elif kind == "paths":
+            # A JSON list for names that contain ":" (keepbest passes one).
+            if text.startswith("["):
+                value = json.loads(text)
+            else:
+                value = [p for p in text.split(os.pathsep) if p.strip()]
         else:
             value = text
     except ValueError:
@@ -152,6 +163,14 @@ class Settings:
         "If the trash fails, delete permanently without asking.")
     include_hidden: bool = _setting(False, ("bool",),
         "Also process hidden files and folders. Trash and NAS system folders are always skipped.")
+    subfolders: str = _setting("ask", ("choice", "ask", "include", "exclude"),
+        "Subfolders of the source. ask = ask before a run when there are subfolders with images or "
+        "videos (Enter: include; without a terminal or with -y: include). exclude = only the files "
+        "directly in the source.")
+    exclude_folders: list[str] = _setting(None, ("paths",),
+        "Folders left out, relative to the source, e.g. [\"Archive\", \"2019/raw\"]; \".\" = the files "
+        "directly in the source. Each entry covers only that folder's own files, not its subfolders. "
+        "The custom choice of the subfolder question fills it for one run.", factory=list)
     verify_deep: bool = _setting(False, ("bool",),
         "Fully decode every image output before accepting it (slower).")
     preflight: bool = _setting(False, ("bool",),

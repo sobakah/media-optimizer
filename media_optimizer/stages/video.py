@@ -234,9 +234,8 @@ class VideoStage:
     # --- targets ------------------------------------------------------------------
     def _targets(self) -> Iterator[Path]:
         if self.from_list is None:
-            yield from files.find_files(self.ctx.source,
-                                        files.extension_matcher(self.s.video_extensions, exclude_parts=True),
-                                        include_hidden=self.s.include_hidden)
+            match = files.extension_matcher(self.s.video_extensions, exclude_parts=True)
+            yield from files.source_files(self.ctx.source, match, self.s)
             return
         for line in read_list(self.from_list):
             path = Path(line)
@@ -249,7 +248,7 @@ class VideoStage:
         if self.from_list is not None:
             return sum(1 for line in read_list(self.from_list) if line.strip())
         return files.count(self.ctx.source, files.extension_matcher(self.s.video_extensions, exclude_parts=True),
-                           self.s.include_hidden)
+                           self.s)
 
     def target_extension(self, src: Path) -> str:
         ext = src.suffix.lower().lstrip(".")

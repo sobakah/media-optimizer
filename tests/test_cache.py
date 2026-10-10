@@ -277,7 +277,7 @@ def test_declined_conversion_still_takes_over_subfolder_caches(folder, tmp_path,
     (o / "sub").mkdir(parents=True)
     (o / ".video_conversion_cache.txt").write_text(f"{d}/x.mp4\n")
     (o / "sub" / ".video_conversion_cache.txt").write_text(f"{d}/sub/l.mp4\n")
-    out = pty_run(["n"], "video", d, o, *FAST)
+    out = pty_run(["", "n"], "video", d, o, *FAST)       # subfolders: include; old cache: keep
     assert "Kept as they are" in out and "Cache (this scan):    2 file(s)" in out, out
     assert not (o / "sub" / "l.mp4").exists() and not (o / "sub" / "l.mkv").exists()
     assert (o / ".video_conversion_cache.txt").read_text().splitlines()[-1] == f"{d}/sub/l.mp4"

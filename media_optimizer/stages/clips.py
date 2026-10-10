@@ -82,9 +82,8 @@ class ClipStage(BatchStage):
         return None
 
     def files(self) -> Iterator[Path]:
-        return files.find_files(self.ctx.source,
-                                files.extension_matcher(self.s.video_extensions, exclude_parts=True),
-                                include_hidden=self.s.include_hidden)
+        match = files.extension_matcher(self.s.video_extensions, exclude_parts=True)
+        return files.source_files(self.ctx.source, match, self.s)
 
     def summary_rows(self) -> list:
         rows = super().summary_rows()

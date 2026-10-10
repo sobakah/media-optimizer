@@ -18,7 +18,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import files, proc, safety, ui
+from . import files, folders, proc, safety, ui
 from .config import (RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RC_OK, RC_PARTIAL, Settings,
                      state_dir)
 from .runlog import log
@@ -131,7 +131,7 @@ def _preflight(source: Path, output: Path | None, s: Settings, dry_run: bool) ->
     result under the correct name in the target."""
     ui.out(f"\n{S.CYAN}Checking file extensions against the content...{S.RESET}")
     match = files.extension_matcher(["jpg", "jpeg", "png", "gif", "webp", "jxl", "mp4"])
-    for path in list(files.find_files(source, match, include_hidden=s.include_hidden)):
+    for path in list(files.source_files(source, match, s)):
         real = files.real_type(path)
         ext = files.extension(path)
         if not real or real == ext:
@@ -153,7 +153,7 @@ def _collision_warning(source: Path, s: Settings) -> None:
     name, but it is better to surface this beforehand."""
     groups: dict[str, int] = defaultdict(int)
     match = files.extension_matcher(["jpg", "jpeg", "png", "gif"])
-    for path in files.find_files(source, match, include_hidden=s.include_hidden, report=False):
+    for path in files.source_files(source, match, s, report=False):
         groups[str(path.with_suffix(""))] += 1
     clashes = sorted(k for k, n in groups.items() if n > 1)
     if not clashes:
@@ -231,6 +231,8 @@ def run(req: Request) -> tuple[int, bool]:
             ui.out()
             if not ui.prompt_bool("Use the default settings for all media types?", True, indent=""):
                 _settings_menu(s, output)
+        # Before the state is saved: a resumed run keeps the folder choice.
+        folders.resolve(source, s, assume_yes=req.assume_yes)
         state = RunState(source=str(source), output=str(output) if output else None)
 
     source = source.absolute()
@@ -266,10 +268,9 @@ def run(req: Request) -> tuple[int, bool]:
         _preflight(source, output, s, req.dry_run)
     _collision_warning(source, s)
 
-    hidden = s.include_hidden
-    count_img = files.count(source, files.extension_matcher(IMAGE_EXTS), hidden)
-    count_gif = files.count(source, files.extension_matcher(["gif"]), hidden)
-    count_vid = files.count(source, files.extension_matcher(s.video_extensions, exclude_parts=True), hidden)
+    count_img = files.count(source, files.extension_matcher(IMAGE_EXTS), s)
+    count_gif = files.count(source, files.extension_matcher(["gif"]), s)
+    count_vid = files.count(source, files.extension_matcher(s.video_extensions, exclude_parts=True), s)
     counts = {"images": count_img, "gifs": count_gif, "clips": count_vid, "video": count_vid}
     wanted = {"images": count_img > 0, "gifs": count_gif > 0,
               "clips": count_vid > 0 and s.clip_stage, "video": count_vid > 0}

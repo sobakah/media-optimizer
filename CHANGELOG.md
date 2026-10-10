@@ -330,3 +330,11 @@ VAAPI encoder is available, and folders left by the Bash version
 | SVT-AV1 hangs on narrow frames | Found while testing the cache with a tiny GIF: libsvtav1 (SVT-AV1 3.1.2) hangs forever on frames narrower than about 31 px; only SIGKILL ends it. Such files are encoded with libaom-av1, and every AV1 encode of a GIF or clip is stopped after 10 minutes. |
 | Shorter video progress line, cut by display width | The line was cut by characters; file names with CJK characters or emoji (two columns each) made it wrap, and every update left a new line behind. It is now cut by columns and shows `#n GPU 45% 2.3x 1m 05s left` per running encode; the file name is in the `>>> [n/total] Processing:` line above. |
 | Started from keepbest (`MO_CALLER=keepbest`) | keepbest offers media-optimizer for the same folder after a run and continues in the terminal afterwards. With a folder on the command line the defaults question was skipped, so the settings could not be changed there; with `MO_CALLER` set it is asked. The closing question says that No goes back to keepbest. |
+
+---
+
+## Unreleased
+
+| Change | Why |
+|---|---|
+| Subfolder question and folder picker | Like keepbest: when the source has subfolders with images or videos, a run asks whether to include them (Enter), exclude them (only the files directly in the source) or choose them in a folder list. The list shows the tree with image and video counts; a number switches a folder and asks whether the folders below switch along, `a`/`n`/`m` select all, no subfolders or the main folder. Settings `subfolders` (`ask`, `include`, `exclude`) and `exclude_folders`, options `--subfolders` and `--exclude-folder`. Without a terminal or with `-y`: include, as before. `exclude_folders` also takes a JSON list from the environment, for names with `:`; keepbest passes its own folder choice that way. Every scan of the source (stages, counts, preflight) goes through `files.source_files`, so they all see the same files. |

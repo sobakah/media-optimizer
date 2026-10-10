@@ -77,8 +77,7 @@ class ImageStage(BatchStage):
         return None
 
     def files(self) -> Iterator[Path]:
-        return files.find_files(self.ctx.source, files.extension_matcher(["jpg", "jpeg", "png"]),
-                                include_hidden=self.s.include_hidden)
+        return files.source_files(self.ctx.source, files.extension_matcher(["jpg", "jpeg", "png"]), self.s)
 
     # --- one file ---------------------------------------------------------------
     def handle(self, src: Path) -> FileResult:

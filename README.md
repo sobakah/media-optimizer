@@ -99,6 +99,8 @@ Options that behave the same everywhere:
 | `-i, --input <dir>` | source directory |
 | `-o, --output <dir>` | target directory, empty = in place |
 | `-j, --workers <n>` | parallel workers (default: number of cores) |
+| `--subfolders <mode>` | `ask` (default), `include` or `exclude` (only the files directly in the source) |
+| `--exclude-folder <dir>` | leave out that folder's own files (relative to the source, `.` = the source itself); repeatable |
 | `--delete` / `--no-delete` | move originals to the trash (default depends on the mode) |
 | `--force-delete` | if the trash fails, delete permanently without asking |
 | `--keep-larger` | keep results that are larger than the original |
@@ -244,6 +246,16 @@ chips that downclock for it (Skylake-X, Ice Lake server) and on Zen 4.
   file; without a terminal or with `-y` they are converted). Declined, they
   are used as before and the question comes again next run. The Bash scripts
   of 1.x cannot read the converted format.
+* **Subfolders.** When the source has subfolders with images or videos, a
+  run asks first: *include* (Enter), *exclude* (only the files directly in
+  the source) or *custom*, which opens a folder list like keepbest's: a tree
+  of the subfolders with their image and video counts, where a number
+  switches a folder (and asks whether the folders below it switch along),
+  `a`/`n` select all or no subfolders and `m` switches the main folder. A
+  left-out folder only loses its own files, its subfolders keep their own
+  state. Without a terminal or with `-y` subfolders are included. The choice
+  is saved with an interrupted run; `subfolders` and `exclude_folders` in the
+  config (or the options above) preset it and skip the question.
 * **Hidden and system folders are skipped:** trash (`.Trash-*`,
   `$RECYCLE.BIN`, `#recycle`), NAS folders (`@eaDir`, `#snapshot`),
   `lost+found`, AppleDouble files (`._name`), and other hidden entries unless
@@ -275,7 +287,7 @@ closes by itself.
 
 ### Started from keepbest
 
-[keepbest](https://github.com/sobakah/keepbest) removes duplicate pictures and videos. After a run, its end screen offers `m` to run media-optimizer on the same folder, in the same window. It sets `MO_CALLER=keepbest`: the run still asks whether to use the default settings (normally skipped when the folder is given on the command line), and the closing question reads *Process another directory? (No: back to keepbest)*. keepbest also sets `MO_HOLD=0`, since its window stays open anyway.
+[keepbest](https://github.com/sobakah/keepbest) removes duplicate pictures and videos. After a run, its end screen offers `m` to run media-optimizer on the same folder, in the same window. It sets `MO_CALLER=keepbest`: the run still asks whether to use the default settings (normally skipped when the folder is given on the command line), and the closing question reads *Process another directory? (No: back to keepbest)*. keepbest also sets `MO_HOLD=0`, since its window stays open anyway, and passes its folder choice as `MO_SUBFOLDERS` and `MO_EXCLUDE_FOLDERS` (a JSON list), so the run covers the same folders as keepbest's and does not ask about subfolders.
 
 ### Automated runs
 

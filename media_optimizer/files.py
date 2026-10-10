@@ -12,6 +12,9 @@ use, so they always see the same files:
 - Only regular files count, symlinks are not followed (like ``find -type f``).
 - An unreadable folder is reported and skipped; it never fails the batch.
 
+``source_files`` adds the folder choice of the settings (``subfolders``,
+``exclude_folders``); every scan of the source goes through it.
+
 The real type comes from the first bytes of the file, never from the
 extension: cjxl and cwebp detect the format by content, so a PNG named .jpg
 would otherwise get the JPEG settings, which for cjxl means lossy.
@@ -37,13 +40,16 @@ def _skip_dir(name: str, include_hidden: bool) -> bool:
     return name.startswith(".") and not include_hidden
 
 
-def _walk(root: Path, include_hidden: bool, maxdepth: int | None, report) -> Iterator[os.DirEntry]:
+def _walk(root: Path, include_hidden: bool, maxdepth: int | None, report,
+          skip: frozenset[str] = frozenset()) -> Iterator[os.DirEntry]:
     """Regular files below root, depth-first, entries sorted by name so runs
     are reproducible. The root itself is never filtered, so a hidden source
-    folder works."""
+    folder works. The files of folders in *skip* (relative, "/"-separated,
+    "." = root) are left out; their subfolders are still walked."""
     stack: list[tuple[Path, int]] = [(root, 1)]
     while stack:
         folder, depth = stack.pop()
+        own_files = not skip or relative_folder(folder, root) not in skip
         try:
             with os.scandir(folder) as it:
                 entries = sorted(it, key=lambda e: e.name)
@@ -57,16 +63,29 @@ def _walk(root: Path, include_hidden: bool, maxdepth: int | None, report) -> Ite
                 if entry.is_dir(follow_symlinks=False):
                     if (maxdepth is None or depth < maxdepth) and not _skip_dir(entry.name, include_hidden):
                         subdirs.append(Path(entry.path))
-                elif entry.is_file(follow_symlinks=False):
+                elif own_files and entry.is_file(follow_symlinks=False):
                     yield entry
             except OSError:
                 continue
         stack.extend((d, depth + 1) for d in reversed(subdirs))
 
 
+def relative_folder(folder: Path, root: Path) -> str:
+    """A folder relative to root in "/" form; "." for root itself."""
+    return Path(os.path.relpath(folder, root)).as_posix()
+
+
+def normalize_folder(text: str) -> str:
+    """An exclude_folders entry in the form relative_folder returns:
+    "./a//b/" -> "a/b", "" or "/" -> "."."""
+    parts = [p for p in text.replace(os.sep, "/").split("/") if p not in ("", ".")]
+    return "/".join(parts) or "."
+
+
 def find_files(root: Path, match: Callable[[str], bool], *, include_hidden: bool = False,
-               maxdepth: int | None = None, report: bool = True) -> Iterator[Path]:
-    for entry in _walk(root, include_hidden, maxdepth, report):
+               maxdepth: int | None = None, report: bool = True,
+               skip_folders: frozenset[str] = frozenset()) -> Iterator[Path]:
+    for entry in _walk(root, include_hidden, maxdepth, report, skip_folders):
         name = entry.name
         if name.startswith("._") or (name.startswith(".") and not include_hidden):
             continue
@@ -100,8 +119,20 @@ def extension_matcher(extensions, *, exclude_parts: bool = False) -> Callable[[s
     return match
 
 
-def count(root: Path, match, include_hidden: bool) -> int:
-    return sum(1 for _ in find_files(root, match, include_hidden=include_hidden, report=False))
+def source_files(root: Path, match: Callable[[str], bool], settings, *,
+                 report: bool = True) -> Iterator[Path]:
+    """find_files with the folder choice of the settings: subfolders
+    "exclude" scans only root, exclude_folders leaves those folders' own
+    files out. "ask" that was not answered (no terminal, a resumed run of an
+    older version) counts as include."""
+    maxdepth = 1 if settings.subfolders == "exclude" else None
+    skip = frozenset(normalize_folder(f) for f in settings.exclude_folders)
+    return find_files(root, match, include_hidden=settings.include_hidden, maxdepth=maxdepth,
+                      report=report, skip_folders=skip)
+
+
+def count(root: Path, match, settings) -> int:
+    return sum(1 for _ in source_files(root, match, settings, report=False))
 
 
 # --- names -----------------------------------------------------------------------

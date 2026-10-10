@@ -20,7 +20,7 @@ import signal
 import sys
 from pathlib import Path
 
-from . import gpu, proc, ui
+from . import folders, gpu, proc, ui
 from .config import (NAME, RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RULES, Settings,
                      SettingsError, __version__, load_settings, parse_value)
 from .runlog import log
@@ -52,7 +52,7 @@ def _flag(group, *flags: str, setting: str, value, help: str) -> None:
 
 
 def _common(p: argparse.ArgumentParser, *, dirs: str = "optional", workers: bool = True,
-            delete: bool = True) -> None:
+            delete: bool = True, folders: bool = True) -> None:
     if dirs != "none":
         p.add_argument("source", nargs="?", help="source directory")
         p.add_argument("target", nargs="?", help="target directory (empty = in place)")
@@ -67,6 +67,13 @@ def _common(p: argparse.ArgumentParser, *, dirs: str = "optional", workers: bool
         _flag(g, "--no-delete", setting="delete_original", value=False, help="keep originals")
         _flag(g, "--force-delete", setting="force_delete", value=True,
               help="if the trash fails, delete permanently without asking")
+    if folders:
+        _value(g, "--subfolders", setting="subfolders", metavar="MODE",
+               help="ask | include | exclude (default: ask when there are any; include without a terminal)")
+        g.add_argument("--exclude-folder", dest=_SET + "exclude_folders", action="append", metavar="DIR",
+                       default=argparse.SUPPRESS,
+                       help='leave out the files of this folder (relative to the source, "." = the source '
+                            "itself); repeatable")
     g.add_argument("-c", "--config", type=Path, metavar="FILE", help="use this config file")
     g.add_argument("-y", "--yes", action="store_true", help="do not ask, keep the settings as given")
     g.add_argument("-n", "--dry-run", action="store_true", help="preview only, write nothing")
@@ -199,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- verify ---
     p = sub.add_parser("verify", help="check converted videos against their originals")
-    _common(p, delete=False)
+    _common(p, delete=False, folders=False)
     g = p.add_argument_group("check")
     _value(g, "--psnr-min", setting="visual_psnr_min", metavar="DB", help="threshold for suspicion (default: 18)")
     _value(g, "--duration-tol", setting="duration_tolerance_pct", metavar="P",
@@ -214,7 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
     # --- gpu-selftest ---
     p = sub.add_parser("gpu-selftest", help="try GPU option variants on a real file")
     p.add_argument("file", type=Path, help="a video to test with")
-    _common(p, dirs="none", workers=False, delete=False)
+    _common(p, dirs="none", workers=False, delete=False, folders=False)
     g = p.add_argument_group("GPU")
     _value(g, "--gpu-device", setting="vaapi_device", metavar="PATH", help='render node, or "auto"')
     _value(g, "--qp", setting="gpu_qp", metavar="N", help="GPU quality (default: 26)")
@@ -332,6 +339,8 @@ def _run_stage(args, s: Settings) -> int:
             return RC_BAD_SETTING
     elif out == src:
         out = None
+    if args.command != "verify":
+        folders.resolve(src, s, assume_yes=args.yes)
     if out is not None and not args.dry_run:
         out.mkdir(parents=True, exist_ok=True)
 

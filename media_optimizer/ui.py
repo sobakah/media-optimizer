@@ -68,6 +68,16 @@ def fit_width(text: str, width: int) -> str:
     return text
 
 
+def visible_width(text: str) -> int:
+    """Terminal columns the text takes, without colour codes."""
+    return sum(_char_width(ch) for ch in _ANSI_RE.sub("", text))
+
+
+def pad_width(text: str, width: int) -> str:
+    """Pad to width terminal columns (ljust counts characters)."""
+    return text + " " * max(0, width - visible_width(text))
+
+
 def _clear_progress() -> None:
     global _progress_open
     if _progress_open:
