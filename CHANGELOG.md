@@ -316,32 +316,17 @@ VAAPI encoder is available, and folders left by the Bash version
 
 ---
 
-## 2.1 – Caches for every stage
+## 2.1 – Caches for every stage, started from keepbest
 
 | Change | Why |
 |---|---|
 | A cache per stage | Before, only videos were cached. Discarded images and GIFs were encoded again on every run, only to be discarded again (for GIFs results larger than the original are discarded by default), and CMYK or arithmetic JPEGs were tried every time. `.img_cache.txt`, `.gif_cache.txt` and `.clip_cache.txt` remember results without an output; failures are never cached. |
 | Entries store size, modification time and a settings fingerprint | The 1.x cache stored only the path, so a different file under the same name counted as done. A changed setting that a result depends on (e.g. PNG quality) now makes the files count as new. |
-| Old video caches are converted after a question | Format v2 has a header line. A 1.x cache is detected at the start (also in subfolders); converted entries keep their path with the current size and time, the old file stays as `.v1.bak`. Declined, the old file is used as before (paths only) and the question comes again next run. Without a terminal or with `-y` it is converted. A dry run neither asks nor converts. |
+| Cache paths are compared with symlinks resolved | Runs on `~/Videos/Link` (a symlink to `/mnt/disk/Videos`) recorded the link path; a run started on `/mnt/disk/Videos` found none of those entries and converted cached videos again, and the subfolder caches were not taken over, since their paths did not start with the real folder. Entries are written with the folders resolved, and older entries are resolved when read. |
+| Old video caches are converted after a question | Format v2 has a header line. A 1.x cache is detected at the start (also in subfolders); converted entries keep their path with the current size and time, the old file stays as `.v1.bak`. Declined, the old file is used as before (paths only), entries from subfolder caches are added to it as plain paths, and the question comes again next run. Without a terminal or with `-y` it is converted. A dry run neither asks nor converts. |
 | Clips: output check before ffprobe | The clip stage ran ffprobe on every video before looking for an existing output, and probed every long video on every run. Now the output is checked first and "not selected" is cached. |
 | `--no-cache` for every stage | `use_cache` moved from the video settings to the general ones; "Scan all files again" is asked in the global part of the settings menu and in every stage menu. |
 | Misnamed files copied again on every run | In target mode, a GIF named `.png` was copied to the target on every run (`isgif.gif`, `isgif_1.gif`, ...); the 1.x Bash version did the same. The take-over now compares the content with an existing correctly named copy first. |
 | SVT-AV1 hangs on narrow frames | Found while testing the cache with a tiny GIF: libsvtav1 (SVT-AV1 3.1.2) hangs forever on frames narrower than about 31 px; only SIGKILL ends it. Such files are encoded with libaom-av1, and every AV1 encode of a GIF or clip is stopped after 10 minutes. |
-
----
-
-## 2.1.1 – Started from keepbest
-
-| Change | Why |
-|---|---|
-| Started from keepbest (`MO_CALLER=keepbest`) | keepbest offers media-optimizer for the same folder after a run and continues in the terminal afterwards. With a folder on the command line the defaults question was skipped, so the settings could not be changed there; with `MO_CALLER` set it is asked. The closing question says that No goes back to keepbest. |
-
----
-
-## 2.1.2 – Cache through symlinks, progress line
-
-| Change | Why |
-|---|---|
-| Cache paths are compared with symlinks resolved | Runs on `~/Videos/Link` (a symlink to `/mnt/disk/Videos`) recorded the link path; a run started on `/mnt/disk/Videos` found none of those entries and converted cached videos again, and the subfolder caches were not taken over, since their paths did not start with the real folder. Entries are now written with the folders resolved, and older entries are resolved when read. |
-| Subfolder caches taken over when the conversion was declined | With the old-format cache kept, entries from subfolders went into the new-format table, which an old-format cache never consults, and were appended in the new format to the old file. They are now added as plain paths. |
 | Shorter video progress line, cut by display width | The line was cut by characters; file names with CJK characters or emoji (two columns each) made it wrap, and every update left a new line behind. It is now cut by columns and shows `#n GPU 45% 2.3x 1m 05s left` per running encode; the file name is in the `>>> [n/total] Processing:` line above. |
+| Started from keepbest (`MO_CALLER=keepbest`) | keepbest offers media-optimizer for the same folder after a run and continues in the terminal afterwards. With a folder on the command line the defaults question was skipped, so the settings could not be changed there; with `MO_CALLER` set it is asked. The closing question says that No goes back to keepbest. |
