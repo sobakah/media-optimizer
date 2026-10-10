@@ -49,6 +49,9 @@ class ImageStage(BatchStage):
     stats_name = ".img_stats.json"
     pending_name = ".img_pending_deletes.txt"
     leftovers = ["*.part.*.jxl", "*.part.*.webp"]
+    cache_name = ".img_cache.txt"
+    cache_settings = ("img_target", "img_webp_quality", "img_discard_if_larger", "png_mode", "png_quality",
+                      "jxl_effort", "img_copy_metadata")
 
     def prepare(self) -> int | None:
         s = self.s
@@ -133,9 +136,16 @@ class ImageStage(BatchStage):
         """Already WebP, JXL or GIF under a wrong extension: nothing to
         convert. In place it gets the right extension; with a target
         directory a correctly named copy goes there, the source stays."""
+        import filecmp
         import shutil
 
         if self.ctx.output is not None:
+            # Taken over by an earlier run already: the same content under the
+            # correct name. Without this check every run added another copy
+            # (isgif.gif, isgif_1.gif, ...), in the Bash version too.
+            same = folder / f"{stem}.{real}"
+            if same.is_file() and filecmp.cmp(src, same, shallow=False):
+                return FileResult(Kind.SKIP, cache="taken-over")
             target = files.unique_name(folder, stem, real)
             try:
                 shutil.copy2(src, target)
@@ -150,14 +160,14 @@ class ImageStage(BatchStage):
                 raise safety.Failed(f"could not rename to '{target.name}' ({exc.strerror})") from None
             ui.say("CORRECTED", S.MAGENTA, f"'{src.name}' is {real} -> '{target.name}'")
         log.file(self.tag, "CORRECTED", src, target.name)
-        return FileResult(Kind.SKIP)
+        return FileResult(Kind.SKIP, cache="taken-over" if self.ctx.output is not None else None)
 
     def _unsupported(self, src: Path, reason: str) -> FileResult:
         """A known limitation, not an error: skipped with the reason, so it
         does not fail every run again."""
         log.file(self.tag, "UNSUPPORTED", src)
         ui.say("UNSUPPORTED", S.YELLOW, f"'{src.name}': {reason}, original kept.", err=True)
-        return FileResult(Kind.SKIP)
+        return FileResult(Kind.SKIP, cache="unsupported")
 
     def _encode(self, src: Path, real: str, dest: Path, orig: int, claim: safety.Claim) -> FileResult:
         s = self.s
@@ -232,7 +242,7 @@ class ImageStage(BatchStage):
         if self.s.img_discard_if_larger and orig > 0 and new >= orig:
             log.file(self.tag, "DISCARDED", src, "", orig, new)
             ui.say("DISCARDED", S.YELLOW, f"'{src.name}': result would be larger, original kept.")
-            return FileResult(Kind.DISCARD)
+            return FileResult(Kind.DISCARD, cache="discarded")
 
         safety.commit(src, tmp, dest)
         log.file(self.tag, "OK", src, dest.name, orig, new)

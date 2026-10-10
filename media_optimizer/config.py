@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-__version__ = "2.0"
+__version__ = "2.1"
 NAME = "media-optimizer"
 PROJECT_URL = "https://github.com/sobakah/media-optimizer"
 ENV_PREFIX = "MO_"
@@ -156,6 +156,10 @@ class Settings:
         "Fully decode every image output before accepting it (slower).")
     preflight: bool = _setting(False, ("bool",),
         "Before the run, correct file extensions that do not match the content (in place only).")
+    use_cache: bool = _setting(True, ("bool",),
+        "Remember files that need no work next time: finished videos, and results without an output "
+        "(discarded as larger, unsupported, not selected). Each stage has its own cache file; entries "
+        "store size, modification time and the settings they depend on. false = check everything again.")
     log: bool = _setting(True, ("bool",), "Write the run log.")
     log_file: str | None = _setting(None, ("opt", ("text",)),
         "Path of the run log. null = media-optimizer.log in the project folder (checkout) "
@@ -262,8 +266,6 @@ class Settings:
         "Keep a video salvaged from a damaged source even when it grew. The original is always kept.")
     duration_tolerance_pct: float = _setting(2, ("num", 0, 100),
         "Allowed runtime difference between original and output.")
-    use_cache: bool = _setting(True, ("bool",),
-        "Remember finished videos in .video_conversion_cache.txt so they are not probed again.")
     auto_fix_list: bool = _setting(False, ("bool",),
         "Process only .broken_videos.txt from the target directory when it exists.")
 

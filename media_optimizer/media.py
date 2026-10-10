@@ -94,9 +94,19 @@ def has_encoder(name: str) -> bool:
     return f" {name} " in encoders()
 
 
-def av1_encoder() -> tuple[str, list[str]] | None:
-    """(encoder, speed arguments). libsvtav1 is considerably faster than libaom."""
-    if has_encoder("libsvtav1"):
+# Measured with SVT-AV1 3.1.2 (Fedora 44): frames narrower than about 31 px
+# (24 hung, 31 worked; the height does not matter) make libsvtav1 hang
+# forever, and only SIGKILL ends it. libaom-av1 encodes them fine.
+SVT_MIN_WIDTH = 32
+# Safety net for the short-content AV1 encodes (GIFs, clips): a hang that is
+# not known yet must not block a worker forever.
+AV1_TIMEOUT = 600
+
+
+def av1_encoder(width: int | None = None) -> tuple[str, list[str]] | None:
+    """(encoder, speed arguments). libsvtav1 is considerably faster than
+    libaom, but hangs on very narrow frames."""
+    if has_encoder("libsvtav1") and (width is None or width >= SVT_MIN_WIDTH):
         return "libsvtav1", ["-preset", "6"]
     if has_encoder("libaom-av1"):
         return "libaom-av1", ["-cpu-used", "6"]

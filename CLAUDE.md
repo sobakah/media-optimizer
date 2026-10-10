@@ -42,7 +42,8 @@ safety.py        RunLock, Claim, temp names, commit (no overwrite), Trash
 proc.py          running tools in their own process group, stop_all, Stopped/ToolMissing
 media.py         ffprobe JSON, verify_video, verify_visual (PSNR; WebP via Pillow)
 gpu.py           gpu_args (the only place), device detection, self-test
-files.py         find_files, real_type, jpeg_info, names
+files.py         find_files, real_type, jpeg_info, gif_width, names
+cache.py         per-stage caches (v2 format), old-format detection, conversion, pruning
 ui.py            StyleUI, say/badge, boxes, prompts, progress line, hold-open
 runlog.py        the run log
 ```
@@ -96,6 +97,13 @@ Breaking any of these has caused real data loss or silent corruption before.
   `cli.py`, so they are validated by the same rule. A renamed setting goes
   into `config.RENAMED`.
 - **Scans only through `files.find_files`** (same skip rules everywhere).
+- **Caches** (`cache.py`): a stage remembers an outcome by returning
+  `FileResult(..., cache="<outcome>")`; `BatchStage._guarded` looks entries up
+  before `handle` and records them after it. Only outcomes that leave no
+  output to find next time, never failures. Each stage lists the settings its
+  outcomes depend on (`cache_settings`, `video.CACHE_SETTINGS`); add a new
+  setting there when it changes a result. Old-format video caches are only
+  converted after `resolve_legacy_caches` asked, and only under the run lock.
 - **Keep compatible with folders the Bash version worked on**: flock on the
   working directory, `.part.<pid>.<random>.<ext>` and `.<stem>.molock`,
   `.video_conversion_cache.txt`, `.broken_videos.txt`, `.video_suspect.txt`,
@@ -108,7 +116,7 @@ Breaking any of these has caused real data loss or silent corruption before.
 ## Tests
 
 ```bash
-python3 -m pytest                  # all, about 130 tests, 2 minutes
+python3 -m pytest                  # all, about 150 tests, 2-3 minutes
 python3 -m pytest -m "not slow"    # without the signal tests
 python3 -m pytest tests/test_video.py -k cache
 ```
@@ -155,6 +163,14 @@ behaviour still applies):
   frame's duration is only known after `load()`.
 - glycin 2.1.5 (Fedora 44, GNOME's image viewer) animates WebP, GIF and APNG,
   but shows animated AVIF and JPEG XL as stills.
+- libsvtav1 (SVT-AV1 3.1.2) hangs forever on frames narrower than about 31 px
+  (8, 16, 24 hung; 31, 32, 64 worked; the height does not matter), and only
+  SIGKILL ends it — `timeout` without `-k` waits forever too. libaom-av1
+  encodes them. `media.av1_encoder(width)` picks accordingly; AV1 encodes of
+  GIFs and clips also have a 10-minute limit (`proc.run(timeout=...)`).
+- Re-running a stage used to copy a misnamed file into the target again on
+  every run (`isgif.gif`, `isgif_1.gif`, ...); the take-over now compares
+  content first.
 - ffmpeg finishes the file (flush, trailer) after SIGINT; with x265 `slow`
   that took about a second. `proc.stop_all` waits for every process group.
 - A program started in the background of a non-interactive shell inherits

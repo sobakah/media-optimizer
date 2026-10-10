@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterator
 
-from .. import proc, safety, ui
+from .. import cache, proc, safety, ui
 from ..config import RC_FATAL, RC_INTERRUPTED, RC_OK, RC_PARTIAL, Settings
 from ..runlog import log
 from ..ui import StyleUI as S
@@ -35,6 +35,7 @@ class Context:
     dry_run: bool = False
     resuming: bool = False
     assume_yes: bool = False
+    legacy_cache: str = "ask"     # old-format caches: ask, convert, keep, none, done
 
     @property
     def work_dir(self) -> Path:
@@ -60,6 +61,7 @@ class Kind(enum.Enum):
     COLLISION = "COLLISION"
     DRY = "DRY"
     STOPPED = "STOPPED"     # interrupted, not counted; tried again next run
+    CACHED = "CACHED"       # nothing to do according to the cache; counted per scan only
 
 
 @dataclass
@@ -68,6 +70,7 @@ class FileResult:
     orig: int = 0
     new: int = 0
     suspect: bool = False
+    cache: str | None = None      # outcome to remember: nothing to do next time
 
 
 @dataclass
@@ -194,11 +197,45 @@ def prompt_delete_original(settings: Settings, output: Path | None) -> None:
 
 
 def prompt_rescan(settings: Settings) -> None:
-    """Asked the other way round than use_cache, because ignoring the cache
+    """Asked the other way round than use_cache, because ignoring the caches
     is the deliberate choice."""
-    rescan = ui.prompt_bool("Scan all videos again, ignoring the cache of finished ones (slower)?",
+    rescan = ui.prompt_bool("Scan all files again, ignoring the caches of earlier runs (slower)?",
                             not settings.use_cache)
     settings.use_cache = not rescan
+
+
+def resolve_legacy_caches(ctx: Context) -> None:
+    """Ask once per run whether old-format video caches are converted. Only
+    the answer is taken here; the video stage converts under its run lock.
+    A dry run writes nothing, so it neither asks nor converts."""
+    if ctx.legacy_cache not in ("ask", "none"):
+        return
+    if ctx.dry_run or not ctx.settings.use_cache or not ctx.work_dir.is_dir():
+        ctx.legacy_cache = "none"
+        return
+    paths = cache.find_legacy(ctx.work_dir, ctx.settings.include_hidden)
+    if not paths:
+        ctx.legacy_cache = "none"
+        return
+    convert = cache.ask_convert(paths, interactive=ui.interactive(), assume_yes=ctx.assume_yes)
+    ctx.legacy_cache = "convert" if convert else "keep"
+    if not convert:
+        ui.out("          Kept as they are and used as before (paths only); asked again next run.")
+
+
+def convert_legacy_caches(ctx: Context) -> None:
+    """Carry out a "convert" answer. Call while holding the run lock."""
+    resolve_legacy_caches(ctx)          # a cache copied over from the source just now
+    if ctx.legacy_cache != "convert":
+        return
+    for path in cache.find_legacy(ctx.work_dir, ctx.settings.include_hidden):
+        try:
+            kept, dropped = cache.convert(path)
+        except OSError as exc:
+            ui.say("CACHE", S.RED, f"could not convert {path}: {exc.strerror}", err=True)
+            continue
+        ui.say("CACHE", S.CYAN, f"converted {path}: {kept} entries kept, {dropped} for missing files dropped.")
+    ctx.legacy_cache = "done"
 
 
 # --- the parallel batch stage ----------------------------------------------------------
@@ -213,11 +250,15 @@ class BatchStage:
     pending_name = ""
     leftovers: list[str] = []
     dry_noun = "file(s)"
+    cache_name = ""
+    cache_settings: tuple[str, ...] = ()      # the settings a cached outcome depends on
 
     def __init__(self, ctx: Context):
         self.ctx = ctx
         self.s = ctx.settings
         self.counters = Counters()
+        self.cache = cache.StageCache(ctx.work_dir / self.cache_name, enabled=False, dry_run=True,
+                                      fingerprint="")
         self.trash = safety.Trash(None if ctx.dry_run else ctx.work_dir / self.pending_name,
                                   force=self.s.force_delete)
         self.started = time.monotonic()
@@ -236,8 +277,10 @@ class BatchStage:
     def summary_rows(self) -> list:
         c = self.counters
         rows = [("Total runtime:", ui.format_duration(c.elapsed)),
-                ("Converted:", f"{c.processed} file(s)"),
-                ("Skipped:", f"{c.skipped} file(s)")]
+                ("Converted:", f"{c.processed} file(s)")]
+        if self.cache.hits:
+            rows.append(("Cache (this scan):", f"{self.cache.hits} file(s)"))
+        rows.append(("Skipped:", f"{c.skipped} file(s)"))
         if c.discarded:
             rows.append(("Discarded (larger):", f"{c.discarded} file(s)"))
         if c.suspect:
@@ -266,7 +309,12 @@ class BatchStage:
     # the run
     def _guarded(self, src: Path) -> tuple[FileResult, str | None]:
         try:
-            return self.handle(src), None
+            if self.cache.lookup(src) is not None:
+                return FileResult(Kind.CACHED), None
+            result = self.handle(src)
+            if result.cache and result.kind is not Kind.FAIL:
+                self.cache.add(src, result.cache)
+            return result, None
         except proc.Stopped:
             return FileResult(Kind.STOPPED), None
         except proc.ToolMissing as exc:
@@ -305,6 +353,13 @@ class BatchStage:
         elif not ctx.dry_run:
             stats.unlink(missing_ok=True)
         previous = self.counters.elapsed
+        s = self.s
+        self.cache = cache.StageCache(ctx.work_dir / self.cache_name, enabled=s.use_cache,
+                                      dry_run=ctx.dry_run, fingerprint=cache.fingerprint(s, self.cache_settings))
+        self.cache.load()
+        self.cache.merge_subfolders(ctx.work_dir, ctx.source, s.include_hidden)
+        if not s.use_cache:
+            ui.say("CACHE", S.CYAN, "Ignored for this run: every file is checked again.")
 
         interrupted = False
         fatal: str | None = None

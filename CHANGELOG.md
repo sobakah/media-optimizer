@@ -313,3 +313,18 @@ Tests: `tests/`, pytest, 133 tests including signals, prompts on a
 pseudo-terminal, forced failures, parallel lanes, real GPU encodes where a
 VAAPI encoder is available, and folders left by the Bash version
 (`tests/test_compat.py`).
+
+---
+
+## 2.1 – Caches for every stage
+
+| Change | Why |
+|---|---|
+| A cache per stage | Before, only videos were cached. Discarded images and GIFs were encoded again on every run, only to be discarded again (for GIFs results larger than the original are discarded by default), and CMYK or arithmetic JPEGs were tried every time. `.img_cache.txt`, `.gif_cache.txt` and `.clip_cache.txt` remember results without an output; failures are never cached. |
+| Entries store size, modification time and a settings fingerprint | The 1.x cache stored only the path, so a different file under the same name counted as done. A changed setting that a result depends on (e.g. PNG quality) now makes the files count as new. |
+| Old video caches are converted after a question | Format v2 has a header line. A 1.x cache is detected at the start (also in subfolders); converted entries keep their path with the current size and time, the old file stays as `.v1.bak`. Declined, the old file is used as before (paths only) and the question comes again next run. Without a terminal or with `-y` it is converted. A dry run neither asks nor converts. |
+| Clips: output check before ffprobe | The clip stage ran ffprobe on every video before looking for an existing output, and probed every long video on every run. Now the output is checked first and "not selected" is cached. |
+| `--no-cache` for every stage | `use_cache` moved from the video settings to the general ones; "Scan all files again" is asked in the global part of the settings menu and in every stage menu. |
+| Misnamed files copied again on every run | In target mode, a GIF named `.png` was copied to the target on every run (`isgif.gif`, `isgif_1.gif`, ...); the 1.x Bash version did the same. The take-over now compares the content with an existing correctly named copy first. |
+| SVT-AV1 hangs on narrow frames | Found while testing the cache with a tiny GIF: libsvtav1 (SVT-AV1 3.1.2) hangs forever on frames narrower than about 31 px; only SIGKILL ends it. Such files are encoded with libaom-av1, and every AV1 encode of a GIF or clip is stopped after 10 minutes. |
+

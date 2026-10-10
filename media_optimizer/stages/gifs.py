@@ -28,6 +28,8 @@ class GifStage(BatchStage):
     pending_name = ".gif_pending_deletes.txt"
     leftovers = ["*.part.*.webp", "*.part.*.avif"]
     dry_noun = "GIF(s)"
+    cache_name = ".gif_cache.txt"
+    cache_settings = ("gif_target", "gif_method", "gif_kmin", "gif_avif_crf", "discard_if_larger")
 
     def prepare(self) -> int | None:
         s = self.s
@@ -39,8 +41,7 @@ class GifStage(BatchStage):
             if enc is None:
                 ui.say("MISSING", S.RED, "No AV1 encoder for gif_target avif.", err=True)
                 return 1
-            self.av1, self.av1_speed = enc
-            ui.say("GIF", S.CYAN, f"target: AVIF ({self.av1}, CRF {s.gif_avif_crf}) - lossy!")
+            ui.say("GIF", S.CYAN, f"target: AVIF ({enc[0]}, CRF {s.gif_avif_crf}) - lossy!")
         elif proc.missing("gif2webp"):
             ui.say("MISSING", S.RED, "Required programs not found: gif2webp", err=True)
             return 1
@@ -61,12 +62,13 @@ class GifStage(BatchStage):
     def _encode(self, src: Path, tmp: Path) -> bool:
         s = self.s
         if s.gif_target == "avif":
-            cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(src), "-c:v", self.av1,
-                   "-crf", str(s.gif_avif_crf), *self.av1_speed, "-pix_fmt", "yuv420p",
+            encoder, speed = media.av1_encoder(files.gif_width(src))
+            cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(src), "-c:v", encoder,
+                   "-crf", str(s.gif_avif_crf), *speed, "-pix_fmt", "yuv420p",
                    "-an", "-f", "avif", "-loop", "0", str(tmp)]
-        else:
-            cmd = ["gif2webp", "-m", str(s.gif_method), "-kmin", str(s.gif_kmin), "-metadata", "all",
-                   "-quiet", str(src), "-o", str(tmp)]
+            return proc.run(cmd, timeout=media.AV1_TIMEOUT).ok
+        cmd = ["gif2webp", "-m", str(s.gif_method), "-kmin", str(s.gif_kmin), "-metadata", "all",
+               "-quiet", str(src), "-o", str(tmp)]
         return proc.run(cmd).ok
 
     def handle(self, src: Path) -> FileResult:
@@ -83,6 +85,10 @@ class GifStage(BatchStage):
             return FileResult(Kind.DRY)
 
         orig = src.stat().st_size
+        if s.gif_target == "avif" and media.av1_encoder(files.gif_width(src)) is None:
+            ui.say("UNSUPPORTED", S.YELLOW, f"'{src.name}': narrower than {media.SVT_MIN_WIDTH} px, which "
+                                            "libsvtav1 cannot encode, and libaom-av1 is missing.", err=True)
+            return FileResult(Kind.SKIP, cache="unsupported")
         with safety.Claim(folder, stem, dest) as claim:
             tmp = claim.temp()
             # verify_image checks WebP; for AVIF only the size.
@@ -94,7 +100,7 @@ class GifStage(BatchStage):
                 ui.say("DISCARDED", S.YELLOW,
                        f"'{src.name}': {ext.upper()} would be {ui.format_bytes(new - orig)} larger, "
                        "original kept.")
-                return FileResult(Kind.DISCARD)
+                return FileResult(Kind.DISCARD, cache="discarded")
             safety.commit(src, tmp, dest)
         log.file(self.tag, "OK", src, dest.name, orig, new)
         ui.out(f"{S.GREEN}[OK]{S.RESET}   '{src.name}' -> '{dest.name}'")

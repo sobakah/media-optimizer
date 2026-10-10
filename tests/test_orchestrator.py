@@ -160,11 +160,11 @@ def test_discarding_a_stopped_run(folder, tmp_path, pty_run):
 def test_settings_menu(folder, tmp_path, pty_run):
     d = folder("rm", "photo.jpg", "other.png")
     o = tmp_path / "rm-out"
-    # source, target, "use defaults?" n, then the menu: preflight, delete, deep, avif, workers,
-    # target format webp, quality, effort, png mode, gif method, encoder, threshold, qp, crf,
-    # preset, probe, rescan, discard, salvaged, visual, strict, verify-output; another dir: n
-    answers = [str(d), str(o), "n", "", "", "", "", "2", "webp", "80", "", "", "", "", "", "", "", "",
+    # source, target, "use defaults?" n, then the menu: preflight, delete, deep, clips, workers,
+    # rescan, target format webp, quality, effort, png mode, gif method, encoder, threshold, qp,
+    # crf, preset, probe, discard, salvaged, visual, strict, verify-output; another dir: n
+    answers = [str(d), str(o), "n", "", "", "", "", "2", "", "webp", "80", "", "", "", "", "", "", "",
                "", "", "", "", "", "", "", "n"]
     out = pty_run(answers, env={"MO_MIN_SIZE_MB": "0"})
     assert (o / "photo.webp").exists() and (o / "other.webp").exists(), out
-    assert "Scan all videos again" in out
+    assert "Scan all files again" in out

@@ -95,8 +95,8 @@ def build_parser() -> argparse.ArgumentParser:
     _flag(g, "--no-verify-visual", setting="verify_visual", value=False, help="skip that comparison")
     _flag(g, "--strict-visual", setting="visual_strict", value=True,
           help="discard suspicious video outputs instead of warning")
-    _flag(g, "--no-cache", setting="use_cache", value=False, help="ignore the video cache for this run")
-    _flag(g, "--cache", setting="use_cache", value=True, help="use the video cache (default)")
+    _flag(g, "--no-cache", setting="use_cache", value=False, help="ignore the caches for this run")
+    _flag(g, "--cache", setting="use_cache", value=True, help="use the caches (default)")
     _flag(g, "--verify-output", setting="enable_verify_output", value=True,
           help="re-check the finished target directory afterwards")
     _flag(g, "--no-verify-output", setting="enable_verify_output", value=False, help="skip that check (default)")
@@ -122,6 +122,8 @@ def build_parser() -> argparse.ArgumentParser:
     _value(g, "--png-quality", setting="png_quality", metavar="Q", help="with --png-mode lossy, 1-100")
     _value(g, "--cjxl-threads", setting="cjxl_threads", metavar="N", help="threads per cjxl process (default: 1)")
     _flag(g, "--verify-deep", setting="verify_deep", value=True, help="fully decode the output")
+    _flag(g, "--no-cache", setting="use_cache", value=False, help="ignore the cache for this run")
+    _flag(g, "--cache", setting="use_cache", value=True, help="use the cache (default)")
 
     # --- gifs ---
     p = sub.add_parser("gifs", help="GIF -> animated WebP or AVIF")
@@ -132,6 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
     _value(g, "--avif-crf", setting="gif_avif_crf", metavar="N", help="AV1 quality with --target avif (default: 20)")
     _flag(g, "--keep-larger", setting="discard_if_larger", value=False, help="keep results that are larger")
     _flag(g, "--verify-deep", setting="verify_deep", value=True, help="check the output with webpinfo")
+    _flag(g, "--no-cache", setting="use_cache", value=False, help="ignore the cache for this run")
+    _flag(g, "--cache", setting="use_cache", value=True, help="use the cache (default)")
 
     # --- avif ---
     p = sub.add_parser("clips", help="short, silent videos -> looping animation (AVIF or WebP)")
@@ -150,6 +154,8 @@ def build_parser() -> argparse.ArgumentParser:
           help="also convert videos with audio (the audio is lost)")
     _flag(g, "--keep-larger", setting="discard_if_larger", value=False, help="keep results that are larger")
     _flag(g, "--no-verify", setting="verify_visual", value=False, help="no picture comparison")
+    _flag(g, "--no-cache", setting="use_cache", value=False, help="ignore the cache for this run")
+    _flag(g, "--cache", setting="use_cache", value=True, help="use the cache (default)")
 
     # --- video ---
     p = sub.add_parser("video", help="video -> HEVC on the GPU or CPU")
@@ -279,7 +285,7 @@ def _stage_menu(args, s: Settings, title: str, source: str, output: str) -> tupl
         ui.prompt_setting(s, "gif_method", "Compression level (0-6)")
     elif args.command == "video":
         ui.prompt_setting(s, "encoder_mode", "Encoder (auto/gpu/cpu)")
-        prompt_rescan(s)
+    prompt_rescan(s)
     return source, output
 
 

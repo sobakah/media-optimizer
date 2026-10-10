@@ -226,15 +226,24 @@ chips that downclock for it (Skylake-X, Ice Lake server) and on Zen 4.
   the end.
 * **State files** live hidden in the working directory (the target directory,
   or the source in place): `.img_stats.json`, `.gif_stats.json`,
-  `.clip_stats.json`, `.h265_stats.json` (counters of an interrupted run),
-  `.video_conversion_cache.txt`, `.video_suspect.txt`, `.broken_videos.txt`
-  and the pending lists. The resume state of a full run is in
-  `~/.local/state/media-optimizer/`.
-* **Video cache.** `.video_conversion_cache.txt` remembers finished videos, so
-  a later run does not probe them again; deleting it only costs time. It
-  stores absolute paths. Caches in subfolders from earlier runs on a
-  subfolder are taken over. `--no-cache`, or "Scan all videos again" in the
-  settings menu, checks everything again.
+  `.clip_stats.json`, `.h265_stats.json` (counters of an interrupted run), the
+  caches, `.video_suspect.txt`, `.broken_videos.txt` and the pending lists.
+  The resume state of a full run is in `~/.local/state/media-optimizer/`.
+* **Caches.** Each stage remembers the files that need no work next time:
+  `.img_cache.txt`, `.gif_cache.txt`, `.clip_cache.txt` keep results without
+  an output (discarded as larger, unsupported, clips not selected),
+  `.video_conversion_cache.txt` every handled video. Failures are never
+  cached. An entry only counts while the file's size and modification time
+  are unchanged and the settings it depends on are the same, so a replaced
+  file or a changed quality setting is handled again. Caches in subfolders
+  from earlier runs on a subfolder are taken over. `--no-cache`, or "Scan all
+  files again" in the settings menu, checks everything again; deleting a cache
+  only costs time.
+* **Old video caches** from version 1.x (paths only) are detected at the start
+  and converted to the new format after a question (`.v1.bak` keeps the old
+  file; without a terminal or with `-y` they are converted). Declined, they
+  are used as before and the question comes again next run. The Bash scripts
+  of 1.x cannot read the converted format.
 * **Hidden and system folders are skipped:** trash (`.Trash-*`,
   `$RECYCLE.BIN`, `#recycle`), NAS folders (`@eaDir`, `#snapshot`),
   `lost+found`, AppleDouble files (`._name`), and other hidden entries unless
@@ -339,11 +348,15 @@ B-frames (`gpu_bf 0`), rate control (`gpu_rc_mode VBR`), or another encoder
 * The probe over-predicts savings for sources with long keyframe intervals,
   because the reference slice starts at the previous keyframe.
 * `--verify-deep` fully decodes every image output and costs noticeable time.
+* SVT-AV1 3.1.2 hangs forever on frames narrower than about 31 px. Such GIFs
+  and clips are encoded with libaom-av1 instead (reported as unsupported if
+  that is missing), and every AV1 encode of a GIF or clip is stopped after
+  10 minutes.
 
 ## Tests
 
 ```bash
-python3 -m pytest                 # about 130 tests, 2 minutes
+python3 -m pytest                 # about 150 tests, 2-3 minutes
 python3 -m pytest -m "not slow"   # without the signal tests
 ```
 

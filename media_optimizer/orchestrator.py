@@ -23,7 +23,8 @@ from .config import (RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RC_OK, RC_
                      state_dir)
 from .runlog import log
 from .stages.clips import ClipStage
-from .stages.base import Context, apply_mode_defaults, prompt_delete_original, prompt_rescan
+from .stages.base import (Context, apply_mode_defaults, prompt_delete_original, prompt_rescan,
+                          resolve_legacy_caches)
 from .stages.gifs import GifStage
 from .stages.images import ImageStage
 from .stages.verify import VerifyStage
@@ -88,6 +89,7 @@ def _settings_menu(s: Settings, output: Path | None) -> None:
     if s.clip_stage:
         ui.prompt_setting(s, "clip_format", "Format for them (avif, or webp to animate in GNOME's viewer)")
     ui.prompt_setting(s, "max_workers", "Parallel workers for images/GIFs (empty = all cores)")
+    prompt_rescan(s)
 
     ui.section("IMAGES & GIFS")
     ui.prompt_setting(s, "img_target", "Image target format (jxl or webp)")
@@ -110,7 +112,6 @@ def _settings_menu(s: Settings, output: Path | None) -> None:
         ui.prompt_setting(s, "cpu_preset", "CPU preset (medium or slow)")
     s.enable_probe = ui.prompt_bool("Encode a few short test slices first to predict the saving?",
                                     s.enable_probe)
-    prompt_rescan(s)
     s.discard_if_larger = ui.prompt_bool("Discard a video if the result is larger than the original?",
                                          s.discard_if_larger)
     s.keep_salvaged_corrupt = ui.prompt_bool("Keep videos salvaged from damaged sources even if they grew?",
@@ -277,6 +278,8 @@ def run(req: Request) -> tuple[int, bool]:
             state.done[name] = True
     state.status = "RUNNING"
     state.save(req.dry_run)
+    if count_vid:
+        resolve_legacy_caches(ctx)        # asked now, converted by the video stage
 
     titles = {
         "images": ("Images", f"Starting image conversion ({count_img} files)...", ImageStage),

@@ -23,12 +23,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import files, media, proc, ui
+from .. import cache, files, media, proc, ui
 from ..config import RC_INTERRUPTED, RC_OK
 from ..runlog import log
 from ..ui import StyleUI as S
 from .base import Context
-from .video import BROKEN_LIST, CACHE_NAME, VideoCache, VideoStage, migrate_name
+from .video import BROKEN_LIST, CACHE_NAME, VideoStage, migrate_name
 
 BAD = ("UNREADABLE", "DURATION", "VISUAL")
 
@@ -203,14 +203,8 @@ class VerifyStage:
         caches = [cache_file] if cache_file.is_file() else []
         caches += files.find_state_files(self.output, CACHE_NAME, include_hidden=self.s.include_hidden)
         pruned = 0
-        for cache in caches:
-            lines = list(VideoCache._lines(cache))
-            keep = [line for line in lines if line not in originals]
-            shutil.copy2(cache, cache.with_name(cache.name + ".bak"))
-            tmp = cache.with_name(cache.name + ".tmp")
-            tmp.write_text("".join(f"{line}\n" for line in keep), encoding="utf-8", errors="surrogateescape")
-            tmp.replace(cache)
-            pruned += len(lines) - len(keep)
+        for path in caches:
+            pruned += cache.prune(path, originals)       # either format, keeps a .bak
         if caches:
             ui.out(f"\n  {removed} output(s) deleted, {pruned} cache entry/entries removed.")
             if len(caches) == 1:

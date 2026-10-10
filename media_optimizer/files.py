@@ -163,6 +163,18 @@ def real_type(path: Path) -> str:
     return ""
 
 
+def gif_width(path: Path) -> int | None:
+    """The logical screen width from the GIF header, without decoding."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+    except OSError:
+        return None
+    if head[:6] not in (b"GIF87a", b"GIF89a"):
+        return None
+    return int.from_bytes(head[6:8], "little")
+
+
 def describe(path: Path) -> str:
     """A short description of unknown content for messages."""
     kind = real_type(path)

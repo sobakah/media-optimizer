@@ -42,6 +42,10 @@ class ClipStage(BatchStage):
     pending_name = ".clip_pending_deletes.txt"
     leftovers = ["*.part.*.avif", "*.part.*.webp"]
     dry_noun = "video(s)"
+    cache_name = ".clip_cache.txt"
+    cache_settings = ("clip_format", "clip_max_seconds", "clip_require_silent", "clip_source_codecs",
+                      "clip_webp_quality", "clip_webp_quality_retry", "avif_crf", "avif_crf_retry",
+                      "avif_preset", "avif_pix_fmt", "discard_if_larger")
 
     @property
     def ext(self) -> str:
@@ -72,10 +76,7 @@ class ClipStage(BatchStage):
             if enc is None:
                 ui.say("MISSING", S.RED, "No AV1 encoder (libsvtav1 or libaom-av1) in ffmpeg.", err=True)
                 return 1
-            self.av1, self.av1_speed = enc
-            if self.av1 == "libsvtav1":
-                self.av1_speed = ["-preset", str(s.avif_preset)]
-            ui.say("AVIF", S.CYAN, f"encoder: {self.av1}, CRF {s.avif_crf}, {s.avif_pix_fmt}")
+            ui.say("AVIF", S.CYAN, f"encoder: {enc[0]}, CRF {s.avif_crf}, {s.avif_pix_fmt}")
         if self.ctx.dry_run:
             ui.say("DRY-RUN", S.CYAN, "Nothing will be written or deleted.")
         return None
@@ -91,7 +92,7 @@ class ClipStage(BatchStage):
             rows.insert(3, ("Discarded (larger):", f"{self.counters.discarded} file(s)"))
         return rows
 
-    def _encode(self, src: Path, tmp: Path, level: int) -> bool:
+    def _encode(self, src: Path, tmp: Path, level: int, width: int) -> bool:
         """level: CRF for AVIF, quality for WebP."""
         if self.ext == "webp":
             cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(src), "-c:v", "libwebp_anim",
@@ -100,9 +101,13 @@ class ClipStage(BatchStage):
         else:
             # -map_metadata 0 carries creation_time, title and location over;
             # without it the AVIF would lose every container tag.
-            cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(src), "-c:v", self.av1,
-                   "-crf", str(level), *self.av1_speed, "-pix_fmt", self.s.avif_pix_fmt, "-an",
+            encoder, speed = media.av1_encoder(width)
+            if encoder == "libsvtav1":
+                speed = ["-preset", str(self.s.avif_preset)]
+            cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(src), "-c:v", encoder,
+                   "-crf", str(level), *speed, "-pix_fmt", self.s.avif_pix_fmt, "-an",
                    "-map_metadata", "0", "-f", "avif", "-loop", "0", str(tmp)]
+            return proc.run(cmd, timeout=media.AV1_TIMEOUT).ok and nonempty(tmp)
         return proc.run(cmd).ok and nonempty(tmp)
 
     def _retry_level(self, level: int) -> int:
@@ -112,28 +117,34 @@ class ClipStage(BatchStage):
 
     def handle(self, src: Path) -> FileResult:
         ctx, s = self.ctx, self.s
-        info = media.probe(src)
-        if info.video_codec not in s.clip_source_codecs:
-            return FileResult(Kind.SKIP)
-        if info.duration is None or not info.duration < s.clip_max_seconds:
-            return FileResult(Kind.SKIP)
-        if s.clip_require_silent and info.has_audio:
-            return FileResult(Kind.SKIP)
-
+        # The output check first: it costs a stat, the selection an ffprobe.
         stem = files.stem(src.name)
         folder = ctx.target_folder(src)
         dest = folder / f"{stem}.{self.ext}"
         if nonempty(dest):
             return FileResult(Kind.SKIP)
+
+        # Not selected: remembered, so long videos are not probed on every run.
+        info = media.probe(src)
+        if info.video_codec not in s.clip_source_codecs:
+            return FileResult(Kind.SKIP, cache="not-selected")
+        if info.duration is None or not info.duration < s.clip_max_seconds:
+            return FileResult(Kind.SKIP, cache="not-selected")
+        if s.clip_require_silent and info.has_audio:
+            return FileResult(Kind.SKIP, cache="not-selected")
         if ctx.dry_run:
             ui.say("DRY-RUN", S.CYAN, f"'{src.name}' ({int(info.duration)}s, {info.video_codec}) -> '{dest.name}'")
             return FileResult(Kind.DRY)
 
         orig = src.stat().st_size
+        if self.ext == "avif" and media.av1_encoder(info.width) is None:
+            ui.say("UNSUPPORTED", S.YELLOW, f"'{src.name}': narrower than {media.SVT_MIN_WIDTH} px, which "
+                                            "libsvtav1 cannot encode, and libaom-av1 is missing.", err=True)
+            return FileResult(Kind.SKIP, cache="unsupported")
         with safety.Claim(folder, stem, dest) as claim:
             tmp = claim.temp()
             level = s.clip_webp_quality if self.ext == "webp" else s.avif_crf
-            if not self._encode(src, tmp, level):
+            if not self._encode(src, tmp, level, info.width):
                 raise safety.Failed("conversion failed")
             new = tmp.stat().st_size
             if s.discard_if_larger and new >= orig:
@@ -142,14 +153,14 @@ class ClipStage(BatchStage):
                 what = f"quality {level}" if self.ext == "webp" else f"CRF {level}"
                 ui.say("RETRY", S.YELLOW, f"'{src.name}': {ui.format_bytes(new)} too large, retrying with {what}")
                 tmp.unlink(missing_ok=True)
-                if not self._encode(src, tmp, level):
+                if not self._encode(src, tmp, level, info.width):
                     raise safety.Failed("conversion failed")
                 new = tmp.stat().st_size
             if s.discard_if_larger and new >= orig:
                 log.file(self.tag, "DISCARDED", src, "", orig, new)
                 ui.say("DISCARDED", S.YELLOW, f"'{src.name}': {self.ext.upper()} would be "
                                               f"{ui.format_bytes(new - orig)} larger, original kept.")
-                return FileResult(Kind.DISCARD)
+                return FileResult(Kind.DISCARD, cache="discarded")
 
             note = ""
             suspect = False

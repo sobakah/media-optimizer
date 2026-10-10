@@ -77,10 +77,12 @@ def stop_timeout() -> float:
 
 
 def run(cmd: list[str], *, capture: bool = True, on_line: Callable[[str], None] | None = None,
-        merge_stderr: bool = False) -> Result:
+        merge_stderr: bool = False, timeout: float | None = None) -> Result:
     """Run a tool to completion. stdout/stderr are captured as text unless
     capture is False. With on_line, stdout is streamed line by line (used for
-    ffmpeg's -progress) while stderr is still collected."""
+    ffmpeg's -progress) while stderr is still collected. After ``timeout``
+    seconds the tool is stopped like on Ctrl+C (SIGINT, then SIGKILL) and the
+    result is a failure with returncode 124."""
     if stopping.is_set():
         raise Stopped()
     pipe = subprocess.PIPE if capture or on_line else subprocess.DEVNULL
@@ -110,7 +112,12 @@ def run(cmd: list[str], *, capture: bool = True, on_line: Callable[[str], None] 
                 reader.join()
             stdout, stderr = "", "".join(stderr_chunks)
         else:
-            stdout, stderr = proc.communicate()
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _terminate([proc])
+                stdout, stderr = proc.communicate()
+                return Result(124, stdout or "", (stderr or "") + f"\n{cmd[0]}: timed out after {timeout:g}s")
     except BaseException:
         # KeyboardInterrupt (Ctrl+C, SIGTERM) while the main thread waited.
         _terminate([proc])

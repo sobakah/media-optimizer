@@ -15,6 +15,13 @@ from media_optimizer.config import Settings
 FAST = ["--encoder", "cpu", "--min-size", "0", "--no-probe", "--preset", "ultrafast"]
 
 
+def _cached_paths(cache_file) -> set[str]:
+    """Paths in a v2 cache file (size, mtime, fingerprint, outcome, path)."""
+    lines = cache_file.read_text().splitlines()
+    assert lines[0] == "# media-optimizer cache v2"
+    return {line.split("\t", 4)[4] for line in lines[1:] if line}
+
+
 def _probe_json(path) -> dict:
     out = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", str(path)],
                          stdout=subprocess.PIPE, text=True).stdout
@@ -160,8 +167,8 @@ def test_cache_subfolders_in_place(folder, run_cli):
     run_cli("video", d / "sub", *FAST, "--no-delete")
     sub_before = (d / "sub" / ".video_conversion_cache.txt").read_text()
     out = run_cli("video", d, *FAST, "--no-delete")
-    assert "entries taken over from 1 cache file" in out, out
-    assert f"{d}/sub/l.mp4" in (d / ".video_conversion_cache.txt").read_text().splitlines()
+    assert "entries taken over from 1 .video_conversion_cache.txt file" in out, out
+    assert _cached_paths(d / ".video_conversion_cache.txt") >= {f"{d}/sub/l.mp4"}
     assert "Cache (this scan):    2 file(s)" in out and "Re-encoded:           0 file(s)" in out
     assert (d / "sub" / ".video_conversion_cache.txt").read_text() == sub_before
     out = run_cli("video", d, *FAST, "--no-delete")
@@ -182,7 +189,7 @@ def test_cache_target_mode(folder, tmp_path, run_cli):
     o = tmp_path / "hc3out"
     run_cli("video", d / "sub", o / "sub", *FAST)
     out = run_cli("video", d, o, *FAST)
-    assert "entries taken over from 1 cache file" in out, out
+    assert "entries taken over from 1 .video_conversion_cache.txt file" in out, out
     assert not (d / ".video_conversion_cache.txt").exists()
 
 
@@ -256,8 +263,9 @@ def test_interactive_rescan(folder, tmp_path, pty_run, run_cli):
     o = tmp_path / "hiout"
     run_cli("video", d, o, *FAST)
     env = {"MO_MIN_SIZE_MB": "0", "MO_ENABLE_PROBE": "false", "MO_CPU_PRESET": "ultrafast"}
-    out = pty_run(["n", str(d), str(o), "cpu", "", "y"], "video", env=env)
-    assert "Scan all videos again" in out and "Ignored for this run" in out, out
+    # default settings? n, source, target, delete originals, encoder, rescan
+    out = pty_run(["n", str(d), str(o), "", "cpu", "y"], "video", env=env)
+    assert "Scan all files again" in out and "Ignored for this run" in out, out
     assert "Cache (this scan):    0 file(s)" in out
-    out = pty_run(["n", str(d), str(o), "cpu", "", ""], "video", env=env)
+    out = pty_run(["n", str(d), str(o), "", "cpu", ""], "video", env=env)
     assert "Cache (this scan):    1 file(s)" in out, out

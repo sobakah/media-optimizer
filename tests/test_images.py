@@ -355,7 +355,7 @@ def test_explicit_no_delete_is_not_asked_again(folder, pty_run):
 
 def test_interactive_no_to_delete_is_honoured(folder, pty_run):
     d = folder("r12c", "photo.jpg")
-    out = pty_run(["n", str(d), "", "n", "", ""], "images")
+    out = pty_run(["n", str(d), "", "n", "", "", ""], "images")
     assert (d / "photo.jpg").exists() and (d / "photo.jxl").exists(), out
 
 
@@ -368,7 +368,7 @@ def test_in_place_notice_offers_change(folder, pty_run):
 
 def test_invalid_answer_is_asked_again(folder, pty_run):
     d = folder("r12e", "photo.jpg")
-    out = pty_run(["n", str(d), "", "n", "11", "9", ""], "images")
+    out = pty_run(["n", str(d), "", "n", "11", "9", "", ""], "images")
     assert "'11' is not valid here" in out, out
     assert (d / "photo.jxl").exists()
 

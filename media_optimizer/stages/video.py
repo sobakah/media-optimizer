@@ -42,15 +42,21 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterator
 
-from .. import files, gpu, media, proc, safety, ui
+from .. import cache, files, gpu, media, proc, safety, ui
 from ..config import RC_FATAL, RC_INTERRUPTED, RC_OK, RC_PARTIAL
 from ..runlog import log
 from ..ui import StyleUI as S
-from .base import Context
+from .base import Context, convert_legacy_caches
 from .images import nonempty
 
 PROBE_MIN_DURATION = 60
-CACHE_NAME = ".video_conversion_cache.txt"
+CACHE_NAME = cache.VIDEO_CACHE
+# The settings a cached result depends on; changing one makes the files
+# count as new again.
+CACHE_SETTINGS = ("source_codecs", "min_size_mb", "encoder_mode", "bitrate_threshold_kbps", "gpu_min_pixels",
+                  "gpu_qp", "cpu_crf", "cpu_preset", "cpu_x265_params", "gpu_codec", "gpu_rc_mode",
+                  "enable_probe", "probe_margin_pct", "probe_duration", "probe_slices", "discard_if_larger",
+                  "keep_salvaged_corrupt", "video_container")
 BROKEN_LIST = ".broken_videos.txt"
 
 _CONTAINER_ERRORS = re.compile(r"not currently supported in container|could not write header|"
@@ -69,94 +75,13 @@ def migrate_name(old: Path, new: Path, dry_run: bool) -> None:
             pass
 
 
-# --- cache ------------------------------------------------------------------------
-class VideoCache:
-    """Finished (or deliberately skipped) source files, one path per line.
-
-    The only resume source of the video stage: a file is added once it has
-    been handled completely. Purely a speed-up; deleting it only costs one
-    ffprobe per file.
-    """
-
-    def __init__(self, path: Path, *, enabled: bool, dry_run: bool):
-        self.path = path
-        self.enabled = enabled
-        self.dry_run = dry_run
-        self.entries: set[str] = set()
-        self._lock = threading.Lock()
-
-    @staticmethod
-    def _lines(path: Path) -> Iterator[str]:
-        try:
-            text = path.read_text(encoding="utf-8", errors="surrogateescape")
-        except OSError:
-            return iter(())
-        return (line for line in text.splitlines() if line and not line.startswith("#"))
-
-    def load(self) -> None:
-        if not self.enabled or not self.path.is_file():
-            return
-        pruned = 0
-        for line in self._lines(self.path):
-            # Entries without a file are dead: the scan can never return them.
-            if os.path.exists(line):
-                self.entries.add(line)
-            else:
-                pruned += 1
-        if pruned and not self.dry_run:
-            self._rewrite()
-            ui.say("CACHE", S.CYAN, f"{pruned} stale entries removed.")
-
-    def _rewrite(self) -> None:
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        try:
-            tmp.write_text("".join(f"{e}\n" for e in sorted(self.entries)),
-                           encoding="utf-8", errors="surrogateescape")
-            os.replace(tmp, self.path)
-        except OSError:
-            pass
-
-    def merge_subfolders(self, work_dir: Path, source: Path, include_hidden: bool) -> None:
-        """Caches left in subfolders by earlier runs on a subfolder of this
-        tree are taken over, so those videos are not probed again. A cache in
-        <work>/<sub> describes sources in <source>/<sub>; anything else came
-        from a run with a different source or target and is left out,
-        otherwise a video whose output went elsewhere would be skipped here.
-        The subfolder caches are only read, on every run; verify --fix prunes
-        broken entries from all of them, so none of those come back."""
-        if not self.enabled:
-            return
-        taken = caches = 0
-        for sub_cache in files.find_state_files(work_dir, CACHE_NAME, include_hidden=include_hidden):
-            prefix = str(source / sub_cache.parent.relative_to(work_dir)) + os.sep
-            n = 0
-            for line in self._lines(sub_cache):
-                if not line.startswith(prefix) or line in self.entries or not os.path.exists(line):
-                    continue
-                self.add(line)
-                n += 1
-            if n:
-                taken += n
-                caches += 1
-        if taken:
-            ui.say("CACHE", S.CYAN, f"{taken} entries taken over from {caches} cache file(s) in subfolders.")
-
-    def __contains__(self, path: Path) -> bool:
-        return self.enabled and str(path) in self.entries
-
-    def add(self, path: Path | str) -> None:
-        if self.dry_run or not self.enabled:
-            return
-        key = str(path)
-        with self._lock:
-            if key in self.entries:
-                return
-            self.entries.add(key)
-            try:
-                with open(self.path, "a", encoding="utf-8", errors="surrogateescape") as fh:
-                    fh.write(key + "\n")
-            except OSError:
-                pass
+def read_list(path: Path) -> Iterator[str]:
+    """The lines of a list file (one path per line, # comments)."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="surrogateescape")
+    except OSError:
+        return iter(())
+    return (line for line in text.splitlines() if line and not line.startswith("#"))
 
 
 @dataclass
@@ -231,7 +156,7 @@ class VideoStage:
         # A list exists but was not requested: only point it out. Silently
         # switching to a subset would hide the rest of the collection.
         if not from_list and default_list is not None and nonempty(default_list):
-            n = sum(1 for _ in VideoCache._lines(default_list))
+            n = sum(1 for _ in read_list(default_list))
             ui.say("NOTE", S.YELLOW, f"A defect list with {n} entry/entries exists:")
             ui.out(f"          {default_list}\n          Process only those: --from-list auto\n")
         self.from_list = Path(from_list) if from_list else None
@@ -272,10 +197,12 @@ class VideoStage:
                 return 1
             safety.cleanup_leftovers(work, ["*.part.*"])
         try:
+            convert_legacy_caches(ctx)
             rc = self._setup_encoder()
             if rc is not None:
                 return rc
-            self.cache = VideoCache(cache_file, enabled=s.use_cache, dry_run=ctx.dry_run)
+            self.cache = cache.StageCache(cache_file, enabled=s.use_cache, dry_run=ctx.dry_run,
+                                          fingerprint=cache.fingerprint(s, CACHE_SETTINGS))
             return self._run_locked()
         finally:
             lock.release()
@@ -311,7 +238,7 @@ class VideoStage:
                                         files.extension_matcher(self.s.video_extensions, exclude_parts=True),
                                         include_hidden=self.s.include_hidden)
             return
-        for line in VideoCache._lines(self.from_list):
+        for line in read_list(self.from_list):
             path = Path(line)
             if path.is_file():
                 yield path
@@ -320,7 +247,7 @@ class VideoStage:
 
     def _count_targets(self) -> int:
         if self.from_list is not None:
-            return sum(1 for line in VideoCache._lines(self.from_list) if line.strip())
+            return sum(1 for line in read_list(self.from_list) if line.strip())
         return files.count(self.ctx.source, files.extension_matcher(self.s.video_extensions, exclude_parts=True),
                            self.s.include_hidden)
 
@@ -453,7 +380,7 @@ class VideoStage:
         'name_h265.mp4' again and saves an ffprobe; a separate target folder
         is never scanned."""
         if self.ctx.output is None:
-            self.cache.add(dest)
+            self.cache.add(dest, "output")
 
     def _decide_guarded(self, src: Path) -> Job | None:
         try:
@@ -483,7 +410,7 @@ class VideoStage:
     def _decide(self, src: Path) -> Job | None:
         """The cheap checks, in the main thread. None = nothing to encode."""
         ctx, s = self.ctx, self.s
-        if src in self.cache:
+        if self.cache.lookup(src) is not None:
             with self.lock:
                 self.cache_skipped += 1
             self._tick()
@@ -494,13 +421,13 @@ class VideoStage:
             size = 0
         if size < s.min_size_mb * 1024 * 1024:
             self._count(skipped=1)
-            self.cache.add(src)
+            self.cache.add(src, "small")
             self._tick()
             return None
         info = media.probe(src)
         if info.video_codec not in s.source_codecs:
             self._count(skipped=1)
-            self.cache.add(src)
+            self.cache.add(src, "codec")
             self._tick()
             return None
 
@@ -515,7 +442,7 @@ class VideoStage:
         dest_anim = dest.parent / f"{stem}.{s.clip_format}"
         if self.skip_existing and (nonempty(dest) or nonempty(dest_anim)):
             self._count(skipped=1)
-            self.cache.add(src)
+            self.cache.add(src, "existing")
             self._add_dest_to_cache(dest)
             self._tick()
             return None
@@ -615,7 +542,7 @@ class VideoStage:
                                     f"{s.probe_slices} slices at {', '.join(points)}: {verdict})")
         log.line(self.tag, f"PROBE     {src} ({verdict})")
         self._count(probe_skipped=1)
-        self.cache.add(src)
+        self.cache.add(src, "probe")
         return True
 
     # --- encode ----------------------------------------------------------------------
@@ -771,7 +698,7 @@ class VideoStage:
             inc_h = ui.format_bytes(new - size)
             if salvaged and s.keep_salvaged_corrupt:
                 safety.commit(src, tmp, dest)
-                self.cache.add(src)
+                self.cache.add(src, "salvaged")
                 self._add_dest_to_cache(dest)
                 ui.card(S.MAGENTA, [f"{S.BOLD}FILE SALVAGED / REPAIRED:{S.RESET} {src.name}",
                                     f"Original: {src_h} (was damaged)",
@@ -782,7 +709,7 @@ class VideoStage:
                 self._save_stats()
                 return
             if s.discard_if_larger:
-                self.cache.add(src)
+                self.cache.add(src, "discarded")
                 ui.card(S.YELLOW, [f"{S.BOLD}FILE DISCARDED:{S.RESET} {src.name}",
                                    f"Original: {src_h} -> new: {new_h}",
                                    f"Status:   Discarded, larger by (+{inc_pct}%, +{inc_h})."])
@@ -812,7 +739,7 @@ class VideoStage:
         if self.ctx.delete and not suspect and not salvaged:
             self.trash.remove(src)
         dest = self._rename_inplace(src, dest)
-        self.cache.add(src)
+        self.cache.add(src, "done")
         self._add_dest_to_cache(dest)
         self._save_stats()
 
