@@ -1,0 +1,102 @@
+"""GIF -> animated WebP, or AVIF with gif_target avif.
+
+INVARIANTS
+  - gif2webp encodes losslessly by default. A "-lossless" flag does NOT
+    exist; passing it made every call fail for months.
+  - With gif_target avif ffmpeg encodes with an AV1 encoder; that path is
+    lossy, unlike the WebP one.
+  - Results larger than the original are discarded (discard_if_larger).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Iterator
+
+from .. import files, media, proc, safety, ui
+from ..runlog import log
+from ..ui import StyleUI as S
+from .base import BatchStage, FileResult, Kind, verify_image
+from .images import nonempty
+
+
+class GifStage(BatchStage):
+    tag = "gif"
+    label = "GIF"
+    title = "GIF SUMMARY"
+    stats_name = ".gif_stats.json"
+    pending_name = ".gif_pending_deletes.txt"
+    leftovers = ["*.part.*.webp", "*.part.*.avif"]
+    dry_noun = "GIF(s)"
+
+    def prepare(self) -> int | None:
+        s = self.s
+        if s.gif_target == "avif":
+            if proc.missing("ffmpeg"):
+                ui.say("MISSING", S.RED, "Required programs not found: ffmpeg", err=True)
+                return 1
+            enc = media.av1_encoder()
+            if enc is None:
+                ui.say("MISSING", S.RED, "No AV1 encoder for gif_target avif.", err=True)
+                return 1
+            self.av1, self.av1_speed = enc
+            ui.say("GIF", S.CYAN, f"target: AVIF ({self.av1}, CRF {s.gif_avif_crf}) - lossy!")
+        elif proc.missing("gif2webp"):
+            ui.say("MISSING", S.RED, "Required programs not found: gif2webp", err=True)
+            return 1
+        if self.ctx.dry_run:
+            ui.say("DRY-RUN", S.CYAN, "Nothing will be written or deleted.")
+        return None
+
+    def files(self) -> Iterator[Path]:
+        return files.find_files(self.ctx.source, files.extension_matcher(["gif"]),
+                                include_hidden=self.s.include_hidden)
+
+    def summary_rows(self) -> list:
+        rows = super().summary_rows()
+        if not any(r[0].startswith("Discarded") for r in rows):     # always shown for GIFs
+            rows.insert(3, ("Discarded (larger):", f"{self.counters.discarded} file(s)"))
+        return rows
+
+    def _encode(self, src: Path, tmp: Path) -> bool:
+        s = self.s
+        if s.gif_target == "avif":
+            cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(src), "-c:v", self.av1,
+                   "-crf", str(s.gif_avif_crf), *self.av1_speed, "-pix_fmt", "yuv420p",
+                   "-an", "-f", "avif", "-loop", "0", str(tmp)]
+        else:
+            cmd = ["gif2webp", "-m", str(s.gif_method), "-kmin", str(s.gif_kmin), "-metadata", "all",
+                   "-quiet", str(src), "-o", str(tmp)]
+        return proc.run(cmd).ok
+
+    def handle(self, src: Path) -> FileResult:
+        ctx, s = self.ctx, self.s
+        stem = files.stem(src.name)
+        ext = "avif" if s.gif_target == "avif" else "webp"
+        folder = ctx.target_folder(src)
+        dest = folder / f"{stem}.{ext}"
+
+        if nonempty(dest):
+            return FileResult(Kind.SKIP)
+        if ctx.dry_run:
+            ui.say("DRY-RUN", S.CYAN, f"'{src.name}' -> '{dest.name}'")
+            return FileResult(Kind.DRY)
+
+        orig = src.stat().st_size
+        with safety.Claim(folder, stem, dest) as claim:
+            tmp = claim.temp()
+            # verify_image checks WebP; for AVIF only the size.
+            if not (self._encode(src, tmp) and nonempty(tmp) and verify_image(tmp, s.verify_deep)):
+                raise safety.Failed("conversion failed")
+            new = tmp.stat().st_size
+            if s.discard_if_larger and new >= orig:
+                log.file(self.tag, "DISCARDED", src, "", orig, new)
+                ui.say("DISCARDED", S.YELLOW,
+                       f"'{src.name}': {ext.upper()} would be {ui.format_bytes(new - orig)} larger, "
+                       "original kept.")
+                return FileResult(Kind.DISCARD)
+            safety.commit(src, tmp, dest)
+        log.file(self.tag, "OK", src, dest.name, orig, new)
+        ui.out(f"{S.GREEN}[OK]{S.RESET}   '{src.name}' -> '{dest.name}'")
+        self.remove_original(src)
+        return FileResult(Kind.SUCCESS, orig, new)

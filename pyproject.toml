@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "media-optimizer"
+dynamic = ["version"]
+description = "Batch-convert images, GIFs and videos to more efficient formats (JPEG XL, WebP, AVIF, HEVC), verifying every result before an original is touched."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "send2trash>=1.8",
+    "Pillow>=10",        # decodes animated WebP for the picture check; ffmpeg 8.1 cannot
+]
+keywords = ["jpeg-xl", "webp", "avif", "hevc", "ffmpeg", "batch", "media", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+    "Topic :: Multimedia :: Video :: Conversion",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pyflakes>=3"]
+
+[project.scripts]
+media-optimizer = "media_optimizer.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/sobakah/media-optimizer"
+
+[tool.setuptools]
+packages = ["media_optimizer", "media_optimizer.stages"]
+
+[tool.setuptools.dynamic]
+# Single source of truth; read statically, the package is not imported.
+version = { attr = "media_optimizer.config.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "slow: encodes real video, takes several seconds",
+]

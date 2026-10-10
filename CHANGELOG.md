@@ -236,7 +236,30 @@ and covers both restart paths; all four tests fail against 1.2.
 
 ---
 
-## Unreleased – Video cache from subfolders
+## 2.0 – Python version
+
+The suite is now a Python program, `media-optimizer`, with a subcommand per
+stage (`run`, `images`, `gifs`, `clips`, `video`, `verify`, `gpu-selftest`).
+The Bash scripts are gone; the last commit with them is `4d3a676`.
+
+### Upgrading from 1.2.x
+
+- Install with `pipx install git+https://github.com/sobakah/media-optimizer`
+  (Python 3.10+). The external tools are the same; `file`, `gio` and
+  `trash-cli` are no longer needed.
+- `media-optimizer.sh SRC DST` becomes `media-optimizer SRC DST`;
+  `scripts/img-to-jxl.sh` becomes `media-optimizer images`, and so on. The
+  options are the same, except `video-to-avif.sh` → `clips` and `--avif` →
+  `--clips`.
+- `media-optimizer.conf` is not read any more. Settings go into
+  `~/.config/media-optimizer/config.json` with lower-case names
+  (`CPU_CRF` → `cpu_crf`); `config.example.json` lists all of them, the README
+  the few that were renamed. Environment variables are `MO_<NAME>`.
+- An interrupted 1.2 run cannot be resumed by 2.0. Folders processed by 1.2
+  continue seamlessly: the video cache, the lists and the run lock are the
+  same.
+
+### Last Bash change: video cache from subfolders
 
 | Change | Effect |
 |---|---|
@@ -246,3 +269,47 @@ and covers both restart paths; all four tests fail against 1.2.
 
 Test group `h264-cache` (15 tests); 7 fail against 1.2.1, the two
 `verify --fix` checks fail when only the merge is in place.
+
+### Port to Python
+
+One program instead of six scripts; the shell glue is replaced by Python
+(thread pool instead of xargs, process groups instead of walking the process
+tree, a hard link instead of `mv -n`, magic bytes and the JPEG header instead
+of `file`, one `ffprobe -of json` call instead of five, send2trash), the
+safety rules and exit codes are the same. Writing it against real files found
+problems that the Bash version had:
+
+| Finding | Effect |
+|---|---|
+| AVIF picture check measured nothing | An animated AVIF has two video streams, a still first and the animation second. `verify_visual` compared `[0:v]`, the still, which has no frame at any sample time after 0 s; no PSNR value came back and "not measurable" counts as passed. Every AVIF original was deleted without a picture check. Comparing the animation stream: a correct AVIF scores 42–45 dB, a wrong one 7 dB. |
+| Suspicious video deleted | With `--delete`, the video stage moved the original to the trash after a suspicious picture comparison ("File is kept" referred to the output only). |
+| Salvaged video deleted | The README promised the original is always kept for files salvaged from a damaged source; the code only kept it when the output had grown. |
+| Arithmetic-coded JPEG | cjxl cannot read them (measured; cwebp can). `file` does not print a component count for them, so they failed as "damaged" on every run. |
+| Probe over-predicts with long keyframe intervals | Not fixed. The reference slice is cut with `-c copy` and starts at the previous keyframe; on a synthetic clip with x264's default GOP the probe said "71 % smaller" for a file that shrank 2.6 %. Needs real footage before the method changes. |
+
+Also changed on purpose: the resume state stores every setting; the video
+stage moves its output without overwriting; `--force-delete` deletes at once
+when the trash fails; an invalid answer in a menu is asked again; a renamed
+misnamed source cannot be counted twice; there are no "Terminated" lines.
+
+### WebP for short clips, parallel video encoding
+
+| Change | Why |
+|---|---|
+| `clip_format webp` for the short-clip stage | Measured with glycin 2.1.5 on Fedora 44 (GNOME's image viewer and thumbnails): animated WebP, GIF and APNG play; animated AVIF and animated JPEG XL show their first frame only. WebP is 32–144 % of an H.264 source against 12–106 % for AVIF, so it is retried at a lower quality and otherwise discarded unless `--keep-larger`. ffmpeg 8.1 cannot decode animated WebP; the picture check decodes it with Pillow and compares in YCbCr: correct 23.7–44 dB, different content 10–11 dB. |
+| Parallel video encoding | `gpu_workers` GPU encodes (default 2) plus one CPU encode at the same time. Six 1080p clips on an RX 9070 XT including the picture check: 17.6 s sequential, 12.2 s with two, 10.9 s with three. A GPU failure moves the file and every queued one to the CPU. |
+| The short-clip stage is called `clips` | It was `avif` although it can write WebP. Command `clips`, full-run flag `--clips`, settings `clip_stage`, `clip_format`, `clip_max_seconds`, `clip_require_silent`, `clip_source_codecs`, `clip_webp_quality`; the AVIF-only ones keep `avif_`. Old names in a config file or environment stop with "renamed to …"; a saved resume state with old names still loads. State files: `.clip_stats.json`, `.clip_pending_deletes.txt`. |
+| A picture check without a single sample fails | Before, "no sample could be compared" counted as passed, which is how the AVIF check passed every file unmeasured. |
+
+### Bash scripts removed
+
+The Python project moved from `python/` to the root; `media-optimizer.sh`,
+`scripts/`, `tests/run-tests.sh` and `media-optimizer.conf` are removed. A
+backup of the last Bash state is kept outside the repository. README.md and
+CLAUDE.md describe the Python version; the measured tool behaviour from the
+Bash notes is kept in CLAUDE.md.
+
+Tests: `tests/`, pytest, 133 tests including signals, prompts on a
+pseudo-terminal, forced failures, parallel lanes, real GPU encodes where a
+VAAPI encoder is available, and folders left by the Bash version
+(`tests/test_compat.py`).
