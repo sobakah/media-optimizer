@@ -26,7 +26,7 @@ class GifStage(BatchStage):
     title = "GIF SUMMARY"
     stats_name = ".gif_stats.json"
     pending_name = ".gif_pending_deletes.txt"
-    leftovers = ["*.part.*.webp", "*.part.*.avif"]
+    leftovers = ["webp", "avif"]
     dry_noun = "GIF(s)"
     cache_name = ".gif_cache.txt"
     cache_settings = ("gif_target", "gif_method", "gif_kmin", "gif_avif_crf", "discard_if_larger")
@@ -83,6 +83,14 @@ class GifStage(BatchStage):
             ui.say("DRY-RUN", S.CYAN, f"'{src.name}' -> '{dest.name}'")
             return FileResult(Kind.DRY)
 
+        # A photo named .gif: ffmpeg would make a lossy one-frame AVIF of it
+        # and the original would go. preflight is off by default.
+        real = files.real_type(src)
+        if real and real != "gif":
+            log.file(self.tag, "UNSUPPORTED", src)
+            ui.say("UNSUPPORTED", S.YELLOW, f"'{src.name}' is not a GIF but {real.upper()}, original kept "
+                                            "(--preflight corrects the name).", err=True)
+            return FileResult(Kind.SKIP, cache="not-a-gif")
         orig = src.stat().st_size
         if s.gif_target == "avif" and media.av1_encoder(files.gif_width(src)) is None:
             ui.say("UNSUPPORTED", S.YELLOW, f"'{src.name}': narrower than {media.SVT_MIN_WIDTH} px, which "

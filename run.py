@@ -21,9 +21,9 @@ except ModuleNotFoundError as exc:
         "\nExpected this layout:\n\n"
         "    run.py\n"
         "    media_optimizer/\n"
-        "        __init__.py  __main__.py  cli.py  config.py  files.py  gpu.py  media.py\n"
-        "        orchestrator.py  proc.py  runlog.py  safety.py  ui.py\n"
-        "        stages/  __init__.py  base.py  images.py  gifs.py  avif.py  video.py  verify.py\n",
+        "        __init__.py  __main__.py  cache.py  cli.py  config.py  files.py  folders.py\n"
+        "        gpu.py  media.py  orchestrator.py  proc.py  runlog.py  safety.py  ui.py\n"
+        "        stages/  __init__.py  base.py  images.py  gifs.py  clips.py  video.py  verify.py\n",
         file=sys.stderr,
     )
     sys.exit(2)

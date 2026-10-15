@@ -65,9 +65,15 @@ def canonical(path: Path | str) -> str:
     return os.path.join(real, name)
 
 
-def fingerprint(settings, names: tuple[str, ...]) -> str:
-    """Short hash of the settings a stage's results depend on."""
-    data = json.dumps({n: getattr(settings, n) for n in names}, sort_keys=True)
+def fingerprint(settings, names: tuple[str, ...], optional: tuple[str, ...] = ()) -> str:
+    """Short hash of the settings a stage's results depend on. ``optional``
+    names count only when they differ from their default: settings added to
+    a stage's list later, so that the caches of everyone who never changed
+    them stay valid."""
+    values = {n: getattr(settings, n) for n in names}
+    defaults = type(settings)()
+    values.update({n: getattr(settings, n) for n in optional if getattr(settings, n) != getattr(defaults, n)})
+    data = json.dumps(values, sort_keys=True)
     return hashlib.sha1(data.encode()).hexdigest()[:10]
 
 
@@ -303,7 +309,8 @@ class StageCache:
             self.hits += 1
         return entry.outcome
 
-    def add(self, path: Path | str, outcome: str) -> None:
+    def add(self, path: Path | str, outcome: str, *, any_settings: bool = False) -> None:
+        """any_settings: the outcome holds whatever the settings are."""
         if not self.enabled or self.dry_run:
             return
         key = canonical(path)
@@ -317,7 +324,7 @@ class StageCache:
         st = _stat(key)
         if st is None:
             return
-        self._store(key, Entry(st[0], st[1], self.fp, outcome))
+        self._store(key, Entry(st[0], st[1], ANY if any_settings else self.fp, outcome))
 
     def _store(self, key: str, entry: Entry) -> None:
         with self._lock:

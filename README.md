@@ -133,7 +133,8 @@ the result gets the correct name there.
 ### GIFs
 
 Lossless animated WebP by default; `--target avif` is about half the size but
-lossy. Results larger than the original are discarded.
+lossy. Results larger than the original are discarded. A photo named `.gif`
+is skipped as `[UNSUPPORTED]` and kept (`--preflight` corrects the name).
 
 ### Short clips: AVIF or WebP
 
@@ -187,7 +188,8 @@ time, 12.2 s with two, 10.9 s with three.
 `verify SOURCE TARGET` checks every video output: `[UNREADABLE]`,
 `[DURATION]` (runtime off), `[PICTURE?]` (below `visual_psnr_min`, default
 18 dB). A low PSNR is a suspicion, not proof; without `--fix` nothing is
-changed. `--keep-samples DIR` stores the compared stills, `--fix` deletes the
+changed. `--keep-samples DIR` stores the compared stills (in the folder
+structure of the target), `--fix` deletes the
 broken outputs and removes their originals from every video cache, `--run`
 regenerates them right away.
 
@@ -230,7 +232,10 @@ chips that downclock for it (Skylake-X, Ice Lake server) and on Zen 4.
   or the source in place): `.img_stats.json`, `.gif_stats.json`,
   `.clip_stats.json`, `.h265_stats.json` (counters of an interrupted run), the
   caches, `.video_suspect.txt`, `.broken_videos.txt` and the pending lists.
-  The resume state of a full run is in `~/.local/state/media-optimizer/`.
+  The resume state of a full run is in `~/.local/state/media-optimizer/`, one
+  file per source folder: a run on another folder neither resumes nor
+  overwrites it. Without a source on the command line the most recent one is
+  offered; a dry run never removes it.
 * **Caches.** Each stage remembers the files that need no work next time:
   `.img_cache.txt`, `.gif_cache.txt`, `.clip_cache.txt` keep results without
   an output (discarded as larger, unsupported, clips not selected),
@@ -372,7 +377,7 @@ B-frames (`gpu_bf 0`), rate control (`gpu_rc_mode VBR`), or another encoder
 ## Tests
 
 ```bash
-python3 -m pytest                 # about 150 tests, 2-3 minutes
+python3 -m pytest                 # about 200 tests, 3 minutes
 python3 -m pytest -m "not slow"   # without the signal tests
 ```
 

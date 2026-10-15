@@ -242,12 +242,18 @@ def install_signal_handlers() -> None:
         signal.signal(signal.SIGHUP, interrupt)
 
 
-def _settings(args) -> Settings:
-    settings, source, warnings = load_settings(args.config)
+# The folder choice belongs to the directory it was made for (keepbest passes
+# its own in the environment); "process another directory" starts without it.
+FOLDER_CHOICE = ("subfolders", "exclude_folders")
+
+
+def _settings(args, *, folder_choice: bool = True) -> Settings:
+    ignore = () if folder_choice else FOLDER_CHOICE
+    settings, source, warnings = load_settings(args.config, ignore_env=ignore)
     for message in warnings:
         ui.say("WARNING", S.YELLOW, message, err=True)
     for key, value in vars(args).items():
-        if key.startswith(_SET):
+        if key.startswith(_SET) and key[len(_SET):] not in ignore:
             setattr(settings, key[len(_SET):], value)
     return settings
 
@@ -370,7 +376,7 @@ def _run_full(args) -> int:
     source, output = _dirs(args)
     first = True
     while True:
-        s = _settings(args)
+        s = _settings(args, folder_choice=first)
         s.validate()
         req = orchestrator.Request(settings=s, source=source if first else None,
                                    output=output if first else None,
@@ -385,6 +391,22 @@ def _run_full(args) -> int:
         ui.out(f"\n{S.CYAN}─── New run ───{S.RESET}\n")
 
 
+# The options of _common that take a value, to find a command after them.
+_VALUE_OPTIONS = {"-i", "--input", "-o", "--output", "-j", "--workers", "--subfolders", "--exclude-folder",
+                  "-c", "--config", "--log"}
+
+
+def _command_first(argv: list[str]) -> list[str]:
+    """Options before the command belong to it: '-c cfg images DIR' was a full
+    run of a source folder called "images". Without a command: run."""
+    i = 0
+    while i < len(argv) and argv[i].startswith("-") and argv[i] != "--":
+        i += 2 if argv[i] in _VALUE_OPTIONS else 1
+    if i < len(argv) and argv[i] in COMMANDS:
+        return [argv[i], *argv[:i], *argv[i + 1:]]
+    return ["run", *argv]
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "avif" and not Path("avif").is_dir():
@@ -392,7 +414,7 @@ def main(argv: list[str] | None = None) -> int:
                "media-optimizer clips --help", err=True)
         return RC_BAD_SETTING
     if not argv or (argv[0] not in COMMANDS and argv[0] not in ("-h", "--help", "--version")):
-        argv.insert(0, "run")
+        argv = _command_first(argv)
     parser = build_parser()
     args = parser.parse_args(argv)
     install_signal_handlers()

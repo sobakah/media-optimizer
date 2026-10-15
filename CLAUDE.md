@@ -91,7 +91,14 @@ Breaking any of these has caused real data loss or silent corruption before.
   catch broadly inside a worker before the commit.
 - **Video jobs run in parallel.** Anything a job changes that others see
   (counters, cache, lists, encoder_mode, the progress board) goes through
-  `self.lock` / `self._count`. Decisions stay in the main thread.
+  `self.lock` / `self._count`. Decisions stay in the main thread. A job the
+  GPU failed on is handed back (`self.requeue`) and queued on the CPU lane;
+  a worker never starts a CPU encode itself (that made three x265 at once).
+- **Leftovers are recognised only by `files.is_temp_name`** (target name,
+  `.part.<pid>.<random>.`, the same extension again). A glob like
+  `*.part.*` deleted user files such as `Movie.part.1.mp4`.
+- **The resume state is per source folder** (`orchestrator.state_file`). A
+  source given on the command line only ever resumes its own state.
 - **New settings**: a field in `Settings` with rule and doc, then regenerate
   `config.example.json` (command in `tests/test_units.py`); the test fails
   until it is in sync. CLI flags set settings through `_value`/`_flag` in
@@ -122,7 +129,7 @@ Breaking any of these has caused real data loss or silent corruption before.
 ## Tests
 
 ```bash
-python3 -m pytest                  # all, about 150 tests, 2-3 minutes
+python3 -m pytest                  # all, about 200 tests, 3 minutes
 python3 -m pytest -m "not slow"    # without the signal tests
 python3 -m pytest tests/test_video.py -k cache
 ```
@@ -189,6 +196,16 @@ behaviour still applies):
   handler (`cli.install_signal_handlers` does; tested).
 - Two parallel GPU encodes were 26 % faster than one in plain ffmpeg, three
   barely more; with the picture checks in the pipeline three still helped.
+- ffmpeg rotates a portrait video (landscape frames plus a display matrix)
+  upright when encoding and drops the matrix. Comparing with
+  `-noautorotate` put the upright output against the sideways source: 8 dB
+  for a correct encode. Without it both sides are as displayed: 48 dB.
+- A `-c copy` slice cut with `-ss` starts at the previous keyframe, but the
+  MP4 edit list hides the pre-roll: compared with an accurate re-encode of
+  the same range it measured 44 dB (x264, 10 s GOP, ffmpeg 9). For sizes
+  the pre-roll still counts (open issue 1).
+- ffprobe reports a single JPEG as 0.04 s long, so a photo taken as a
+  video's original fails any runtime comparison.
 
 Picture comparison: one ffmpeg call per sample compares both files in memory;
 the best of several samples counts. Measured separation (YUV average): sound
@@ -196,7 +213,9 @@ re-encodes 31–38 dB, CRF 51 still 24 dB, broken colour formats 9–12 dB,
 correct AVIF 42–45 dB, wrong AVIF 7 dB. For WebP (Pillow, YCbCr weighted
 4:1:1): correct 23.7–44 dB, different content 10–11 dB. Threshold 18 dB. If a
 comparison method changes, re-measure — RGB and YUV results are not
-comparable.
+comparable. Re-measured after dropping `-noautorotate` (2026-10-15): unrotated
+files give the same values as before (re-encode 49, CRF 51 29, other content
+7, AVIF 46, WebP 31 dB).
 
 Useful checks:
 

@@ -12,6 +12,7 @@ Differences to the Bash orchestrator, on purpose:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections import defaultdict
@@ -35,8 +36,26 @@ STAGES = ("images", "gifs", "clips", "video")
 IMAGE_EXTS = ("jpg", "jpeg", "png")
 
 
-def state_file() -> Path:
-    return state_dir() / "state.json"
+LEGACY_STATE = "state.json"       # one file for every folder, up to 2.1
+
+
+def state_file(source: Path | str) -> Path:
+    """One resume state per source folder, so a run on another folder neither
+    resumes nor overwrites it. Keyed by the folder with symlinks resolved."""
+    key = hashlib.sha1(os.fsencode(os.path.realpath(source))).hexdigest()[:16]
+    return state_dir() / f"state-{key}.json"
+
+
+def _alive(pid: int) -> bool:
+    if pid <= 0 or pid == os.getpid():
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 @dataclass
@@ -46,26 +65,80 @@ class RunState:
     output: str | None = None
     settings: dict = field(default_factory=dict)
     done: dict = field(default_factory=lambda: {name: False for name in STAGES})
+    pid: int = 0
+    loaded_from: Path | None = field(default=None, repr=False, compare=False)
 
     def save(self, dry_run: bool) -> None:
         if dry_run or not self.source:
             return
-        path = state_file()
+        path = state_file(self.source)
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.pid = os.getpid()
+        data = {k: v for k, v in self.__dict__.items() if k != "loaded_from"}
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(self.__dict__, indent=1), encoding="utf-8")
+        tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
         os.replace(tmp, path)
+        if self.loaded_from is not None and self.loaded_from != path:
+            self.loaded_from.unlink(missing_ok=True)       # taken over from state.json
+        self.loaded_from = path
+
+    def remove(self) -> None:
+        if self.source:
+            state_file(self.source).unlink(missing_ok=True)
+        if self.loaded_from is not None:
+            self.loaded_from.unlink(missing_ok=True)
+
+    @property
+    def running_elsewhere(self) -> bool:
+        """Saved by a run that is still going (another terminal, a timer)."""
+        return self.status == "RUNNING" and _alive(self.pid)
 
     @classmethod
-    def load(cls) -> "RunState | None":
+    def load(cls, path: Path) -> "RunState | None":
         try:
-            data = json.loads(state_file().read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
             done = data.get("done") or {}
             if "avif" in done:                      # stage key before the rename to "clips"
                 done["clips"] = done.pop("avif")
-            return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+            state = cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__ and k != "loaded_from"})
         except (OSError, ValueError, TypeError):
             return None
+        state.loaded_from = path
+        return state
+
+
+def open_states() -> list[RunState]:
+    """Every interrupted run, the most recent first."""
+    folder = state_dir()
+    paths = sorted(folder.glob("state-*.json")) + [folder / LEGACY_STATE]
+    found = []
+    for path in paths:
+        state = RunState.load(path) if path.is_file() else None
+        if state is not None and state.status in ("INTERRUPTED", "RUNNING") and state.source:
+            found.append((path.stat().st_mtime, state))
+    found.sort(key=lambda item: item[0], reverse=True)
+    return [state for _, state in found]
+
+
+def _same_folder(a: str | Path, b: str | Path) -> bool:
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+def _pick_state(req: Request) -> tuple[RunState | None, str | None]:
+    """The interrupted run this invocation may resume, and an error message
+    when a run on the same folder is still going. With a source on the
+    command line only that folder's state counts: a run started for
+    /folder/B (by a timer, with -y) used to resume /folder/A instead."""
+    states = open_states()
+    if req.source:
+        source = Path(req.source).expanduser().absolute()
+        states = [st for st in states if _same_folder(st.source, source)]
+        for st in states:
+            if st.running_elsewhere:
+                return None, (f"Another run is working on '{st.source}' (process {st.pid}).\n"
+                              "If there is none, start over with --reset.")
+    states = [st for st in states if not st.running_elsewhere]
+    return (states[0] if states else None), None
 
 
 @dataclass
@@ -149,20 +222,28 @@ def _preflight(source: Path, output: Path | None, s: Settings, dry_run: bool) ->
 
 
 def _collision_warning(source: Path, s: Settings) -> None:
-    """foo.jpg and foo.png both map to foo.jxl. The workers lock the target
-    name, but it is better to surface this beforehand."""
-    groups: dict[str, int] = defaultdict(int)
-    match = files.extension_matcher(["jpg", "jpeg", "png", "gif"])
+    """Sources that map to the same output name: foo.jpg and foo.png both
+    become foo.jxl, foo.mp4 and foo.mov both foo.mp4. The workers lock the
+    target name, but it is better to surface this beforehand. foo.jpg and
+    foo.gif only clash when both formats end up the same."""
+    from .stages.video import target_extension
+
+    image = {"jpg": s.img_target, "jpeg": s.img_target, "png": s.img_target,
+             "gif": "avif" if s.gif_target == "avif" else "webp"}
+    groups: dict[str, list[str]] = defaultdict(list)
+    match = files.extension_matcher([*image, *s.video_extensions], exclude_parts=True)
     for path in files.source_files(source, match, s, report=False):
-        groups[str(path.with_suffix(""))] += 1
-    clashes = sorted(k for k, n in groups.items() if n > 1)
+        ext = path.suffix.lower().lstrip(".")
+        out = image[ext] if ext in image else target_extension(path, s)
+        groups[str(path.parent / f"{files.stem(path.name)}.{out}")].append(path.name)
+    clashes = sorted(k for k, names in groups.items() if len(names) > 1)
     if not clashes:
         return
     ui.out()
-    ui.say("WARNING", S.YELLOW, "Files share a base name with different extensions.")
+    ui.say("WARNING", S.YELLOW, "Files would get the same output name.")
     ui.out("          Only the first is converted, the others are left untouched:")
     for name in clashes[:10]:
-        ui.out(f"            {name}")
+        ui.out(f"            {name}  ({', '.join(groups[name])})")
     if len(clashes) > 10:
         ui.out(f"            ... and {len(clashes) - 10} more")
 
@@ -171,12 +252,18 @@ def run(req: Request) -> tuple[int, bool]:
     """One full run. Returns (exit code, whether to process another directory)."""
     s = req.settings
     ui.banner("MEDIA OPTIMIZER")
-    if req.reset:
-        state_file().unlink(missing_ok=True)
+    if req.reset and not req.dry_run:
+        # The given folder's state; without one, every saved state.
+        for st in open_states():
+            if not req.source or _same_folder(st.source, Path(req.source).expanduser().absolute()):
+                st.remove()
 
     resuming = False
-    state = RunState.load()
-    if state is not None and state.status in ("INTERRUPTED", "RUNNING"):
+    state, busy = _pick_state(req)
+    if busy:
+        ui.out(f"{S.RED}{busy}{S.RESET}", err=True)
+        return RC_CANNOT_START, False
+    if state is not None:
         ui.box("INCOMPLETE PREVIOUS RUN DETECTED", [], S.YELLOW)
         done = state.done
         ui.out(f"  Source: {S.BOLD}{state.source}{S.RESET} | images: {_open(done, 'images')} | "
@@ -184,7 +271,8 @@ def run(req: Request) -> tuple[int, bool]:
         if ui.interactive() and not req.assume_yes and \
                 not ui.prompt_bool("Resume the last run with its saved settings?", True, indent=""):
             ui.out("-> Discarding state.\n")
-            state_file().unlink(missing_ok=True)
+            if not req.dry_run:
+                state.remove()
             state = None
         else:
             resuming = True
@@ -200,8 +288,6 @@ def run(req: Request) -> tuple[int, bool]:
                 for line in errors:
                     ui.out(f"{S.RED}{line}{S.RESET} (in the saved state)", err=True)
                 return RC_BAD_SETTING, False
-    else:
-        state = None
 
     if resuming:
         source = Path(state.source)
@@ -242,6 +328,14 @@ def run(req: Request) -> tuple[int, bool]:
             output = None
         elif not req.dry_run:
             output.mkdir(parents=True, exist_ok=True)
+    if not resuming:
+        # Absolute, so a resume from another working directory finds them.
+        state.source, state.output = str(source), str(output) if output else None
+        other = RunState.load(state_file(source))          # a folder typed in at the prompt
+        if other is not None and other.running_elsewhere:
+            ui.out(f"{S.RED}Another run is working on '{source}' (process {other.pid}).{S.RESET}\n"
+                   "If there is none, start over with --reset.", err=True)
+            return RC_CANNOT_START, False
 
     ctx = Context(s, source, output, dry_run=req.dry_run, resuming=resuming, assume_yes=req.assume_yes)
     apply_mode_defaults(ctx, with_rename=True)
@@ -319,6 +413,14 @@ def run(req: Request) -> tuple[int, bool]:
                 log.close(rc)
                 return rc, False
             state.done[name] = True
+            if name == "images" and not wanted["gifs"] and output is None and not req.dry_run:
+                # In place the image stage renames a GIF named .png to .gif;
+                # counted before, the GIF stage would have been left out.
+                count_gif = files.count(source, files.extension_matcher(["gif"]), s)
+                if count_gif:
+                    wanted["gifs"], state.done["gifs"], counts["gifs"] = True, False, count_gif
+                    total += 1
+                    titles["gifs"] = ("GIFs", f"Starting GIF conversion ({count_gif} files)...", GifStage)
             state.save(req.dry_run)
     except KeyboardInterrupt:
         with proc.shielded():
@@ -353,7 +455,8 @@ def run(req: Request) -> tuple[int, bool]:
                 ui.say("NOTE", S.YELLOW, "The check reported findings. Nothing was changed;")
                 ui.out(f"       repair with: media-optimizer verify {source} {output} --fix --run")
 
-    state_file().unlink(missing_ok=True)
+    if not req.dry_run:
+        state.remove()
     rc = RC_PARTIAL if failures else RC_OK
     log.close(rc)
     if failures:

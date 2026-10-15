@@ -287,6 +287,11 @@ def media(tmp_path_factory):
           "-c:v", "libx264", "-b:v", "3M", "-pix_fmt", "yuv420p")
     video("slow.mp4", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=25", "-t", "40",
           "-c:v", "libx264", "-b:v", "4M", "-pix_fmt", "yuv420p")
+    # A portrait phone video: landscape frames plus a 90° rotation flag.
+    video("landscape.mp4", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25", "-t", "3",
+          "-c:v", "libx264", "-b:v", "2M", "-pix_fmt", "yuv420p")
+    video("portrait.mp4", "-display_rotation", "90", "-i", str(d / "landscape.mp4"), "-c", "copy")
+    (d / "landscape.mp4").unlink()
     return d
 
 

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-__version__ = "2.1"
+__version__ = "2.2"
 NAME = "media-optimizer"
 PROJECT_URL = "https://github.com/sobakah/media-optimizer"
 ENV_PREFIX = "MO_"
@@ -381,9 +381,11 @@ def config_search_paths() -> list[Path]:
 
 
 # --- loading -------------------------------------------------------------------
-def load_settings(explicit: Path | None = None) -> tuple[Settings, str, list[str]]:
+def load_settings(explicit: Path | None = None, *,
+                  ignore_env: tuple[str, ...] = ()) -> tuple[Settings, str, list[str]]:
     """Defaults, then the first config file found, then MO_* environment
-    variables. Returns (settings, source description, warnings).
+    variables (except the settings in ignore_env). Returns (settings, source
+    description, warnings).
 
     Invalid values raise SettingsError: a typo in a tool that deletes files
     should stop it, not be replaced by a guess. Unknown keys only warn.
@@ -431,7 +433,7 @@ def load_settings(explicit: Path | None = None) -> tuple[Settings, str, list[str
             errors.append(f"[SETTING] {ENV_PREFIX}{old.upper()} was renamed to {ENV_PREFIX}{new.upper()}.")
     for name, rule in RULES.items():
         env = os.environ.get(ENV_PREFIX + name.upper())
-        if env is None:
+        if env is None or name in ignore_env:
             continue
         try:
             setattr(settings, name, parse_value(rule, env))

@@ -234,3 +234,91 @@ def test_progress_line_is_cut_by_display_width():
     assert ui.fit_width("20歳を掘って", 6) == "20歳を"
     assert ui.fit_width("a🔥b", 3) == "a🔥"
     assert ui.fit_width("éx", 2) == "éx"        # combining accent takes no column
+
+
+def test_only_our_temp_files_are_leftovers(tmp_path):
+    """'*.part.*' deleted any file with ".part." in its name before a video
+    run, permanently and in the trash too."""
+    keep = ["Movie.part.1.mp4", "archive.part.01.rar", "a.part.2.3.mkv", "x.mp4.part.1.2.mkv",
+            ".Trash-1000/files/y.mp4.part.4711.ab12cd34.mp4", "#snapshot/z.mp4.part.1.2.mp4"]
+    gone = ["x.mp4.part.4711.12345.mp4", "sub/y.jxl.part.99.ab12cd34.jxl"]
+    for name in keep + gone:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("x")
+    assert safety.cleanup_leftovers(tmp_path, ["jxl"]) == 1, "only the stage's own extensions"
+    assert safety.cleanup_leftovers(tmp_path) == 1
+    assert [n for n in keep if not (tmp_path / n).exists()] == []
+    assert [n for n in gone if (tmp_path / n).exists()] == []
+    match = files.extension_matcher(["mp4"], exclude_parts=True)
+    assert match("Movie.part.1.mp4") and not match("x.mp4.part.4711.12345.mp4")
+    with safety.Claim(tmp_path, "c", tmp_path / "c.mkv") as claim:
+        assert files.is_temp_name(claim.temp().name)
+
+
+def test_tool_started_during_a_stop_is_stopped(monkeypatch):
+    """stop_all took its list of running tools while one was being started:
+    that one was never signalled and the stop waited for it to finish."""
+    import subprocess
+    import time
+    from media_optimizer import proc
+    real = subprocess.Popen
+
+    def popen(*args, **kwargs):
+        child = real(*args, **kwargs)
+        proc.stop_all()                   # lands after the start, before the registration
+        return child
+    monkeypatch.setattr(proc.subprocess, "Popen", popen)
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(proc.Stopped):
+            proc.run(["sleep", "8"])
+    finally:
+        proc.reset()
+    assert time.monotonic() - t0 < 4
+
+
+def test_timeout_applies_with_streamed_output():
+    import time
+    from media_optimizer import proc
+    t0 = time.monotonic()
+    res = proc.run(["bash", "-c", "for i in $(seq 80); do echo x; sleep 0.1; done"],
+                   on_line=lambda line: None, timeout=1)
+    assert res.returncode == 124 and time.monotonic() - t0 < 4, res
+
+
+def test_box_frame_with_wide_characters(capsys):
+    from media_optimizer import ui
+    ui.box("RESULT", [("File:", "日本の動画.mp4"), ("Emoji:", "🎬 clip"), ("Plain:", "x")], "")
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    assert len({ui.visible_width(line) for line in lines}) == 1, lines
+
+
+def test_bad_hold_timeout_is_not_a_crash(monkeypatch, capsys):
+    import builtins
+    from media_optimizer import ui
+    real_open = builtins.open
+
+    def no_tty(path, *args, **kwargs):
+        if path == "/dev/tty":
+            raise OSError("no terminal in the test")
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(builtins, "open", no_tty)
+    monkeypatch.setenv("MO_HOLD_TIMEOUT", "5s")
+    ui.hold_open(0, "1")
+
+
+def test_options_before_the_command(folder, main, tmp_path):
+    """'-c FILE images DIR' ran a full run of a folder called "images"."""
+    d = folder("u1", "photo.jpg")
+    out = main("-c", tmp_path / "test-config.json", "images", d, "--no-delete")
+    assert out.rc == 0 and "IMAGE SUMMARY" in out and (d / "photo.jxl").exists(), out
+
+
+def test_value_options_list_is_complete():
+    import argparse
+    from media_optimizer import cli
+    run = next(a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction)).choices["run"]
+    general = next(g for g in run._action_groups if g.title == "general")
+    taking = {o for a in general._group_actions if a.nargs != 0 for o in a.option_strings}
+    taking |= {o for a in run._actions if a.dest in ("input", "output") for o in a.option_strings}
+    assert taking == cli._VALUE_OPTIONS

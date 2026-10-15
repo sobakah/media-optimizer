@@ -25,6 +25,7 @@ import ctypes
 import ctypes.util
 import errno
 import fcntl
+import fnmatch
 import os
 import secrets
 import shutil
@@ -32,7 +33,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-from . import ui
+from . import files, ui
 from .ui import StyleUI as S
 
 
@@ -83,15 +84,19 @@ class RunLock:
         self.release()
 
 
-def cleanup_leftovers(folder: Path, patterns: list[str]) -> int:
+def cleanup_leftovers(folder: Path, extensions: list[str] | None = None) -> int:
     """Remove temp files and lock directories left by a hard abort (SIGKILL,
-    power loss). Only call it while holding the RunLock."""
-    import fnmatch
+    power loss). Only call it while holding the RunLock.
 
+    Only names of the exact temp form (files.is_temp_name) count, limited to
+    the stage's output extensions (None: any). Trash and NAS system folders
+    are not entered: a file there is not ours to delete."""
+    wanted = None if extensions is None else {e.lower() for e in extensions}
     removed = 0
     for root, dirs, names in os.walk(folder):
+        dirs[:] = [d for d in dirs if not any(fnmatch.fnmatchcase(d, p) for p in files.SYSTEM_DIRS)]
         for name in names:
-            if any(fnmatch.fnmatchcase(name, p) for p in patterns):
+            if files.is_temp_name(name) and (wanted is None or name.rsplit(".", 1)[-1].lower() in wanted):
                 try:
                     os.unlink(os.path.join(root, name))
                     removed += 1

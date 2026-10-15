@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import cache, files, media, proc, ui
+from .. import cache, files, media, proc, safety, ui
 from ..config import RC_INTERRUPTED, RC_OK
 from ..runlog import log
 from ..ui import StyleUI as S
@@ -56,14 +56,17 @@ class VerifyStage:
         src = self.ctx.source / rel
         if src.is_file():
             return src
+        # Only videos: a photo or subtitle of the same name (IMG_1234.jpg next
+        # to IMG_1234.mp4) reports a runtime of 0.04 s, so the output failed
+        # as DURATION and --fix deleted it, possibly the only copy left.
         folder = src.parent
         stem = files.stem(out.name)
+        is_video = files.extension_matcher(self.s.video_extensions, exclude_parts=True)
         try:
-            candidates = sorted(p for p in folder.iterdir() if p.is_file() and files.stem(p.name) == stem)
+            candidates = sorted(p for p in folder.iterdir()
+                                if p.is_file() and files.stem(p.name) == stem and is_video(p.name))
         except OSError:
             return None
-        videos = {e.lower() for e in self.s.video_extensions}
-        candidates.sort(key=lambda p: p.suffix.lower().lstrip(".") not in videos)
         return candidates[0] if candidates else None
 
     def _check(self, out: Path) -> Check:
@@ -83,7 +86,9 @@ class VerifyStage:
                                       f"{s.duration_tolerance_pct:g}%)", err=True)
             return Check("DURATION", out, src)
         if s.check_visual:
-            visual = media.verify_visual(src, out, s.visual_psnr_min, s.visual_samples, self.keep_dir)
+            # Mirrored below keep_dir: a/v.mp4 and b/v.mp4 overwrote each other's stills.
+            keep = self.keep_dir / rel.parent if self.keep_dir is not None else None
+            visual = media.verify_visual(src, out, s.visual_psnr_min, s.visual_samples, keep)
             if not visual.ok:
                 ui.say("PICTURE?", S.YELLOW, f"    {rel}  (best {visual.best_text} dB; samples: "
                                              f"{visual.samples or 'none'})", err=True)
@@ -92,11 +97,28 @@ class VerifyStage:
         return Check("OK", out, src)
 
     def run(self) -> int:
-        s, ctx = self.s, self.ctx
         missing = proc.missing("ffmpeg", "ffprobe")
         if missing:
             ui.say("MISSING", S.RED, f"Required programs not found: {' '.join(missing)}", err=True)
             return 1
+        if not self.fix:
+            return self._run()
+        # --fix deletes outputs and rewrites caches: not while a run writes
+        # to the same target. Taken before the check, so a busy target does
+        # not cost a full check first.
+        self.lock = safety.RunLock(self.output)
+        try:
+            self.lock.acquire()
+        except safety.Busy as exc:
+            ui.say("BUSY", S.RED, str(exc), err=True)
+            return 1
+        try:
+            return self._run()
+        finally:
+            self.lock.release()
+
+    def _run(self) -> int:
+        s, ctx = self.s, self.ctx
         if not s.check_visual and self.keep_dir is not None:
             ui.say("NOTE", S.YELLOW, "--keep-samples has no effect without the picture comparison.", err=True)
             self.keep_dir = None
@@ -221,6 +243,7 @@ class VerifyStage:
             return RC_OK
 
         ui.out(f"\n{S.CYAN}▶ Regenerating {len(originals)} file(s) from the list...{S.RESET}")
+        self.lock.release()                 # the video stage takes it itself
         # --from-list instead of a full rerun: only what was reported as
         # broken is repeated, no scan over unrelated files.
         rc = VideoStage(ctx, from_list=str(broken_list)).run()

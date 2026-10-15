@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 import struct
 import sys
 from dataclasses import dataclass
@@ -105,13 +106,24 @@ def find_state_files(root: Path, name: str, *, include_hidden: bool = False) -> 
     return out
 
 
+# Our temp files: the target name, ".part.<pid>.<random>." and the target's
+# extension again (safety.Claim.temp; the Bash version used a decimal random
+# part). Matched exactly: "*.part.*" also took "Movie.part.1.mp4" or
+# "archive.part.01.rar", and the cleanup deleted them.
+_TEMP_NAME = re.compile(r".+\.([^./]+)\.part\.\d+\.[0-9A-Za-z]+\.\1")
+
+
+def is_temp_name(name: str) -> bool:
+    return _TEMP_NAME.fullmatch(name) is not None
+
+
 def extension_matcher(extensions, *, exclude_parts: bool = False) -> Callable[[str], bool]:
     """Case-insensitive match on the extension. exclude_parts leaves out our
-    own temp files (``x.part.<pid>.<random>.mp4``)."""
+    own temp files (``x.mp4.part.<pid>.<random>.mp4``)."""
     wanted = {e.lower().lstrip(".") for e in extensions}
 
     def match(name: str) -> bool:
-        if exclude_parts and ".part." in name:
+        if exclude_parts and is_temp_name(name):
             return False
         ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
         return ext in wanted

@@ -46,6 +46,7 @@ from .. import cache, files, gpu, media, proc, safety, ui
 from ..config import RC_FATAL, RC_INTERRUPTED, RC_OK, RC_PARTIAL
 from ..runlog import log
 from ..ui import StyleUI as S
+from . import clips
 from .base import Context, convert_legacy_caches
 from .images import nonempty
 
@@ -57,6 +58,8 @@ CACHE_SETTINGS = ("source_codecs", "min_size_mb", "encoder_mode", "bitrate_thres
                   "gpu_qp", "cpu_crf", "cpu_preset", "cpu_x265_params", "gpu_codec", "gpu_rc_mode",
                   "enable_probe", "probe_margin_pct", "probe_duration", "probe_slices", "discard_if_larger",
                   "keep_salvaged_corrupt", "video_container")
+# Added later: they count only when changed, so existing caches stay valid.
+CACHE_SETTINGS_OPTIONAL = ("gpu_bitrate", "gpu_bf", "gpu_low_power", "gpu_allow_10bit")
 BROKEN_LIST = ".broken_videos.txt"
 
 _CONTAINER_ERRORS = re.compile(r"not currently supported in container|could not write header|"
@@ -75,6 +78,17 @@ def migrate_name(old: Path, new: Path, dry_run: bool) -> None:
             pass
 
 
+def target_extension(src: Path, s) -> str:
+    """The output container for a source (video_container)."""
+    ext = src.suffix.lower().lstrip(".")
+    mode = s.video_container
+    if mode in ("mp4", "mkv"):
+        return mode
+    if mode == "keep":
+        return ext
+    return "mp4" if ext in ("mp4", "m4v", "mov") else "mkv"
+
+
 def read_list(path: Path) -> Iterator[str]:
     """The lines of a list file (one path per line, # comments)."""
     try:
@@ -82,6 +96,10 @@ def read_list(path: Path) -> Iterator[str]:
     except OSError:
         return iter(())
     return (line for line in text.splitlines() if line and not line.startswith("#"))
+
+
+class _GpuFailed(Exception):
+    """The GPU could not encode this file: it goes to the CPU lane."""
 
 
 @dataclass
@@ -129,9 +147,12 @@ class VideoStage:
         self.device = ""
         self.encoder_mode = self.s.encoder_mode
         self.skip_existing = True
+        self.use_cache = self.s.use_cache      # off for --from-list; the shared settings stay as they are
+        self._listed_cache: list | None = None
         self.lock = threading.RLock()
         self.fatal: str | None = None          # a tool vanished: no new jobs
         self.board: dict[int, str] = {}        # running jobs for the progress line
+        self.requeue: deque = deque()          # GPU failures waiting for the CPU lane
 
     # --- setup ------------------------------------------------------------------
     def run(self) -> int:
@@ -166,7 +187,7 @@ class VideoStage:
                 return 1
             # An explicit list beats cache and existing outputs: the caller
             # wants exactly these files produced again.
-            s.use_cache = False
+            self.use_cache = False
             self.skip_existing = False
             ui.say("LIST", S.CYAN, f"processing only the files from {self.from_list}")
         if ctx.dry_run:
@@ -195,14 +216,15 @@ class VideoStage:
             except safety.Busy as exc:
                 ui.say("BUSY", S.RED, str(exc), err=True)
                 return 1
-            safety.cleanup_leftovers(work, ["*.part.*"])
+            safety.cleanup_leftovers(work)        # any container
         try:
-            convert_legacy_caches(ctx)
+            if self.use_cache:
+                convert_legacy_caches(ctx)
             rc = self._setup_encoder()
             if rc is not None:
                 return rc
-            self.cache = cache.StageCache(cache_file, enabled=s.use_cache, dry_run=ctx.dry_run,
-                                          fingerprint=cache.fingerprint(s, CACHE_SETTINGS))
+            self.cache = cache.StageCache(cache_file, enabled=self.use_cache, dry_run=ctx.dry_run,
+                                          fingerprint=cache.fingerprint(s, CACHE_SETTINGS, CACHE_SETTINGS_OPTIONAL))
             return self._run_locked()
         finally:
             lock.release()
@@ -237,27 +259,41 @@ class VideoStage:
             match = files.extension_matcher(self.s.video_extensions, exclude_parts=True)
             yield from files.source_files(self.ctx.source, match, self.s)
             return
-        for line in read_list(self.from_list):
-            path = Path(line)
-            if path.is_file():
+        for line, path, problem in self._listed():
+            if path is not None:
                 yield path
             else:
-                ui.say("LIST", S.YELLOW, f"skipped, file missing: {line}", err=True)
+                ui.say("LIST", S.YELLOW, f"skipped, {problem}: {line}", err=True)
+
+    def _listed(self) -> list[tuple[str, Path | None, str]]:
+        """The files of --from-list as (line, path, problem). A list written
+        for the same folder reached another way (a symlink, the real path)
+        is mapped onto the source by the resolved path: the mirrored target
+        folder is computed relative to it, which failed for every file."""
+        if self._listed_cache is None:
+            source = self.ctx.source
+            real_source = os.path.realpath(source)
+            entries = []
+            for line in read_list(self.from_list):
+                path = Path(line)
+                if not path.is_file():
+                    entries.append((line, None, "file missing"))
+                    continue
+                if self.ctx.output is not None and not path.is_relative_to(source):
+                    rel = os.path.relpath(os.path.realpath(path.parent), real_source)
+                    if rel == ".." or rel.startswith("../") or os.path.isabs(rel):
+                        entries.append((line, None, "not inside the source directory"))
+                        continue
+                    path = source / rel / path.name
+                entries.append((line, path, ""))
+            self._listed_cache = entries
+        return self._listed_cache
 
     def _count_targets(self) -> int:
         if self.from_list is not None:
-            return sum(1 for line in read_list(self.from_list) if line.strip())
+            return sum(1 for _, path, _ in self._listed() if path is not None)
         return files.count(self.ctx.source, files.extension_matcher(self.s.video_extensions, exclude_parts=True),
                            self.s)
-
-    def target_extension(self, src: Path) -> str:
-        ext = src.suffix.lower().lstrip(".")
-        mode = self.s.video_container
-        if mode in ("mp4", "mkv"):
-            return mode
-        if mode == "keep":
-            return ext
-        return "mp4" if ext in ("mp4", "m4v", "mov") else "mkv"
 
     # --- the run ------------------------------------------------------------------
     def _run_locked(self) -> int:
@@ -275,7 +311,7 @@ class VideoStage:
         self.started = time.monotonic()
 
         self.cache.load()
-        if self.s.use_cache:
+        if self.use_cache:
             self.cache.merge_subfolders(ctx.work_dir, ctx.source, self.s.include_hidden)
         elif self.from_list is None:
             ui.say("CACHE", S.CYAN, "Ignored for this run: every video is checked again.")
@@ -312,6 +348,12 @@ class VideoStage:
                         job = queued["gpu"].popleft()
                         job.encoder, job.args, job.reason = "cpu", None, "GPU failed earlier"
                         queued["cpu"].append(job)
+                # The files the GPU failed on, first in line for the CPU. They
+                # used to be encoded on the CPU inside the GPU lane: with two
+                # GPU workers that made three x265 encodes at once.
+                with self.lock:
+                    while self.requeue:
+                        queued["cpu"].appendleft(self.requeue.pop())
                 if self.fatal is not None:
                     queued["gpu"].clear()
                     queued["cpu"].clear()
@@ -379,7 +421,10 @@ class VideoStage:
         'name_h265.mp4' again and saves an ffprobe; a separate target folder
         is never scanned."""
         if self.ctx.output is None:
-            self.cache.add(dest, "output")
+            # Valid for any settings: with hevc in source_codecs, a changed
+            # setting made an in-place output (renamed to the source name)
+            # count as new, and it was encoded a second time.
+            self.cache.add(dest, "output", any_settings=True)
 
     def _decide_guarded(self, src: Path) -> Job | None:
         try:
@@ -431,15 +476,17 @@ class VideoStage:
             return None
 
         stem = files.stem(src.name)
-        ext = self.target_extension(src)
+        ext = target_extension(src, s)
         if ctx.output is not None:
             dest = ctx.target_folder(src) / f"{stem}.{ext}"
         else:
             dest = src.parent / f"{stem}_h265.{ext}"
         # A short clip already converted by the clip stage counts as done.
         # Named after the SOURCE: in place dest carries the _h265 suffix.
+        # Only for a video the clip stage takes: IMG_0001.webp made from
+        # IMG_0001.jpg (img_target webp) skipped IMG_0001.mp4 for good.
         dest_anim = dest.parent / f"{stem}.{s.clip_format}"
-        if self.skip_existing and (nonempty(dest) or nonempty(dest_anim)):
+        if self.skip_existing and (nonempty(dest) or (nonempty(dest_anim) and clips.selected(info, s))):
             self._count(skipped=1)
             self.cache.add(src, "existing")
             self._add_dest_to_cache(dest)
@@ -478,6 +525,12 @@ class VideoStage:
             try:
                 with safety.Claim(job.dest.parent, files.stem(job.dest.name), job.dest) as claim:
                     self._encode_and_keep(job, claim)
+            except _GpuFailed:
+                with self.lock:
+                    self.encoder_mode = "cpu"
+                    self.fell_back = True
+                    job.encoder, job.args, job.reason = "cpu", None, "GPU failed"
+                    self.requeue.append(job)
             except safety.Conflict as exc:
                 ui.say("CONFLICT", S.YELLOW, f"'{src.name}': {exc}, original kept.", err=True)
                 self._count(skipped=1)
@@ -625,21 +678,15 @@ class VideoStage:
             res = self._encode(job, tmp, encoder, args, True)
             errors = res.stderr
 
-        # The GPU failed on a real file: this file is retried on the CPU and
-        # the rest of the run stays there. A wrong startup check can
-        # therefore not derail the run.
+        # The GPU failed on a real file: this file is retried in the CPU lane
+        # (with the container retry there too) and the rest of the run stays
+        # on the CPU. A wrong startup check can therefore not derail the run.
         if not res.ok and encoder == "gpu":
             ui.say("GPU", S.YELLOW, f"encoding of '{src.name}' failed. Last messages:", err=True)
             for line in res.stderr.strip().splitlines()[-3:]:
                 ui.out(f"        {line}", err=True)
             ui.say("GPU", S.YELLOW, "retrying on CPU and staying there for the rest of the run.", err=True)
-            tmp.unlink(missing_ok=True)
-            encoder = "cpu"
-            with self.lock:
-                self.encoder_mode = "cpu"
-                self.fell_back = True
-            res = self._encode(job, tmp, "cpu", None, False)
-            errors = res.stderr
+            raise _GpuFailed()
 
         if not res.ok or not tmp.is_file():
             ui.say("ERROR", S.RED, f"'{src}'", err=True)

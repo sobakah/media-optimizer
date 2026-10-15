@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -105,6 +107,72 @@ def test_container_fallback(folder, tmp_path, run_cli):
     assert kinds == ["video", "audio"]
 
 
+def test_portrait_video_passes_the_picture_check(folder, run_cli):
+    """ffmpeg turns a portrait video upright and drops the rotation flag; the
+    check compared it with the sideways source (8 dB) and kept every
+    portrait phone video as suspicious."""
+    d = folder("h2r", "p.mp4=portrait.mp4")
+    out = run_cli("video", d, *FAST, "--delete", "--force-delete", "--keep-larger")
+    assert "[PICTURE?]" not in out and "Picture verified:     1" in out, out
+    stream = _probe_json(d / "p.mp4")["streams"][0]
+    assert stream["codec_name"] == "hevc" and (stream["width"], stream["height"]) == (240, 320)
+
+
+# A GPU that fails on every file; x265 encodes are counted while they run.
+_FAILING_GPU = """\
+case "$*" in *-vaapi_device*) echo "simulated GPU failure" >&2; exit 1 ;; esac
+case "$*" in *libx265*)
+    mkdir -p "$TRACK"; touch "$TRACK/$$"; ls "$TRACK" | wc -l >> "$TRACK.counts"
+    PATH="${PATH#*:}" ffmpeg "$@"; rc=$?; rm -f "$TRACK/$$"; exit $rc ;;
+esac
+PATH="${PATH#*:}" exec ffmpeg "$@"
+"""
+GPU_FAILS = ["--encoder", "gpu", "--force-gpu", "--gpu-workers", "2", "--min-size", "0", "--no-probe",
+             "--preset", "ultrafast", "--keep-larger"]
+
+
+def test_gpu_failure_moves_files_to_the_one_cpu_lane(folder, tmp_path, run_cli, stub):
+    """Each GPU worker used to retry its file on the CPU itself, next to the
+    CPU lane: three x265 encodes at once with two GPU workers."""
+    d = folder("h2i", "a.mp4=long.mp4", "b.mp4=long.mp4", "c.mp4=long.mp4")
+    o = tmp_path / "h2iout"
+    track = tmp_path / "x265"
+    path = stub("ffmpeg", _FAILING_GPU)
+    out = run_cli("video", d, o, *GPU_FAILS, path=path, env={"TRACK": track})
+    assert out.rc == 0 and "GPU: 0 | CPU: 3" in out, out
+    assert all((o / n).exists() for n in ("a.mp4", "b.mp4", "c.mp4"))
+    counts = [int(n) for n in (tmp_path / "x265.counts").read_text().split()]
+    assert len(counts) == 3 and max(counts) == 1, counts
+
+
+def test_gpu_failure_still_gets_the_container_retry(folder, tmp_path, run_cli, stub):
+    """The CPU retry after a GPU failure copied the streams again, without
+    the AAC/no-subtitle retry, and failed on an SRT for MP4."""
+    d = folder("h2j")
+    srt = tmp_path / "s.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nhello\n")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25",
+                    "-i", str(srt), "-t", "3", "-map", "0", "-map", "1", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", "-c:s", "srt", str(d / "v.mkv")], check=True)
+    path = stub("ffmpeg", _FAILING_GPU)
+    out = run_cli("video", d, tmp_path / "o", *GPU_FAILS, "--container", "mp4", path=path,
+                  env={"TRACK": tmp_path / "x265"})
+    assert out.rc == 0 and "[CONTAINER]" in out, out
+    assert (tmp_path / "o" / "v.mp4").exists()
+
+
+def test_selftest_uses_the_device_the_run_would_use(tmp_path, monkeypatch):
+    nodes = [str(tmp_path / "renderD128"), str(tmp_path / "renderD129")]
+    for node in nodes:
+        Path(node).touch()
+    monkeypatch.setattr(gpu, "render_nodes", lambda: nodes)
+    monkeypatch.setattr(gpu, "probe_device", lambda s, dev: None if dev == nodes[1] else "no encoder")
+    assert gpu.selftest_device(Settings(gpu_codec="hevc_vulkan")) == nodes[1]
+    monkeypatch.setattr(gpu, "probe_device", lambda s, dev: "no encoder")
+    assert gpu.selftest_device(Settings()) == nodes[0], "none works: the first one is tested"
+    assert gpu.selftest_device(Settings(vaapi_device="/dev/x")) == "/dev/x"
+
+
 def test_suspicious_picture_keeps_original(folder, main, monkeypatch):
     """Bash deleted the original after a suspicious picture comparison when
     --delete was on; here it is always kept."""
@@ -131,6 +199,28 @@ def test_runtime_mismatch_keeps_original(folder, main, monkeypatch):
     out = main("video", d, *FAST, "--delete", "--force-delete")
     assert "[INVALID]" in out and out.rc == 3, out
     assert (d / "l.mp4").exists() and not (d / "l_h265.mp4").exists()
+
+
+def test_part_in_a_name_is_not_a_leftover(folder, run_cli):
+    """A video run deleted 'Movie.part.1.mp4' as a leftover (and never
+    converted it, the scan skipped it too)."""
+    d = folder("h2g", "Movie.part.1.mp4=long.mp4", "x.mp4.part.4711.12345.mp4=long.mp4")
+    out = run_cli("video", d, *FAST, "--no-delete")
+    assert out.rc == 0 and (d / "Movie.part.1.mp4").exists(), out
+    assert (d / "Movie.part.1_h265.mp4").exists()
+    assert not (d / "x.mp4.part.4711.12345.mp4").exists(), "a real leftover still goes"
+
+
+def test_unrelated_image_of_the_same_name_does_not_skip_a_video(folder, tmp_path, run_cli):
+    """IMG.avif (a photo, or IMG.webp from IMG.jpg with img_target webp) made
+    the video stage skip IMG.mp4 and cache it as done, although the clip
+    stage would never take it (it has sound)."""
+    d = folder("h2h", "IMG.mp4=withaudio.mp4")
+    o = tmp_path / "h2hout"
+    o.mkdir()
+    (o / "IMG.avif").write_bytes(b"x" * 100)
+    out = run_cli("video", d, o, *FAST, "--keep-larger")
+    assert (o / "IMG.mp4").exists(), out
 
 
 def test_existing_avif_counts_as_done(folder, run_cli):
@@ -245,6 +335,18 @@ def test_verify_matches_other_container(folder, tmp_path, run_cli):
     assert out.rc == 0 and "No original:          0" in out, out
 
 
+def test_verify_never_takes_a_photo_as_the_original(folder, tmp_path, media, run_cli):
+    """IMG.jpg next to the (gone) IMG.mp4 was taken as the original: 0.04 s
+    against 8 s failed as DURATION, and --fix deleted the only copy."""
+    d = folder("hv3", "IMG.jpg=photo.jpg", "IMG.srt=photo.jpg")
+    o = tmp_path / "hv3out"
+    o.mkdir()
+    shutil.copy2(media / "long.mp4", o / "IMG.mp4")
+    out = run_cli("verify", d, o, "--fix")
+    assert out.rc == 0 and "No original:          1" in out, out
+    assert (o / "IMG.mp4").exists()
+
+
 def test_from_list_ignores_cache(folder, tmp_path, run_cli):
     d = folder("hl", "a.mp4=long.mp4", "b.mp4=long.mp4")
     o = tmp_path / "hlout"
@@ -255,6 +357,84 @@ def test_from_list_ignores_cache(folder, tmp_path, run_cli):
     out = run_cli("video", d, o, *FAST, "--from-list", lst)
     assert "skipped, file missing" in out and (o / "a.mp4").exists(), out
     assert "Re-encoded:           1 file(s)" in out
+
+
+def test_own_output_is_not_encoded_again_after_a_setting_change(folder, run_cli):
+    """With hevc in source_codecs, in place with rename: any changed setting
+    made the output (now under the source name) count as new, and it lost
+    quality in a second encode."""
+    d = folder("hl2", "l.mp4=long.mp4")
+    args = ["video", d, *FAST, "--source-codecs", "h264 hevc", "--delete", "--force-delete", "--keep-larger"]
+    out = run_cli(*args)
+    assert "Re-encoded:           1" in out and not (d / "l_h265.mp4").exists(), out
+    before = snapshot(d / "l.mp4")
+    out = run_cli(*args, "--crf", "30")
+    assert "Re-encoded:           0" in out and "Cache (this scan):    1" in out, out
+    assert snapshot(d / "l.mp4") == before
+
+
+def test_gpu_settings_count_for_the_cache_only_when_changed():
+    from media_optimizer import cache
+    from media_optimizer.stages import video
+    s = Settings()
+    plain = cache.fingerprint(s, video.CACHE_SETTINGS)
+    assert cache.fingerprint(s, video.CACHE_SETTINGS, video.CACHE_SETTINGS_OPTIONAL) == plain, \
+        "existing caches stay valid"
+    s.gpu_bitrate = "4M"
+    assert cache.fingerprint(s, video.CACHE_SETTINGS, video.CACHE_SETTINGS_OPTIONAL) != plain
+
+
+def test_from_list_leaves_the_settings_alone(folder, tmp_path):
+    from media_optimizer.stages.base import Context
+    from media_optimizer.stages.video import VideoStage
+    d = folder("hl3", "a.mp4=long.mp4")
+    lst = tmp_path / "list.txt"
+    lst.write_text(f"{d}/a.mp4\n")
+    s = Settings(min_size_mb=0, encoder_mode="cpu", enable_probe=False, cpu_preset="ultrafast",
+                 delete_original=False, rename_inplace=False)
+    (tmp_path / "hl3out").mkdir()
+    VideoStage(Context(s, d, tmp_path / "hl3out"), from_list=str(lst)).run()
+    assert (tmp_path / "hl3out" / "a.mp4").exists()
+    assert s.use_cache is True, "the next stage or run must not inherit 'no cache'"
+
+
+def test_from_list_written_for_a_symlinked_source(folder, tmp_path, run_cli):
+    """A list written for ~/Videos/Link and a run on the real folder: the
+    target folder could not be computed for any file."""
+    d = folder("hl4", "a.mp4=long.mp4")
+    link = tmp_path / "link"
+    link.symlink_to(d)
+    lst = tmp_path / "list.txt"
+    lst.write_text(f"{link}/a.mp4\n{link}/missing.mp4\n")
+    out = run_cli("video", d, tmp_path / "hl4out", *FAST, "--from-list", lst)
+    assert out.rc == 0 and (tmp_path / "hl4out" / "a.mp4").exists(), out
+    assert "1 candidate(s) found" in out, "the missing file is not counted"
+
+
+def test_verify_fix_waits_for_a_run_on_the_target(folder, tmp_path, media, run_cli):
+    from media_optimizer import safety
+    d = folder("hv4", "a.mp4=long.mp4")
+    o = tmp_path / "hv4out"
+    o.mkdir()
+    shutil.copy2(media / "clip.mp4", o / "a.mp4")            # 3 s for 8 s: broken
+    with safety.RunLock(o):
+        out = run_cli("verify", d, o, "--no-visual", "--fix")
+    assert out.rc == 1 and "BUSY" in out and (o / "a.mp4").exists(), out
+    out = run_cli("verify", d, o, "--no-visual", "--fix")
+    assert "DELETED" in out and not (o / "a.mp4").exists(), out
+
+
+def test_verify_stills_of_equal_names_are_kept_apart(folder, tmp_path, media, run_cli):
+    d = folder("hv5", "a/v.mp4=long.mp4", "b/v.mp4=clip.mp4")
+    o = tmp_path / "hv5out"
+    for sub, name in (("a", "long.mp4"), ("b", "clip.mp4")):
+        (o / sub).mkdir(parents=True)
+        shutil.copy2(media / name, o / sub / "v.mp4")
+    keep = tmp_path / "stills"
+    out = run_cli("verify", d, o, "--keep-samples", keep)
+    assert out.rc == 0, out
+    assert len(list((keep / "a").glob("v_*_source.png"))) == 3
+    assert len(list((keep / "b").glob("v_*_target.png"))) == 3
 
 
 # --- interactive ---------------------------------------------------------------------------------

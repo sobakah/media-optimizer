@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import json
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -183,12 +184,17 @@ def verify_visual(src: Path, dst: Path, min_psnr: float, samples: int,
         return Visual(True)
     if dst.suffix.lower() == ".webp":
         return _verify_webp(src, dst, duration, min_psnr, samples, keep_dir)
-    lavfi = _filter(probe(dst).main_video, src_info.main_video)
+    dst_stream = probe(dst).main_video
+    lavfi = _filter(dst_stream, src_info.main_video)
     best = None
     parts = []
     for t in _sample_times(duration, samples):
-        res = proc.run(["ffmpeg", "-nostdin", "-hide_banner", "-noautorotate", "-ss", t, "-i", str(dst),
-                        "-noautorotate", "-ss", t, "-i", str(src), "-lavfi", lavfi,
+        # Both rotated for display, as the encoders did: ffmpeg turns a
+        # portrait phone video (landscape frames plus a rotation flag) upright
+        # and drops the flag. With -noautorotate the upright output was
+        # compared with the sideways source, 8 dB for a correct encode.
+        res = proc.run(["ffmpeg", "-nostdin", "-hide_banner", "-ss", t, "-i", str(dst),
+                        "-ss", t, "-i", str(src), "-lavfi", lavfi,
                         "-frames:v", "1", "-f", "null", "-"])
         match = _PSNR.search(res.stderr)
         if match:
@@ -196,7 +202,7 @@ def verify_visual(src: Path, dst: Path, min_psnr: float, samples: int,
             parts.append(f"{t}s={match.group(1) if value == float('inf') else int(value)} dB")
             best = value if best is None or value > best else best
         if keep_dir is not None:
-            _keep_stills(src, dst, t, keep_dir)
+            _keep_stills(((src, src_info.main_video, "source"), (dst, dst_stream, "target")), t, keep_dir)
     if best is None:
         return Visual(False, None, "no sample could be compared")
     return Visual(best >= min_psnr, best, ", ".join(parts))
@@ -248,11 +254,12 @@ def _verify_webp(src: Path, dst: Path, duration: float, min_psnr: float, samples
 
     best = None
     parts = []
+    stream = probe(src).main_video
     with tempfile.TemporaryDirectory(prefix="mo_webp_") as tmp:
         for t in _sample_times(duration, samples):
             still = Path(tmp) / f"src_{t}.png"
-            proc.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-noautorotate", "-ss", t, "-i", str(src),
-                      "-map", f"0:v:{probe(src).main_video}", "-frames:v", "1", str(still)])
+            proc.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", t, "-i", str(src),
+                      "-map", f"0:v:{stream}", "-frames:v", "1", str(still)])
             try:
                 frame = _webp_frame_at(dst, float(t))
                 with Image.open(still) as ref:
@@ -265,7 +272,7 @@ def _verify_webp(src: Path, dst: Path, duration: float, min_psnr: float, samples
                 try:
                     keep_dir.mkdir(parents=True, exist_ok=True)
                     frame.save(keep_dir / f"{dst.stem}_{t}s_target.png")
-                    Image.open(still).save(keep_dir / f"{dst.stem}_{t}s_source.png")
+                    shutil.copyfile(still, keep_dir / f"{dst.stem}_{t}s_source.png")
                 except OSError:
                     pass
     if best is None:
@@ -273,13 +280,14 @@ def _verify_webp(src: Path, dst: Path, duration: float, min_psnr: float, samples
     return Visual(best >= min_psnr, best, ", ".join(parts))
 
 
-def _keep_stills(src: Path, dst: Path, t: str, keep_dir: Path) -> None:
+def _keep_stills(inputs, t: str, keep_dir: Path) -> None:
+    """inputs: (path, video stream, "source"/"target"); named after the target."""
     try:
         keep_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
         return
-    base = dst.stem
-    for which, path in (("source", src), ("target", dst)):
-        proc.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-noautorotate", "-ss", t, "-i", str(path),
-                  "-map", f"0:v:{probe(path).main_video}", "-frames:v", "1",
+    base = inputs[-1][0].stem
+    for path, stream, which in inputs:
+        proc.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", t, "-i", str(path),
+                  "-map", f"0:v:{stream}", "-frames:v", "1",
                   str(keep_dir / f"{base}_{t}s_{which}.png")])

@@ -35,12 +35,21 @@ from .base import BatchStage, FileResult, Kind
 from .images import nonempty
 
 
+def selected(info: media.MediaInfo, s) -> bool:
+    """Whether the clip stage takes this video (see the module docstring)."""
+    if info.video_codec not in s.clip_source_codecs:
+        return False
+    if info.duration is None or not info.duration < s.clip_max_seconds:
+        return False
+    return not (s.clip_require_silent and info.has_audio)
+
+
 class ClipStage(BatchStage):
     tag = "clips"
     label = "Short clip"
     stats_name = ".clip_stats.json"
     pending_name = ".clip_pending_deletes.txt"
-    leftovers = ["*.part.*.avif", "*.part.*.webp"]
+    leftovers = ["avif", "webp"]
     dry_noun = "video(s)"
     cache_name = ".clip_cache.txt"
     cache_settings = ("clip_format", "clip_max_seconds", "clip_require_silent", "clip_source_codecs",
@@ -125,11 +134,7 @@ class ClipStage(BatchStage):
 
         # Not selected: remembered, so long videos are not probed on every run.
         info = media.probe(src)
-        if info.video_codec not in s.clip_source_codecs:
-            return FileResult(Kind.SKIP, cache="not-selected")
-        if info.duration is None or not info.duration < s.clip_max_seconds:
-            return FileResult(Kind.SKIP, cache="not-selected")
-        if s.clip_require_silent and info.has_audio:
+        if not selected(info, s):
             return FileResult(Kind.SKIP, cache="not-selected")
         if ctx.dry_run:
             ui.say("DRY-RUN", S.CYAN, f"'{src.name}' ({int(info.duration)}s, {info.video_codec}) -> '{dest.name}'")

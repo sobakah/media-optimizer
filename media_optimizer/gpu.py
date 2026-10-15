@@ -14,6 +14,7 @@ main10 profile (gpu_allow_10bit).
 
 from __future__ import annotations
 
+import dataclasses
 import glob
 import os
 import tempfile
@@ -144,14 +145,24 @@ VARIANTS = [
 ]
 
 
+def selftest_device(s: Settings) -> str:
+    """The render node a run would use: on a machine with an iGPU and a dGPU
+    the first node is often the wrong one. When none passes the check (the
+    reason for running the self-test), the first node."""
+    if s.vaapi_device.lower() != "auto":
+        return s.vaapi_device
+    device, _ = detect_device(dataclasses.replace(s, gpu_codec="hevc_vaapi"))
+    if device is not None:
+        return device
+    nodes = render_nodes()
+    return nodes[0] if nodes else "/dev/dri/renderD128"
+
+
 def selftest(s: Settings, src: Path) -> int:
     if not src.is_file():
         ui.out(f"Test file not found: {src}", err=True)
         return 1
-    device = s.vaapi_device
-    if device.lower() == "auto":
-        nodes = render_nodes()
-        device = nodes[0] if nodes else "/dev/dri/renderD128"
+    device = selftest_device(s)
     duration = media.probe(src).duration
     seclen = 6
     start = max(0, int((duration - seclen) / 2)) if duration else 0

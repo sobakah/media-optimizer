@@ -248,7 +248,7 @@ class BatchStage:
     title = ""                # summary box title
     stats_name = ""
     pending_name = ""
-    leftovers: list[str] = []
+    leftovers: list[str] = []      # output extensions whose temp files a hard abort left
     dry_noun = "file(s)"
     cache_name = ""
     cache_settings: tuple[str, ...] = ()      # the settings a cached outcome depends on

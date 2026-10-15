@@ -46,10 +46,6 @@ _lock = threading.RLock()
 _progress_open = False
 
 
-def visible_len(text: str) -> int:
-    return len(_ANSI_RE.sub("", text))
-
-
 def _char_width(ch: str) -> int:
     if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
         return 0                          # accents, zero-width joiner, variation selectors
@@ -124,14 +120,15 @@ def progress_done() -> None:
 
 
 # --- boxes ---------------------------------------------------------------------
-# Fixed columns like the Bash version: 62 characters inside the frame, labels
-# padded to 21, values to 37. Padding is computed on the visible text, so a
-# coloured value does not shift the frame.
+# Fixed columns like the Bash version: 62 columns inside the frame, labels
+# padded to 21, values to 37. Padding is computed on the visible text in
+# terminal columns, so neither a coloured value nor a wide character (CJK,
+# emoji) shifts the frame.
 BOX_WIDTH = 62
 
 
 def _pad(text: str, width: int) -> str:
-    return text + " " * max(0, width - visible_len(text))
+    return pad_width(text, width)
 
 
 def box(title: str, rows: list, color: str, *, footer: list | None = None) -> None:
@@ -159,7 +156,7 @@ def box(title: str, rows: list, color: str, *, footer: list | None = None) -> No
 
 
 def _center(text: str) -> str:
-    free = BOX_WIDTH - visible_len(text)
+    free = BOX_WIDTH - visible_width(text)
     left = free // 2
     return " " * left + text + " " * (free - left)
 
@@ -317,7 +314,10 @@ def hold_open(rc: int, mode: str | None) -> None:
     if rc == 0:
         out()
         say("DONE", StyleUI.GREEN, "Finished without errors.")
-    timeout = int(os.environ.get("MO_HOLD_TIMEOUT", "0") or 0)
+    try:
+        timeout = int(os.environ.get("MO_HOLD_TIMEOUT", "0") or 0)
+    except ValueError:                  # a typo must not end the run with a traceback
+        timeout = 0
     try:
         with open("/dev/tty") as tty:
             if timeout > 0:

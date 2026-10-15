@@ -96,7 +96,12 @@ def run(cmd: list[str], *, capture: bool = True, on_line: Callable[[str], None] 
         raise ToolMissing(cmd[0]) from None
     with _lock:
         _running.add(proc)
+        # stop_all sets the flag before it takes its list under this lock:
+        # a tool started in between is not on that list, but sees the flag.
+        late = stopping.is_set()
     try:
+        if late:
+            _terminate([proc])
         if on_line is not None:
             stderr_chunks: list[str] = []
             reader = None
@@ -104,13 +109,28 @@ def run(cmd: list[str], *, capture: bool = True, on_line: Callable[[str], None] 
                 reader = threading.Thread(target=lambda: stderr_chunks.append(proc.stderr.read()),
                                           daemon=True)
                 reader.start()
+            timed_out = threading.Event()
+            timer = None
+            if timeout is not None:
+                def expire() -> None:
+                    timed_out.set()
+                    _terminate([proc])
+                timer = threading.Timer(timeout, expire)
+                timer.daemon = True
+                timer.start()
             assert proc.stdout is not None
-            for line in proc.stdout:
-                on_line(line.rstrip("\n"))
-            proc.wait()
+            try:
+                for line in proc.stdout:
+                    on_line(line.rstrip("\n"))
+                proc.wait()
+            finally:
+                if timer is not None:
+                    timer.cancel()
             if reader:
                 reader.join()
             stdout, stderr = "", "".join(stderr_chunks)
+            if timed_out.is_set() and not stopping.is_set():
+                return Result(124, stdout, stderr + f"\n{cmd[0]}: timed out after {timeout:g}s")
         else:
             try:
                 stdout, stderr = proc.communicate(timeout=timeout)

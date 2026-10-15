@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from conftest import leftovers, snapshot
 from media_optimizer import media as mo_media
 from media_optimizer import safety
@@ -27,6 +29,16 @@ def test_gif_lossless(folder, tmp_path, run_cli):
     d = folder("g1b", "a.gif=anim.gif")
     out = run_cli("gifs", d, tmp_path / "o", "--keep-larger")
     assert out.rc == 0 and (tmp_path / "o" / "a.webp").exists(), out
+
+
+@pytest.mark.parametrize("target", ["avif", "webp"])
+def test_photo_named_gif_is_not_converted(folder, run_cli, target):
+    """With gif_target avif, ffmpeg made a lossy one-frame AVIF of a JPEG
+    named .gif and the original went to the trash."""
+    d = folder(f"g1p{target}", "p.gif=photo.jpg")
+    out = run_cli("gifs", d, "--target", target, "--delete", "--force-delete")
+    assert out.rc == 0 and "[UNSUPPORTED]" in out and "not a GIF but JPG" in out, out
+    assert (d / "p.gif").exists() and not (d / f"p.{target}").exists()
 
 
 def test_gif_bad_method(folder, run_cli):
@@ -99,6 +111,14 @@ def test_avif_wrong_picture_is_detected(media, tmp_path):
                     str(other)], check=True, stderr=subprocess.DEVNULL)
     result = mo_media.verify_visual(media / "clip.mp4", other, 18, 3)
     assert not result.ok and result.best is not None and result.best < 18
+
+
+@pytest.mark.parametrize("fmt", ["avif", "webp"])
+def test_portrait_clip_passes_the_picture_check(folder, tmp_path, run_cli, fmt):
+    """Same as for the video stage: upright output, sideways comparison."""
+    d = folder(f"a1p{fmt}", "p.mp4=portrait.mp4")
+    out = run_cli("clips", d, tmp_path / "o", "--format", fmt, "--keep-larger")
+    assert (tmp_path / "o" / f"p.{fmt}").exists() and "[PICTURE?]" not in out, out
 
 
 def test_avif_suspicious_picture_keeps_original(folder, main, monkeypatch):

@@ -48,7 +48,7 @@ class ImageStage(BatchStage):
     title = "IMAGE SUMMARY"
     stats_name = ".img_stats.json"
     pending_name = ".img_pending_deletes.txt"
-    leftovers = ["*.part.*.jxl", "*.part.*.webp"]
+    leftovers = ["jxl", "webp"]
     cache_name = ".img_cache.txt"
     cache_settings = ("img_target", "img_webp_quality", "img_discard_if_larger", "png_mode", "png_quality",
                       "jxl_effort", "img_copy_metadata")
@@ -214,7 +214,13 @@ class ImageStage(BatchStage):
         if s.img_target == "jxl":
             wdest = dest.with_suffix(".webp")
             if wdest.exists():
-                raise safety.Conflict(f"JXL failed and '{wdest.name}' already exists")
+                # Most likely this fallback's own output from an earlier run
+                # with the original kept: a CONFLICT on every run, after
+                # another failed cjxl each time. Remembered instead.
+                ui.say("SKIPPED", S.YELLOW, f"'{src.name}': JXL failed, '{wdest.name}' already exists, "
+                                            "original kept.")
+                log.file(self.tag, "SKIPPED", src)
+                return FileResult(Kind.SKIP, cache="jxl-failed")
             ui.say("FALLBACK", S.YELLOW, f"'{src.name}' failed -> trying WebP...")
             wtmp = claim.temp(wdest)
             cmd = ["cwebp", "-quiet", "-lossless", "-z", "9", "-m", str(WEBP_METHOD), "-metadata", "all",

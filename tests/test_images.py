@@ -373,6 +373,22 @@ def test_invalid_answer_is_asked_again(folder, pty_run):
     assert (d / "photo.jxl").exists()
 
 
+def test_webp_fallback_output_is_no_conflict_next_time(folder, run_cli, stub, tmp_path):
+    """cjxl failing on a PNG writes the WebP fallback; with the original kept
+    the next run tried cjxl again and reported a CONFLICT, every run."""
+    d = folder("i30", "other.png")
+    calls = tmp_path / "cjxl.calls"
+    path = stub("cjxl", f'case "$1" in *.png) echo x >> "{calls}"; exit 1 ;; esac\n'
+                        'PATH="${PATH#*:}" exec cjxl "$@"\n')
+    out = run_cli("images", d, "--no-delete", path=path)
+    assert "[FALLBACK]" in out and (d / "other.webp").exists(), out
+    out = run_cli("images", d, "--no-delete", path=path)
+    assert out.rc == 0 and "CONFLICT" not in out and "[SKIPPED]" in out, out
+    out = run_cli("images", d, "--no-delete", path=path)
+    assert "Cache (this scan):    1" in out, out
+    assert len(calls.read_text().split()) == 2, "not tried again once remembered"
+
+
 def test_renamed_source_is_not_counted_twice(folder, run_cli):
     """In place, a kept fake.jpg (really a PNG) becomes fake.png after its
     conversion. Each folder is listed completely before its files are
