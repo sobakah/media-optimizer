@@ -353,7 +353,7 @@ VAAPI encoder is available, and folders left by the Bash version
 |---|---|
 | GPU check names the cause | The startup check showed only ffmpeg's last line, `Nothing was written into output file, because at least one of its streams received no packets`, which follows any failure. The cause came first: `No usable encoding profile found`, the driver has no HEVC encoder. On the development machine the Fedora 45 release upgrade (`--allowerasing`) had removed `mesa-va-drivers-freeworld`, because Fedora 45 shipped an older Mesa (26.2.3) than the installed RPM Fusion build (26.2.4); the reinstall then failed on `mesa-filesystem = 26.2.5`, which Fedora only had in `updates-testing`. The check now reports the first line that is not a consequence, without memory addresses, and for a driver without an HEVC encoder explains the freeworld package on Fedora, including that dependency error. |
 
-## Unreleased
+## 2.2.2 – The current directory is the preset source
 
 | Change | Why |
 |---|---|
