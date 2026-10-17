@@ -347,7 +347,7 @@ VAAPI encoder is available, and folders left by the Bash version
 | Own outputs never encoded twice | With `hevc` in `source_codecs` in place, any changed setting made an output (renamed to the source name) count as new, and it lost quality in a second encode. Output entries in the video cache now hold for any settings. `gpu_bitrate`, `gpu_bf`, `gpu_low_power` and `gpu_allow_10bit` count for the cache, but only when changed, so existing caches stay valid. |
 | Smaller fixes | A photo named `.gif` became a lossy one-frame AVIF with `--target avif` (and failed every run with WebP); it is skipped as `[UNSUPPORTED]`. In place, a GIF named `.png` is converted in the same run (the GIFs were counted before the image stage renamed it). A `--from-list` written for a symlinked path works on the real folder and vice versa, and missing entries no longer inflate the total. A PNG whose WebP fallback exists already is no `[CONFLICT]` on every run. The name collision warning follows the real output names (`foo.jpg` and `foo.gif` do not clash, `foo.mp4` and `foo.mov` do). `--keep-samples` keeps equal names in different folders apart. A tool started while a stop was under way was not stopped; `timeout` now also applies to streamed output. Options before the command (`-c FILE images DIR`) belong to it. "Process another directory" no longer inherits the folder choice keepbest passed. Box frames count terminal columns; a bad `MO_HOLD_TIMEOUT` no longer crashes; `gpu-selftest` tests the render node a run would use. |
 
-## Unreleased
+## 2.2.1 – GPU check names the cause
 
 | Change | Why |
 |---|---|
