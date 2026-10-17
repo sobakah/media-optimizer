@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import glob
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,7 +89,26 @@ def probe_device(s: Settings, device: str) -> str | None:
     res = proc.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", *args.hw,
                     "-f", "lavfi", "-i", "testsrc=s=1280x720:r=30", "-frames:v", "5",
                     *args.enc, "-an", "-f", "null", "-"])
-    return None if res.ok else (res.stderr.strip().splitlines() or ["ffmpeg failed"])[-1]
+    return None if res.ok else error_reason(res.stderr)
+
+
+# ffmpeg names the cause first and its consequences after it. The last line
+# alone ("Nothing was written into output file...") was all a run showed for
+# a driver without an HEVC encoder.
+_CONSEQUENCES = ("Error while opening encoder", "Could not open encoder", "Error sending frames",
+                 "Task finished with error", "Terminating thread", "Nothing was written",
+                 "Conversion failed", "not a conformant Vulkan implementation")
+_ADDRESS = re.compile(r" @ 0x[0-9a-fA-F]+\]")
+
+
+def error_reason(stderr: str) -> str:
+    """The line of ffmpeg's error output that names the cause, without the
+    memory addresses ("[hevc_vaapi @ 0x55...]" -> "[hevc_vaapi]")."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    if not lines:
+        return "ffmpeg failed"
+    cause = next((line for line in lines if not any(c in line for c in _CONSEQUENCES)), lines[-1])
+    return _ADDRESS.sub("]", cause)
 
 
 def detect_device(s: Settings) -> tuple[str | None, str]:
@@ -117,10 +137,42 @@ def detect_device(s: Settings) -> tuple[str | None, str]:
     return None, first_error or "no render nodes found under /dev/dri/"
 
 
-def diagnose() -> None:
-    lines = [f"      {S.BOLD}Diagnostics:{S.RESET}",
-             "        ls -l /dev/dri/by-path/          # which node is the dGPU"]
-    lines += [f"        vainfo --display drm --device {d} | grep -i 'hevc.*enc'" for d in render_nodes()]
+def _distro() -> str:
+    """ID from /etc/os-release ("fedora"), "" when unknown."""
+    try:
+        text = Path("/etc/os-release").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    match = re.search(r'^ID="?([^"\n]*)"?$', text, re.MULTILINE)
+    return match.group(1).lower() if match else ""
+
+
+def driver_hint(reason: str) -> list[str]:
+    """What to do when the driver has no HEVC encoder at all. Fedora builds
+    Mesa without H.264/H.265; the codecs come with RPM Fusion's freeworld
+    package, which a release upgrade with --allowerasing removes silently
+    when Fedora's Mesa is older than RPM Fusion's build."""
+    if "No usable encoding profile" not in reason and "does not support encoding" not in reason:
+        return []
+    lines = [f"      {S.BOLD}The video driver offers no HEVC encoder.{S.RESET} Distributions that build",
+             "      Mesa without patented codecs need a separate driver package."]
+    if _distro() == "fedora" and "No usable encoding profile" in reason:
+        lines += ["      Fedora (RPM Fusion):",
+                  "        sudo dnf install mesa-va-drivers-freeworld",
+                  "        rpm -q mesa-va-drivers-freeworld    # removed by a release upgrade?",
+                  '      If dnf answers "nothing provides mesa-filesystem = <version>", Fedora\'s',
+                  "      Mesa is older than RPM Fusion's build: wait for the Mesa update, or take",
+                  "      it from updates-testing first:",
+                  "        sudo dnf upgrade --refresh --enablerepo=updates-testing 'mesa*'"]
+    return lines
+
+
+def diagnose(reason: str = "") -> None:
+    lines = driver_hint(reason)
+    lines += [f"      {S.BOLD}Diagnostics:{S.RESET}",
+              "        ls -l /dev/dri/by-path/          # which node is the dGPU"]
+    lines += [f"        vainfo --display drm --device {d} | grep -i 'hevc.*enc'   # libva-utils"
+              for d in render_nodes()]
     lines += ["        id | grep -o render               # group membership",
               "        ffmpeg -hide_banner -encoders | grep hevc_vaapi",
               "      RDNA4 (VCN 5) needs Mesa 25.0+ and kernel 6.13+."]

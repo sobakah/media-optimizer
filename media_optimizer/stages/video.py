@@ -244,12 +244,12 @@ class VideoStage:
                 ui.say("ERROR", S.RED, f"{s.gpu_codec} not usable, but --encoder gpu was requested explicitly.",
                        err=True)
                 ui.out(f"      reason: {error}", err=True)
-                gpu.diagnose()
+                gpu.diagnose(error)
                 return 1
             else:
                 ui.say("GPU", S.YELLOW, f"{s.gpu_codec} not usable -> falling back to CPU/libx265.")
                 ui.out(f"      reason: {error}", err=True)
-                gpu.diagnose()
+                gpu.diagnose(error)
                 self.encoder_mode = "cpu"
         return None
 

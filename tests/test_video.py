@@ -173,6 +173,52 @@ def test_selftest_uses_the_device_the_run_would_use(tmp_path, monkeypatch):
     assert gpu.selftest_device(Settings(vaapi_device="/dev/x")) == "/dev/x"
 
 
+# ffmpeg 9.0.2 with Fedora's Mesa (no H.265) on an RX 9070 XT, verbatim.
+_NO_HEVC_PROFILE = """\
+[hevc_vaapi @ 0x55b0eb1f9bc0] No usable encoding profile found.
+[vost#0:0/hevc_vaapi @ 0x55b0eb1f9680] [enc:hevc_vaapi @ 0x55b0eb1f9b40] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.
+[vf#0:0 @ 0x55b0eb214f40] Error sending frames to consumers: Function not implemented
+[vf#0:0 @ 0x55b0eb214f40] Task finished with error code: -38 (Function not implemented)
+[vf#0:0 @ 0x55b0eb214f40] Terminating thread with return code -38 (Function not implemented)
+[vost#0:0/hevc_vaapi @ 0x55b0eb1f9680] [enc:hevc_vaapi @ 0x55b0eb1f9b40] Could not open encoder before EOF
+[vost#0:0/hevc_vaapi @ 0x55b0eb1f9680] Task finished with error code: -22 (Invalid argument)
+[vost#0:0/hevc_vaapi @ 0x55b0eb1f9680] Terminating thread with return code -22 (Invalid argument)
+[out#0/null @ 0x55b0eb1f9300] Nothing was written into output file, because at least one of its streams received no packets.
+"""
+
+
+def test_gpu_check_names_the_cause_and_the_driver_package(folder, main, stub, tmp_path, monkeypatch):
+    """The startup check showed only ffmpeg's last line ("Nothing was written
+    into output file"), not that the driver has no HEVC encoder."""
+    d = folder("h2k", "v.mp4=long.mp4")
+    node = tmp_path / "renderD128"
+    node.touch()
+    monkeypatch.setattr(gpu, "render_nodes", lambda: [str(node)])
+    monkeypatch.setattr(gpu, "_distro", lambda: "fedora")
+    (tmp_path / "stderr.txt").write_text(_NO_HEVC_PROFILE)
+    stub("ffmpeg", f"""\
+        case "$*" in *-vaapi_device*) cat '{tmp_path / "stderr.txt"}' >&2; exit 218 ;; esac
+        PATH="${{PATH#*:}}" exec ffmpeg "$@"
+        """)
+    out = main("video", d, tmp_path / "o", "--encoder", "gpu", "--min-size", "0", "--no-probe")
+    assert out.rc == 1, out
+    assert f"reason: {node}: [hevc_vaapi] No usable encoding profile found." in out, out
+    assert "Nothing was written" not in out
+    assert "sudo dnf install mesa-va-drivers-freeworld" in out
+    assert "mesa-filesystem" in out and "updates-testing" in out
+
+
+def test_gpu_error_reason():
+    assert gpu.error_reason("") == "ffmpeg failed"
+    assert gpu.error_reason("WARNING: radv is not a conformant Vulkan implementation, testing use only.\n"
+                            "[hevc_vulkan @ 0x5640dde3e180] Device does not support encoding hevc!\n") \
+        == "[hevc_vulkan] Device does not support encoding hevc!"
+    # Only consequences: the last line is still better than nothing.
+    assert gpu.error_reason("[out#0/null @ 0x1] Nothing was written into output file\n") \
+        == "[out#0/null] Nothing was written into output file"
+    assert gpu.driver_hint("device does not exist") == []
+
+
 def test_suspicious_picture_keeps_original(folder, main, monkeypatch):
     """Bash deleted the original after a suspicious picture comparison when
     --delete was on; here it is always kept."""
