@@ -352,3 +352,9 @@ VAAPI encoder is available, and folders left by the Bash version
 | Change | Why |
 |---|---|
 | GPU check names the cause | The startup check showed only ffmpeg's last line, `Nothing was written into output file, because at least one of its streams received no packets`, which follows any failure. The cause came first: `No usable encoding profile found`, the driver has no HEVC encoder. On the development machine the Fedora 45 release upgrade (`--allowerasing`) had removed `mesa-va-drivers-freeworld`, because Fedora 45 shipped an older Mesa (26.2.3) than the installed RPM Fusion build (26.2.4); the reinstall then failed on `mesa-filesystem = 26.2.5`, which Fedora only had in `updates-testing`. The check now reports the first line that is not a consequence, without memory addresses, and for a driver without an HEVC encoder explains the freeworld package on Fedora, including that dependency error. |
+
+## Unreleased
+
+| Change | Why |
+|---|---|
+| The current directory is the preset source | Started without a source directory, a run asked with an empty prompt, so the folder one had just changed into had to be typed again. The question now shows the current directory (`Source directory [/path]:`): Enter takes it, typing replaces it. A prefilled, editable line (readline) was not used: a path typed over it would have been appended to the preset. The path is the one the shell shows (`$PWD`), so a folder reached through a symlink keeps it. Never preset are the home folder, the folders above it, `/` and system folders (keepbest's rule): a launcher starts in the home folder, no question before the run confirms the folder, and Enter at every prompt would have converted the whole home folder in place. A single stage started with its default settings never asked for the source and ended in "No source directory given"; it asks now. |

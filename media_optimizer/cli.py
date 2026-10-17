@@ -20,7 +20,7 @@ import signal
 import sys
 from pathlib import Path
 
-from . import folders, gpu, proc, ui
+from . import files, folders, gpu, proc, ui
 from .config import (NAME, RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RULES, Settings,
                      SettingsError, __version__, load_settings, parse_value)
 from .runlog import log
@@ -270,10 +270,12 @@ def _stage_menu(args, s: Settings, title: str, source: str, output: str) -> tupl
     """The settings menu of a single stage: only with a terminal, without -y,
     and when the source was not given on the command line."""
     ui.out(f"{S.CYAN}{'═' * ui.BOX_WIDTH}{S.RESET}\n{S.BOLD}{title}{S.RESET}\n{S.CYAN}{'═' * ui.BOX_WIDTH}{S.RESET}")
-    if ui.prompt_bool("Run with the default settings?", True, indent=""):
-        return source, output
-    source = ui.prompt_text("Source directory", source)
+    defaults = ui.prompt_bool("Run with the default settings?", True, indent="")
+    # Asked with the defaults too: they ended in "No source directory given".
+    source = ui.prompt_text("Source directory", source or files.suggested_source())
     output = ui.prompt_text("Target directory (empty = in place)", output)
+    if defaults:
+        return source, output
     out_path = Path(output).expanduser() if output else None
     if args.command == "verify":
         s.check_visual = ui.prompt_bool("Compare the picture content as well (PSNR sampling)?", s.check_visual)

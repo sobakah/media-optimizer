@@ -148,14 +148,20 @@ def main(capsys):
 def pty_run():
     """Drives the interactive prompts on a pseudo-terminal: answers are sent
     one by one whenever the program waits. pty_run(answers, *args)."""
-    def run(answers: list[str], *args, env: dict | None = None, idle: float = 8.0) -> Out:
+    def run(answers: list[str], *args, env: dict | None = None, idle: float = 8.0,
+            cwd: Path | None = None) -> Out:
         import pty
         import select
 
+        child_env = _env(env, None)
+        if cwd is not None:
+            child_env["PWD"] = str(cwd)           # as a shell would set it
         pid, fd = pty.fork()
         if pid == 0:  # pragma: no cover - child
+            if cwd is not None:
+                os.chdir(cwd)
             os.execvpe(sys.executable, [sys.executable, "-m", "media_optimizer", *map(str, args)],
-                       _env(env, None))
+                       child_env)
         out = b""
         pending = list(answers)
         last = time.monotonic()

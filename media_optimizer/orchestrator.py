@@ -298,7 +298,7 @@ def run(req: Request) -> tuple[int, bool]:
     else:
         src_text = req.source or ""
         if not src_text and ui.interactive():
-            src_text = ui.ask("Source directory: ")
+            src_text = ui.prompt_text("Source directory", files.suggested_source(), indent="")
         if not src_text:
             ui.out(f"{S.RED}No source directory given.{S.RESET}", err=True)
             return RC_CANNOT_START, False

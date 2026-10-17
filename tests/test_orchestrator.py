@@ -241,6 +241,33 @@ def test_called_from_keepbest(folder, tmp_path, pty_run):
     assert (o / "photo.jxl").exists(), out
 
 
+def test_started_in_a_folder_offers_it_as_the_source(folder, tmp_path, pty_run):
+    d = folder("rw", "photo.jpg")
+    o = tmp_path / "rw-out"
+    # source: Enter takes the working directory; target, defaults, another? n
+    out = pty_run(["", str(o), "", "n"], cwd=d)
+    assert f"Source directory [{d}]:" in out, out
+    assert (o / "photo.jxl").exists(), out
+
+
+def test_home_folder_is_not_offered_as_the_source(folder, tmp_path, pty_run):
+    """Started from a launcher, the working directory is the home folder."""
+    d = folder("rh", "photo.jpg")
+    out = pty_run([""], cwd=d, env={"HOME": d})
+    assert "Source directory:" in out and "No source directory given." in out, out
+    assert not (d / "photo.jxl").exists()
+
+
+def test_stage_started_in_a_folder_offers_it_as_the_source(folder, tmp_path, pty_run):
+    """With the default settings, a stage without a folder used to end in
+    "No source directory given" without asking for one."""
+    d = folder("rws", "photo.jpg")
+    o = tmp_path / "rws-out"
+    out = pty_run(["", "", str(o)], "images", cwd=d)
+    assert f"Source directory [{d}]:" in out, out
+    assert (o / "photo.jxl").exists(), out
+
+
 def test_source_on_the_command_line_skips_the_defaults_question(folder, tmp_path, pty_run):
     d = folder("rl", "photo.jpg")
     o = tmp_path / "rl-out"

@@ -90,7 +90,11 @@ media-optimizer gpu-selftest ~/Videos/clip.mp4
 
 `media-optimizer COMMAND --help` lists the options. Positional source and
 target and `-i`/`-o` both work. Started on a terminal without a source
-directory, every command offers its settings menu.
+directory, every command offers its settings menu and asks for the source
+with the current directory as the preset (`Source directory [/path]:`;
+Enter takes it, typing replaces it). The home folder, the folders above it,
+`/` and system folders are never preset: a launcher starts in the home
+folder.
 
 Options that behave the same everywhere:
 

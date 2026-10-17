@@ -322,3 +322,23 @@ def test_value_options_list_is_complete():
     taking = {o for a in general._group_actions if a.nargs != 0 for o in a.option_strings}
     taking |= {o for a in run._actions if a.dest in ("input", "output") for o in a.option_strings}
     assert taking == cli._VALUE_OPTIONS
+
+
+def test_protected_folders_are_not_suggested(tmp_path, monkeypatch):
+    home = tmp_path / "home" / "me"
+    (home / "Pictures").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    for path in (home, home.parent, tmp_path, Path("/"), Path("/usr")):
+        assert files.protected_folder(path), path
+    assert not files.protected_folder(home / "Pictures")
+    monkeypatch.chdir(home)
+    monkeypatch.setenv("PWD", str(home))
+    assert files.suggested_source() == ""
+    # Reached through a symlink: offered as the shell shows it.
+    link = tmp_path / "link"
+    link.symlink_to(home / "Pictures")
+    monkeypatch.chdir(link)
+    monkeypatch.setenv("PWD", str(link))
+    assert files.suggested_source() == str(link)
+    monkeypatch.setenv("PWD", "/somewhere/else")
+    assert files.suggested_source() == str(home / "Pictures")

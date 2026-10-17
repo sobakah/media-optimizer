@@ -147,6 +147,37 @@ def count(root: Path, match, settings) -> int:
     return sum(1 for _ in source_files(root, match, settings, report=False))
 
 
+# Never offered as the source: started from a launcher, the working directory
+# is the home folder, and Enter at every question would convert all of it.
+# Same rule as keepbest.
+SYSTEM_FOLDERS = {"/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/opt", "/proc", "/run",
+                  "/sbin", "/srv", "/sys", "/usr", "/var"}
+
+
+def protected_folder(path: Path) -> bool:
+    """The home folder, a folder above it, the root folder or a system folder.
+    Compared with symlinks resolved (Fedora Atomic: /home -> /var/home)."""
+    path = path.resolve()
+    homes = {Path.home(), Path.home().resolve()}
+    if path in homes or any(path in h.parents for h in homes):
+        return True
+    return path == Path(path.anchor) or path.as_posix() in SYSTEM_FOLDERS
+
+
+def suggested_source() -> str:
+    """The working directory as the preset for the source question, "" when
+    it is protected or gone. As the shell shows it ($PWD), so a folder
+    reached through a symlink keeps that path."""
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        return ""
+    pwd = os.environ.get("PWD", "")
+    if pwd and os.path.isabs(pwd) and os.path.realpath(pwd) == os.path.realpath(cwd):
+        cwd = pwd
+    return "" if protected_folder(Path(cwd)) else cwd
+
+
 # --- names -----------------------------------------------------------------------
 def stem(name: str) -> str:
     """Name without the last extension; '.png' stays '.png' instead of ''."""
