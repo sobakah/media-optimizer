@@ -359,7 +359,7 @@ VAAPI encoder is available, and folders left by the Bash version
 |---|---|
 | The current directory is the preset source | Started without a source directory, a run asked with an empty prompt, so the folder one had just changed into had to be typed again. The question now shows the current directory (`Source directory [/path]:`): Enter takes it, typing replaces it. A prefilled, editable line (readline) was not used: a path typed over it would have been appended to the preset. The path is the one the shell shows (`$PWD`), so a folder reached through a symlink keeps it. Never preset are the home folder, the folders above it, `/` and system folders (keepbest's rule): a launcher starts in the home folder, no question before the run confirms the folder, and Enter at every prompt would have converted the whole home folder in place. A single stage started with its default settings never asked for the source and ended in "No source directory given"; it asks now. |
 
-## Unreleased
+## 2.3 – File journal for picktag
 
 | Change | Why |
 |---|---|
