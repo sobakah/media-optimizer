@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .. import files, proc, safety, ui
+from ..journal import journal
 from ..runlog import log
 from ..ui import StyleUI as S
 from .base import BatchStage, FileResult, Kind, verify_image
@@ -129,6 +130,7 @@ class ImageStage(BatchStage):
             else:
                 ui.say("CORRECTED", S.MAGENTA, f"'{src.name}' ({real}) -> '{target.name}'")
                 log.file(self.tag, "CORRECTED", src, target.name)
+                journal.renamed(src, target, "extension")
         return result
 
     def _take_over(self, src: Path, real: str, folder: Path, stem: str) -> FileResult:
@@ -150,6 +152,7 @@ class ImageStage(BatchStage):
                 shutil.copy2(src, target)
             except OSError as exc:
                 raise safety.Failed(f"could not copy to '{target}' ({exc.strerror})") from None
+            journal.copied(src, target, "take_over")
             ui.say("CORRECTED", S.MAGENTA, f"'{src.name}' is {real} -> target '{target.name}', source unchanged")
         else:
             target = files.unique_name(src.parent, stem, real)
@@ -157,6 +160,7 @@ class ImageStage(BatchStage):
                 safety.move_no_replace(src, target)
             except OSError as exc:
                 raise safety.Failed(f"could not rename to '{target.name}' ({exc.strerror})") from None
+            journal.renamed(src, target, "take_over")
             ui.say("CORRECTED", S.MAGENTA, f"'{src.name}' is {real} -> '{target.name}'")
         log.file(self.tag, "CORRECTED", src, target.name)
         return FileResult(Kind.SKIP, cache="taken-over" if self.ctx.output is not None else None)
@@ -176,27 +180,34 @@ class ImageStage(BatchStage):
             if real == "png" and s.png_mode == "lossless":
                 cmd += ["-lossless", "-z", "9"]
                 label = "[PNG->WEBP-LOSSLESS]"
+                lossless = _webp_keeps_pixels(src)
             else:
                 # JPEG: lossless WebP would be larger than the source.
                 cmd += ["-q", str(s.img_webp_quality)]
                 label = f"[{real.upper()}->WEBP-q{s.img_webp_quality}]"
+                lossless = False
             cmd += [str(src), "-o", str(tmp)]
         else:
             cmd = ["cjxl", str(src), str(tmp), "-e", str(s.jxl_effort),
                    f"--num_threads={s.cjxl_threads}", "--quiet"]
+            # Lossless JPEG transcoding and -d 0 are bit-exact (measured for
+            # 16-bit PNGs and colours under transparent pixels too).
             if real == "jpg":
                 cmd.append("--lossless_jpeg=1")
                 label = "[JXL-LOSSLESS]"
+                lossless = True
             elif s.png_mode == "lossy":
                 cmd += ["-q", str(s.png_quality)]
                 label = f"[PNG->JXL-q{s.png_quality}]"
+                lossless = False
             else:
                 cmd += ["-d", "0"]
                 label = "[PNG->JXL-LOSSLESS]"
+                lossless = True
             cmd += self.cjxl_meta
 
         if proc.run(cmd).ok and nonempty(tmp):
-            return self._finish(src, real, tmp, dest, orig, label)
+            return self._finish(src, real, tmp, dest, orig, label, lossless)
         tmp.unlink(missing_ok=True)
 
         if real == "jpg":
@@ -226,10 +237,11 @@ class ImageStage(BatchStage):
             cmd = ["cwebp", "-quiet", "-lossless", "-z", "9", "-m", str(WEBP_METHOD), "-metadata", "all",
                    str(src), "-o", str(wtmp)]
             if proc.run(cmd).ok and nonempty(wtmp):
-                return self._finish(src, real, wtmp, wdest, orig, "[PNG->WEBP]")
+                return self._finish(src, real, wtmp, wdest, orig, "[PNG->WEBP]", _webp_keeps_pixels(src))
         raise safety.Failed("conversion failed")
 
-    def _finish(self, src: Path, real: str, tmp: Path, dest: Path, orig: int, label: str) -> FileResult:
+    def _finish(self, src: Path, real: str, tmp: Path, dest: Path, orig: int, label: str,
+                lossless: bool) -> FileResult:
         # Metadata first, so verification and the size check see the file as
         # it will be kept. -all, not -all:all: the latter drops PNG text
         # chunks (Artist, Copyright). -m keeps a harmless "[minor]" warning
@@ -249,8 +261,19 @@ class ImageStage(BatchStage):
             ui.say("DISCARDED", S.YELLOW, f"'{src.name}': result would be larger, original kept.")
             return FileResult(Kind.DISCARD, cache="discarded")
 
+        before = journal.snapshot(src)
         safety.commit(src, tmp, dest)
+        journal.converted(self.tag, src, before, dest, lossless)
         log.file(self.tag, "OK", src, dest.name, orig, new)
         ui.out(f"{S.GREEN}{label}{S.RESET} '{src.name}' -> '{dest.name}'")
-        self.remove_original(src)
+        self.remove_original(src, dest)
         return FileResult(Kind.SUCCESS, orig, new)
+
+
+def _webp_keeps_pixels(png: Path) -> bool:
+    """Lossless WebP keeps every visible pixel of a PNG with up to 8 bits per
+    channel. A 16-bit PNG is reduced to 8 bits (measured: different pixels),
+    so for the journal that conversion is not lossless. (Colours under fully
+    transparent pixels may change too; they are invisible.)"""
+    depth = files.png_bit_depth(png)
+    return depth is not None and depth <= 8

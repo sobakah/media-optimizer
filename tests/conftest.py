@@ -19,6 +19,7 @@ then runs the real tool via PATH="${PATH#*:}".
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -37,6 +38,43 @@ if MISSING:
     pytest.exit(f"Missing tools for the tests: {' '.join(MISSING)}", returncode=2)
 
 from PIL import Image, PngImagePlugin  # noqa: E402  (after the tool check)
+
+# The user's real journal, from the environment before any test changes it.
+REAL_JOURNAL = Path(os.environ.get("MO_STATE_DIR") or Path(
+    os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "media-optimizer") / "journal.jsonl"
+
+# Fields each journal event must have (JOURNAL_SPEC.md, version 1).
+JOURNAL_FIELDS = {
+    "run_start": {"source": str, "target": (str, type(None)), "pid": int},
+    "run_end": {"code": int, "interrupted": bool},
+    "converted": {"stage": str, "src": str, "src_size": int, "src_mtime_ns": int, "dest": str,
+                  "dest_size": int, "dest_mtime_ns": int, "lossless": (bool, type(None))},
+    "renamed": {"src": str, "dest": str, "size": int, "mtime_ns": int, "reason": str},
+    "copied": {"src": str, "dest": str, "size": int, "mtime_ns": int, "reason": str},
+    "removed": {"path": str, "size": int, "mtime_ns": int, "how": str, "reason": str,
+                "kept": (str, type(None))},
+}
+
+
+def check_journal(path: Path) -> list[dict]:
+    """Every line a complete, ASCII-only JSON object with the common fields
+    and the fields of its event. Returns the records."""
+    data = path.read_bytes()
+    assert not data or data.endswith(b"\n"), "last journal line incomplete"
+    records = []
+    for line in data.splitlines():
+        line.decode("ascii")                                    # ensure_ascii=True
+        rec = json.loads(line)
+        assert rec["v"] == 1 and rec["tool"] == "media-optimizer", rec
+        assert isinstance(rec["tool_version"], str) and isinstance(rec["run"], str), rec
+        assert isinstance(rec["ts"], str) and rec["ts"][19] in "+-Z", rec            # offset included
+        for name, kind in JOURNAL_FIELDS[rec["event"]].items():
+            assert isinstance(rec[name], kind) and not (kind is int and isinstance(rec[name], bool)), \
+                (name, rec)
+        for name in ("source", "target", "src", "dest", "path", "kept"):
+            assert rec.get(name) is None or rec[name].startswith("/"), (name, rec)
+        records.append(rec)
+    return records
 
 
 # --- isolation -----------------------------------------------------------------
@@ -60,11 +98,23 @@ def isolated(tmp_path, monkeypatch):
     for name in list(os.environ):
         if name.startswith("MO_") and name not in ("MO_STATE_DIR", "MO_CONFIG", "MO_TRASH", "MO_HOLD", "MO_LOG"):
             monkeypatch.delenv(name)
+    from media_optimizer import proc
+    from media_optimizer.journal import journal
+    # In-process runs: nothing left open by another test, and no stop of an
+    # interrupted one still in force for tests that run tools directly.
+    journal.path = journal.run_id = None
+    proc.reset()
     project_log = PYDIR / "media-optimizer.log"
     before = project_log.stat().st_mtime_ns if project_log.exists() else None
+    real_journal = REAL_JOURNAL.stat().st_size if REAL_JOURNAL.exists() else None
     yield tmp_path
+    journal.path = journal.run_id = None
     after = project_log.stat().st_mtime_ns if project_log.exists() else None
     assert after == before, "a test wrote the real run log in the project folder"
+    assert (REAL_JOURNAL.stat().st_size if REAL_JOURNAL.exists() else None) == real_journal, \
+        "a test wrote the real journal"
+    if (tmp_path / "state" / "journal.jsonl").exists():
+        check_journal(tmp_path / "state" / "journal.jsonl")
 
 
 class Out:
@@ -97,7 +147,7 @@ def run_cli():
             cwd: Path | None = None) -> Out:
         proc = subprocess.run([sys.executable, "-m", "media_optimizer", *map(str, args)],
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              text=True, env=_env(env, path), timeout=timeout, cwd=cwd)
+                              text=True, errors="replace", env=_env(env, path), timeout=timeout, cwd=cwd)
         return Out(proc.returncode, proc.stdout)
     return run
 

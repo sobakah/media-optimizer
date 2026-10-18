@@ -22,6 +22,7 @@ from pathlib import Path
 from . import files, folders, proc, safety, ui
 from .config import (RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RC_OK, RC_PARTIAL, Settings,
                      state_dir)
+from .journal import journal
 from .runlog import log
 from .stages.clips import ClipStage
 from .stages.base import (Context, apply_mode_defaults, prompt_delete_original, prompt_rescan,
@@ -219,6 +220,8 @@ def _preflight(source: Path, output: Path | None, s: Settings, dry_run: bool) ->
                 safety.move_no_replace(path, target)
             except OSError as exc:
                 ui.say("ERROR", S.RED, f"could not rename '{path.name}': {exc.strerror}", err=True)
+            else:
+                journal.renamed(path, target, "extension")
 
 
 def _collision_warning(source: Path, s: Settings) -> None:
@@ -279,8 +282,8 @@ def run(req: Request) -> tuple[int, bool]:
             ui.out(f"-> {S.GREEN}Settings loaded, resuming.{S.RESET}\n")
             saved = Settings.from_dict(state.settings)
             # Logging belongs to this invocation, not the interrupted one:
-            # --no-log or --log FILE given now must apply.
-            for name in ("log", "log_file", "log_max_kb"):
+            # --no-log or --log FILE given now must apply. The journal too.
+            for name in ("log", "log_file", "log_max_kb", "journal_file"):
                 setattr(saved, name, getattr(s, name))
             s = saved
             errors = s.errors()
@@ -358,6 +361,7 @@ def run(req: Request) -> tuple[int, bool]:
         ui.out()
         ui.say("DRY-RUN", S.CYAN, "No writes, no deletions.")
 
+    journal.start(s.journal_file, dry_run=req.dry_run, source=source, target=output)
     if s.preflight and not resuming:
         _preflight(source, output, s, req.dry_run)
     _collision_warning(source, s)
@@ -411,6 +415,7 @@ def run(req: Request) -> tuple[int, bool]:
                 ui.say("ERROR", S.RED, f"Stage '{label}' exited with code {rc}.", err=True)
                 ui.out(f"{S.CYAN}The state is kept, resume after fixing the problem.{S.RESET}", err=True)
                 log.close(rc)
+                journal.end(rc)
                 return rc, False
             state.done[name] = True
             if name == "images" and not wanted["gifs"] and output is None and not req.dry_run:
@@ -428,6 +433,7 @@ def run(req: Request) -> tuple[int, bool]:
             ui.out(f"\n\n{S.YELLOW}[INTERRUPTED] Aborted by user.{S.RESET}")
             log.line("abort", "Aborted by user")
             log.close(RC_INTERRUPTED)
+            journal.end(RC_INTERRUPTED)
             state.status = "INTERRUPTED"
             state.save(req.dry_run)
             ui.out(f"{S.CYAN}Progress and settings have been saved.{S.RESET}\n"
@@ -450,6 +456,7 @@ def run(req: Request) -> tuple[int, bool]:
             rc = VerifyStage(ctx).run()
             if rc == RC_INTERRUPTED:
                 log.close(rc)
+                journal.end(rc)
                 return rc, False
             if rc != RC_OK:
                 ui.say("NOTE", S.YELLOW, "The check reported findings. Nothing was changed;")
@@ -459,6 +466,7 @@ def run(req: Request) -> tuple[int, bool]:
         state.remove()
     rc = RC_PARTIAL if failures else RC_OK
     log.close(rc)
+    journal.end(rc)
     if failures:
         ui.box("ALL STAGES COMPLETED, WITH FAILURES", [("Failed files in:", " ".join(failures))], S.YELLOW)
     else:

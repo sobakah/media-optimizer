@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .. import files, media, proc, safety, ui
+from ..journal import journal
 from ..runlog import log
 from ..ui import StyleUI as S
 from .base import BatchStage, FileResult, Kind
@@ -174,7 +175,9 @@ class ClipStage(BatchStage):
                     note = f", picture {visual.best_text} dB"
                 else:
                     suspect = True
+            before = journal.snapshot(src)
             safety.commit(src, tmp, dest)
+        journal.converted(self.tag, src, before, dest, False, suspect=suspect)
 
         if suspect:
             ui.say("PICTURE?", S.YELLOW, f"'{src.name}': PSNR {visual.best_text} dB below "
@@ -182,7 +185,7 @@ class ClipStage(BatchStage):
                                          "Kept, original kept.", err=True)
         log.file(self.tag, "OK", src, dest.name, orig, new)
         if not suspect:
-            self.remove_original(src)
+            self.remove_original(src, dest)
         pct = new * 100 // orig if orig else 0
         ui.out(f"{S.GREEN}[{self.ext.upper()}]{S.RESET} '{src.name}' -> '{dest.name}'  "
                f"({ui.format_bytes(new)}, {pct}%{note})")

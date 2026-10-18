@@ -25,6 +25,7 @@ from pathlib import Path
 
 from .. import cache, files, media, proc, safety, ui
 from ..config import RC_INTERRUPTED, RC_OK
+from ..journal import journal
 from ..runlog import log
 from ..ui import StyleUI as S
 from .base import Context
@@ -212,10 +213,12 @@ class VerifyStage:
 
         removed = 0
         for r in bad:
+            before = journal.snapshot(r.out)
             try:
                 r.out.unlink()
             except OSError:
                 continue
+            journal.removed(r.out, before, how="permanent", reason="broken_output", kept=None)
             removed += 1
             ui.say("DELETED", S.CYAN, str(r.out.relative_to(self.output)))
 

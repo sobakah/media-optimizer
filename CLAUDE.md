@@ -47,6 +47,7 @@ folders.py       the subfolder question and the folder picker (keepbest's model)
 cache.py         per-stage caches (v2 format), old-format detection, conversion, pruning
 ui.py            StyleUI, say/badge, boxes, prompts, progress line, hold-open
 runlog.py        the run log
+journal.py       the file journal for picktag (JSON Lines)
 ```
 
 ## Language
@@ -117,6 +118,17 @@ Breaking any of these has caused real data loss or silent corruption before.
   outcomes depend on (`cache_settings`, `video.CACHE_SETTINGS`); add a new
   setting there when it changes a result. Old-format video caches are only
   converted after `resolve_legacy_caches` asked, and only under the run lock.
+- **Every change to a media file goes into the journal** (`journal.py`):
+  `converted`, `renamed`, `copied`, `removed`, after the action succeeded,
+  never for skips, discards, failures or in a dry run. A new place that
+  renames, copies or removes a user's file needs its event and a test.
+  Take size and mtime of a file before an action changes or removes it
+  (`journal.snapshot`). The format is picktag's contract
+  (`~/Software/Claude/Projects/picktag/JOURNAL_SPEC.md`, version 1, shared
+  with keepbest); changing the meaning of a field or event needs `"v": 2`.
+  picktag also relies on the temp and lock names
+  (`<name>.part.<pid>.<hex>.<ext>`, `.<stem>.molock`), which it ignores
+  while scanning: renaming them breaks picktag too.
 - **Keep compatible with folders the Bash version worked on**: flock on the
   working directory, `.part.<pid>.<random>.<ext>` and `.<stem>.molock`,
   `.video_conversion_cache.txt`, `.broken_videos.txt`, `.video_suspect.txt`,
@@ -129,7 +141,7 @@ Breaking any of these has caused real data loss or silent corruption before.
 ## Tests
 
 ```bash
-python3 -m pytest                  # all, about 200 tests, 3 minutes
+python3 -m pytest                  # all, about 235 tests, 3 minutes
 python3 -m pytest -m "not slow"    # without the signal tests
 python3 -m pytest tests/test_video.py -k cache
 ```
@@ -206,6 +218,11 @@ behaviour still applies):
   the pre-roll still counts (open issue 1).
 - ffprobe reports a single JPEG as 0.04 s long, so a photo taken as a
   video's original fails any runtime comparison.
+- "Lossless" WebP is not lossless for every PNG: a 16-bit PNG comes back as
+  8 bits (different pixels), and colours under fully transparent pixels
+  change (invisible). `cjxl -d 0` is bit-exact for both; gif2webp keeps
+  every frame and duration (compared frame by frame with Pillow). The
+  journal's `lossless` follows these measurements.
 
 Picture comparison: one ffmpeg call per sample compares both files in memory;
 the best of several samples counts. Measured separation (YUV average): sound
@@ -232,6 +249,9 @@ media-optimizer gpu-selftest /path/to/video.mp4      # which GPU options work
    an 8 Mb/s file, the probe said "71 % smaller", the result was 2.6 %
    smaller. Needs real footage before the method changes.
 2. **12-bit JPEGs are untested** (no tool here writes one).
+3. **The video and clip stages keep container tags (`-map_metadata 0`),
+   but not an XMP box.** Matters only if picktag ever writes its tags into
+   the files instead of its database.
 
 ## Things deliberately not done
 

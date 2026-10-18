@@ -237,6 +237,18 @@ def real_type(path: Path) -> str:
     return ""
 
 
+def png_bit_depth(path: Path) -> int | None:
+    """Bits per channel (or per palette index) from the PNG header."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(25)
+    except OSError:
+        return None
+    if len(head) < 25 or not head.startswith(b"\x89PNG\r\n\x1a\n") or head[12:16] != b"IHDR":
+        return None
+    return head[24]
+
+
 def gif_width(path: Path) -> int | None:
     """The logical screen width from the GIF header, without decoding."""
     try:

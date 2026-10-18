@@ -23,6 +23,7 @@ from pathlib import Path
 from . import files, folders, gpu, proc, ui
 from .config import (NAME, RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RULES, Settings,
                      SettingsError, __version__, load_settings, parse_value)
+from .journal import journal
 from .runlog import log
 from .stages.base import Context, apply_mode_defaults, prompt_delete_original, prompt_rescan, reset_notices
 from .ui import StyleUI as S
@@ -80,6 +81,9 @@ def _common(p: argparse.ArgumentParser, *, dirs: str = "optional", workers: bool
     g.add_argument("--log", dest=_SET + "log_file", metavar="FILE", default=argparse.SUPPRESS,
                    help="log file")
     _flag(g, "--no-log", setting="log", value=False, help="do not write a log")
+    _value(g, "--journal", setting="journal_file", metavar="FILE",
+           help="file journal for picktag (default: journal.jsonl in the state folder)")
+    _flag(g, "--no-journal", setting="journal_file", value=False, help="do not write the file journal")
     g.add_argument("--hold", dest="hold", action="store_const", const="1", help="keep the window open at the end")
     g.add_argument("--no-hold", dest="hold", action="store_const", const="0", help="never keep the window open")
 
@@ -358,6 +362,8 @@ def _run_stage(args, s: Settings) -> int:
     tag = {"images": "img", "gifs": "gif", "clips": "clips", "video": "h265", "verify": "verify"}[args.command]
     log.open(enabled=s.log, log_file=s.log_file, max_kb=s.log_max_kb, dry_run=args.dry_run,
              call=f"{NAME} {shlex.join(sys.argv[1:])}", source=src, target=out, tag=tag)
+    if args.command != "verify" or args.fix:            # a plain verify changes nothing
+        journal.start(s.journal_file, dry_run=args.dry_run, source=src, target=out)
     if args.command == "images":
         rc = ImageStage(ctx).run()
     elif args.command == "gifs":
@@ -369,6 +375,7 @@ def _run_stage(args, s: Settings) -> int:
     else:
         rc = VerifyStage(ctx, keep_dir=args.keep_samples, fix=args.fix, run_repair=args.run).run()
     log.close(rc)
+    journal.end(rc)
     return rc
 
 
@@ -395,7 +402,7 @@ def _run_full(args) -> int:
 
 # The options of _common that take a value, to find a command after them.
 _VALUE_OPTIONS = {"-i", "--input", "-o", "--output", "-j", "--workers", "--subfolders", "--exclude-folder",
-                  "-c", "--config", "--log"}
+                  "-c", "--config", "--log", "--journal"}
 
 
 def _command_first(argv: list[str]) -> list[str]:
@@ -445,6 +452,7 @@ def main(argv: list[str] | None = None) -> int:
         rc = RC_INTERRUPTED
     finally:
         log.close(rc)
+        journal.end(rc)             # Ctrl+C, SIGTERM, a closed terminal: best effort
     ui.hold_open(rc, getattr(args, "hold", None))
     return rc
 

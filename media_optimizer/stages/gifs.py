@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .. import files, media, proc, safety, ui
+from ..journal import journal
 from ..runlog import log
 from ..ui import StyleUI as S
 from .base import BatchStage, FileResult, Kind, verify_image
@@ -108,8 +109,11 @@ class GifStage(BatchStage):
                        f"'{src.name}': {ext.upper()} would be {ui.format_bytes(new - orig)} larger, "
                        "original kept.")
                 return FileResult(Kind.DISCARD, cache="discarded")
+            before = journal.snapshot(src)
             safety.commit(src, tmp, dest)
+        # gif2webp keeps every frame and its duration (measured); AV1 is lossy.
+        journal.converted(self.tag, src, before, dest, s.gif_target == "webp")
         log.file(self.tag, "OK", src, dest.name, orig, new)
         ui.out(f"{S.GREEN}[OK]{S.RESET}   '{src.name}' -> '{dest.name}'")
-        self.remove_original(src)
+        self.remove_original(src, dest)
         return FileResult(Kind.SUCCESS, orig, new)

@@ -63,6 +63,7 @@ class SettingsError(Exception):
 # ("choice", word, ...), ("text",), ("words",) or ("paths",) (a list of
 # strings that may contain spaces; ":"-separated or a JSON list as text). ("opt", rule) also allows
 # None, written as "null" in JSON and as an empty value in the environment.
+# ("file_or_off",) is a file path, false (off) or None (the default file).
 
 def _setting(default: Any, rule: tuple, doc: str, *, factory=None):
     meta = {"rule": rule, "doc": doc}
@@ -87,6 +88,8 @@ def _describe(rule: tuple) -> str:
         return "a list of words"
     if kind == "paths":
         return "a list of folder paths"
+    if kind == "file_or_off":
+        return "a file path, false (off) or empty (the default file)"
     return "text"
 
 
@@ -109,6 +112,8 @@ def check_value(rule: tuple, value: Any) -> bool:
         return isinstance(value, list) and all(isinstance(w, str) and w and " " not in w for w in value)
     if kind == "paths":
         return isinstance(value, list) and all(isinstance(w, str) and w.strip() for w in value)
+    if kind == "file_or_off":
+        return value is None or value is False or (isinstance(value, str) and bool(value.strip()))
     return isinstance(value, str)
 
 
@@ -119,6 +124,8 @@ def parse_value(rule: tuple, text: str) -> Any:
     text = text.strip()
     if kind == "opt":
         return None if text == "" else parse_value(rule[1], text)
+    if kind == "file_or_off":
+        return None if text == "" else False if text == "false" else text
     try:
         if kind == "bool":
             # Strict on purpose: "yes" or "1" in a config is more likely a
@@ -185,6 +192,10 @@ class Settings:
         "or the state folder (installed).")
     log_max_kb: int = _setting(5120, ("int", 1, 10_000_000),
         "The log is renamed to .log.1 at the start of a run once it is larger than this.")
+    journal_file: str | bool | None = _setting(None, ("file_or_off",),
+        "Machine-readable journal of converted, renamed, copied and removed files (JSON Lines), "
+        "read by picktag. null = journal.jsonl in the state folder, false = no journal. "
+        "Independent of the run log.")
 
     # images
     img_target: str = _setting("jxl", ("choice", "jxl", "webp"),
@@ -361,6 +372,11 @@ def state_dir() -> Path:
         return Path(override)
     xdg = os.environ.get("XDG_STATE_HOME")
     return (Path(xdg) if xdg else Path.home() / ".local" / "state") / NAME
+
+
+def default_journal_file() -> Path:
+    """Always the state folder, also from a checkout: picktag looks there."""
+    return state_dir() / "journal.jsonl"
 
 
 def default_log_file() -> Path:

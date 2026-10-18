@@ -110,6 +110,7 @@ Options that behave the same everywhere:
 | `--keep-larger` | keep results that are larger than the original |
 | `-c, --config <file>` | use this config file |
 | `--log <file>` / `--no-log` | log file / no log |
+| `--journal <file>` / `--no-journal` | file journal (see [Journal](#journal)) / no journal |
 | `--hold` / `--no-hold` | keep the window open at the end |
 | `-y, --yes` | no questions, settings as given |
 | `-n, --dry-run` | preview only |
@@ -287,6 +288,45 @@ in `~/.local/state/media-optimizer/` when installed; `log_file` or `--log`
 choose another path. It is renamed to `.log.1` at the start of a run once it
 exceeds `log_max_kb`. A dry run writes no log.
 
+### Journal
+
+Besides the log for people, every run that changes files appends
+machine-readable events to `~/.local/state/media-optimizer/journal.jsonl`
+(`$XDG_STATE_HOME`, also from a checkout). picktag, an image and video tagger,
+reads it, so that tags follow a picture from `foo.png` to `foo.jxl` instead
+of being lost; keepbest writes the same format. `journal_file` (config,
+`MO_JOURNAL_FILE`, `--journal FILE`) chooses another file, `false` or
+`--no-journal` switches it off. It is independent of the log: either can be
+off.
+
+One JSON object per line (format version 1). Every line has `v`, `tool`,
+`tool_version`, `run` (one id per process), `ts` (local time with offset)
+and `event`:
+
+| Event | Fields | When |
+|---|---|---|
+| `run_start` | `source`, `target` (`null` in place), `pid` | a run begins; each directory of "process another directory" gets its own |
+| `run_end` | `code`, `interrupted` | the run ends, also after Ctrl+C or SIGTERM |
+| `converted` | `stage` (`img`, `gif`, `clips`, `video`), `src`, `src_size`, `src_mtime_ns`, `dest`, `dest_size`, `dest_mtime_ns`, `lossless`, `salvaged`/`suspect` when they apply | an output is in place |
+| `renamed` | `src`, `dest`, `size`, `mtime_ns`, `reason` (`extension`, `take_over`, `rename_inplace`) | a name was changed, the content not |
+| `copied` | `src`, `dest`, `size`, `mtime_ns`, `reason` (`take_over`) | a misnamed file was copied to the target under its right name |
+| `removed` | `path`, `size`, `mtime_ns`, `how` (`trash`, `permanent`), `reason` (`converted`, `broken_output`), `kept` | an original went after its conversion (`kept` = the output), or `verify --fix` deleted a broken output (`kept` = `null`) |
+
+`lossless` is `true` when the pixels are unchanged: JPEG → JXL, PNG → JXL
+lossless, PNG → lossless WebP (up to 8 bits per channel; WebP cannot store
+16), GIF → WebP. In place, a video appears as `converted` to
+`name_h265.mp4`, then `removed` (the original), then `renamed` to
+`name.mp4`. Paths are absolute with symlinked folders resolved; a file name
+that is not valid UTF-8 is written with `\udcXX` escapes
+(`os.fsencode(json.loads(line)["src"])` gives back the bytes). An original
+whose trash failed and that is deleted only after a later run's question has
+`kept: null`; its `converted` event names the output.
+
+Events are written only after the action succeeded, never for skipped,
+discarded or failed files, and never in a dry run. The file is only ever
+appended to (one locked write per line) and never rotated, about 350 bytes
+per event. If it cannot be written, the run warns once and carries on.
+
 ### Launching by double-click
 
 Started from a file manager, the terminal would close as soon as the program
@@ -381,7 +421,7 @@ B-frames (`gpu_bf 0`), rate control (`gpu_rc_mode VBR`), or another encoder
 ## Tests
 
 ```bash
-python3 -m pytest                 # about 200 tests, 3 minutes
+python3 -m pytest                 # about 235 tests, 3 minutes
 python3 -m pytest -m "not slow"   # without the signal tests
 ```
 

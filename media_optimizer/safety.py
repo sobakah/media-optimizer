@@ -34,6 +34,7 @@ import threading
 from pathlib import Path
 
 from . import files, ui
+from .journal import journal
 from .ui import StyleUI as S
 
 
@@ -290,25 +291,35 @@ class Trash:
         self.force = force
         self.backend = os.environ.get("MO_TRASH", "auto")   # tests: "none" = always fail
         self._lock = threading.Lock()                       # video jobs run in parallel
+        # For the journal: the output that replaced a queued original. Only
+        # known for originals queued in this run; the list file keeps the
+        # Bash format (one path per line).
+        self.kept: dict[str, Path] = {}
 
-    def remove(self, path: Path) -> bool:
+    def remove(self, path: Path, kept: Path) -> bool:
+        """Remove the original of a conversion whose output kept is in place."""
         if not path.exists():
             return True
+        before = journal.snapshot(path)
         ok = False
         if self.backend != "none":
             ok = _send2trash(path) or _trash_command(path)
         if ok:
+            journal.removed(path, before, how="trash", reason="converted", kept=kept)
             return True
         if self.force:
             # Permanent deletion was already agreed to: no queue, so a rename
             # in place (name_h265 -> name) right after can take the name.
             try:
                 path.unlink()
-                return True
             except OSError:
                 pass
+            else:
+                journal.removed(path, before, how="permanent", reason="converted", kept=kept)
+                return True
         if self.pending is not None:
             with self._lock:
+                self.kept[str(path)] = kept
                 try:
                     with open(self.pending, "a", encoding="utf-8", errors="surrogateescape") as fh:
                         fh.write(f"{path}\n")
@@ -348,11 +359,14 @@ class Trash:
             return
         ok = err = 0
         for f in files:
+            before = journal.snapshot(f)
             try:
                 f.unlink()
                 ok += 1
             except OSError:
                 err += 1
+            else:
+                journal.removed(f, before, how="permanent", reason="converted", kept=self.kept.get(str(f)))
         line = f"  {S.GREEN}{ok} deleted{S.RESET}"
         if err:
             line += f", {S.RED}{err} failed{S.RESET}"

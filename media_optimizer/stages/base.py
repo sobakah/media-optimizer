@@ -301,10 +301,10 @@ class BatchStage:
         ui.say("CONFLICT", S.YELLOW, f"'{src.name}': {message}, original kept.", err=True)
         return FileResult(Kind.COLLISION)
 
-    def remove_original(self, src: Path) -> None:
-        """Only ever called after the output is verified and in place."""
+    def remove_original(self, src: Path, kept: Path) -> None:
+        """Only ever called after the output kept is verified and in place."""
         if self.ctx.delete:
-            self.trash.remove(src)
+            self.trash.remove(src, kept)
 
     # the run
     def _guarded(self, src: Path) -> tuple[FileResult, str | None]:

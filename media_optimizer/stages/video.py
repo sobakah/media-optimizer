@@ -44,6 +44,7 @@ from typing import Iterator
 
 from .. import cache, files, gpu, media, proc, safety, ui
 from ..config import RC_FATAL, RC_INTERRUPTED, RC_OK, RC_PARTIAL
+from ..journal import journal
 from ..runlog import log
 from ..ui import StyleUI as S
 from . import clips
@@ -747,7 +748,9 @@ class VideoStage:
             inc_pct = ui.pct_change(size, new)
             inc_h = ui.format_bytes(new - size)
             if salvaged and s.keep_salvaged_corrupt:
+                before = journal.snapshot(src)
                 safety.commit(src, tmp, dest)
+                journal.converted("video", src, before, dest, False, salvaged=True, suspect=suspect)
                 self.cache.add(src, "salvaged")
                 self._add_dest_to_cache(dest)
                 ui.card(S.MAGENTA, [f"{S.BOLD}FILE SALVAGED / REPAIRED:{S.RESET} {src.name}",
@@ -768,7 +771,9 @@ class VideoStage:
                 self._save_stats()
                 return
 
+        before = journal.snapshot(src)
         safety.commit(src, tmp, dest)
+        journal.converted("video", src, before, dest, False, salvaged=salvaged, suspect=suspect)
         self._count_kept(encoder, size, new, salvaged=salvaged)
         log.file(self.tag, "SALVAGED" if salvaged else "OK", src, dest.name, size, new)
         lines = [f"{S.BOLD}FILE:{S.RESET}    {src.name}",
@@ -787,7 +792,7 @@ class VideoStage:
         # Only now, with the output verified and in place. Never for a
         # suspicious picture or a salvaged source.
         if self.ctx.delete and not suspect and not salvaged:
-            self.trash.remove(src)
+            self.trash.remove(src, dest)
         dest = self._rename_inplace(src, dest)
         self.cache.add(src, "done")
         self._add_dest_to_cache(dest)
@@ -814,6 +819,7 @@ class VideoStage:
         except OSError:
             ui.say("RENAME", S.YELLOW, f"failed, '{dest.name}' kept.", err=True)
             return dest
+        journal.renamed(dest, src, "rename_inplace")
         ui.say("RENAME", S.CYAN, f"'{dest.name}' -> '{src.name}'")
         return src
 

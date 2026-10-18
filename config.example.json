@@ -32,6 +32,8 @@
   "log_file": null,
   "_log_max_kb": "The log is renamed to .log.1 at the start of a run once it is larger than this.",
   "log_max_kb": 5120,
+  "_journal_file": "Machine-readable journal of converted, renamed, copied and removed files (JSON Lines), read by picktag. null = journal.jsonl in the state folder, false = no journal. Independent of the run log.",
+  "journal_file": null,
   "_img_target": "Target format for JPEG and PNG. jxl keeps JPEG bit-exact; webp re-encodes JPEG lossily.",
   "img_target": "jxl",
   "_img_webp_quality": "Quality for lossy WebP.",
