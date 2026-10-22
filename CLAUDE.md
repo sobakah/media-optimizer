@@ -153,6 +153,13 @@ Breaking any of these has caused real data loss or silent corruption before.
   The address line (`web.ADDRESS_LINE`) is read by keepbest with cdimport's
   `_HANDOFF` pattern: keep its wording. A new file under `static/` needs a
   pattern in `pyproject.toml`'s package-data (tested).
+  The page never runs a stage itself: it starts `run -y … --events FILE`
+  as a child on a pty, with every setting as `MO_*` (`config.to_env`; the
+  environment beats the config file and inherited variables), reads the
+  saved state with `orchestrator._pick_state`, and folds the events into a
+  small state (`web.Progress`) instead of sending every event to the page.
+  A saved state needs an explicit choice (resume or `--reset`): with `-y`
+  the child would resume on its own.
 - **Keep compatible with folders the Bash version worked on**: flock on the
   working directory, `.part.<pid>.<random>.<ext>` and `.<stem>.molock`,
   `.video_conversion_cache.txt`, `.broken_videos.txt`, `.video_suspect.txt`,

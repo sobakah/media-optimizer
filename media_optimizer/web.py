@@ -23,19 +23,32 @@ failure there:
 
 from __future__ import annotations
 
+import codecs
+import copy
+import fcntl
 import hmac
 import json
 import logging
+import os
+import re
 import secrets
+import signal
+import struct
+import subprocess
 import sys
+import tempfile
+import termios
 import threading
 import time
 import webbrowser
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .config import NAME, RC_OK, Settings, __version__
+from . import questions
+from .config import NAME, RC_OK, RULES, Settings, __version__, check_value, to_env
+from .config import _describe as describe
 
 log = logging.getLogger(__name__)
 
@@ -73,31 +86,156 @@ def local_page(url: str) -> bool:
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, message: str) -> None:
+    def __init__(self, status: int, message: str, extra: dict | None = None) -> None:
         super().__init__(message)
         self.status = status
         self.message = message
+        self.extra = extra or {}
+
+
+# --- the child's output ------------------------------------------------------------
+_LINE_BREAK = re.compile(r"\r\n|\n|\r")
+LOG_LINES = 4000
+
+
+class Log:
+    """The child's terminal output, colours included (the page turns them
+    into spans). A line a progress display redraws with \r keeps only its
+    newest state, as in cdimport."""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+        self.dropped = 0                  # lines cut off the front: indexes stay stable
+        self.partial = ""
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    def feed(self, data: bytes) -> None:
+        text = self.partial + self._decoder.decode(data)
+        pieces = _LINE_BREAK.split(text)
+        for piece, brk in zip(pieces, _LINE_BREAK.findall(text)):
+            if brk != "\r":              # a piece before a lone \r is redrawn by what follows
+                self.lines.append(piece)
+        self.partial = pieces[-1]
+        if len(self.lines) > LOG_LINES:
+            cut = len(self.lines) - LOG_LINES
+            del self.lines[:cut]
+            self.dropped += cut
+
+    def since(self, index: int) -> dict:
+        start = max(index, self.dropped)
+        return {"from": start, "lines": self.lines[start - self.dropped:], "partial": self.partial}
+
+
+# --- the events, folded into what the page draws ---------------------------------------
+STAGE_TITLES = {"images": "Images", "gifs": "GIFs", "clips": "Short clips", "video": "Videos",
+                "verify": "Final check"}
+RECENT_FILES = 300
+MAX_MESSAGES = 500
+
+
+class Progress:
+    """The events of a run (events.py), folded into a small state: per stage
+    its counts and sizes, the newest files, the messages, the running
+    encodes. A run over 100 000 files must not send 100 000 events each time."""
+
+    def __init__(self) -> None:
+        self.stages: dict[str, dict] = {}
+        self.order: list[str] = []
+        self.current: str | None = None
+        self.files: deque = deque(maxlen=RECENT_FILES)
+        self.messages: list[dict] = []
+        self.encodes: dict[int, dict] = {}
+        self.dry_run = False
+
+    def _stage(self, name: str) -> dict:
+        if name not in self.stages:
+            self.stages[name] = {"stage": name, "title": STAGE_TITLES.get(name, name), "total": None, "done": 0,
+                                 "outcomes": {}, "before": 0, "after": 0, "state": "waiting", "code": None,
+                                 "counters": None}
+            self.order.append(name)
+        return self.stages[name]
+
+    def apply(self, ev: dict) -> None:
+        kind = ev.get("event")
+        if kind == "run_start":
+            self.dry_run = bool(ev.get("dry_run"))
+        elif kind == "plan":
+            for entry in ev.get("stages", []):
+                st = self._stage(entry["stage"])
+                st["total"] = entry.get("total")
+                if entry.get("done"):
+                    st["state"] = "earlier"           # finished by the interrupted run
+        elif kind == "stage_start":
+            st = self._stage(ev["stage"])
+            st["state"] = "running"
+            if ev.get("total") is not None:
+                st["total"] = ev["total"]
+            self.current = ev["stage"]
+        elif kind == "stage_end":
+            st = self._stage(ev["stage"])
+            st["state"] = "done"
+            st["code"], st["counters"] = ev.get("code"), ev.get("counters")
+            self.encodes.clear()
+        elif kind == "done":
+            st = self._stage(ev["stage"])
+            st["done"] += 1
+            outcome = ev.get("outcome") or "finished"
+            st["outcomes"][outcome] = st["outcomes"].get(outcome, 0) + 1
+        elif kind == "file":
+            st = self._stage(ev["stage"])
+            if ev.get("status") in ("OK", "SALVAGED") and ev.get("before") and ev.get("after"):
+                st["before"] += ev["before"]
+                st["after"] += ev["after"]
+            self.files.append({k: ev.get(k) for k in ("stage", "status", "src", "dest", "before", "after")})
+        elif kind == "message" and ev.get("level") in ("error", "warning") and len(self.messages) < MAX_MESSAGES:
+            self.messages.append({"level": ev["level"], "tag": ev.get("tag"), "text": ev.get("text"),
+                                  "stage": self.current})
+        elif kind == "job_start":
+            self.encodes[ev["idx"]] = {"idx": ev["idx"], "total": ev.get("total"), "src": ev.get("src"),
+                                       "encoder": ev.get("encoder"), "percent": None, "speed": None, "eta": None}
+        elif kind == "encode" and ev.get("idx") in self.encodes:
+            self.encodes[ev["idx"]].update(percent=ev.get("percent"), speed=ev.get("speed"), eta=ev.get("eta"))
+
+    def finish_job(self, src: str) -> None:
+        for idx, job in list(self.encodes.items()):
+            if job["src"] == src:
+                del self.encodes[idx]
+
+    def snapshot(self) -> dict:
+        return {"stages": [self.stages[n] for n in self.order], "current": self.current,
+                "files": list(self.files), "messages": self.messages, "encodes": list(self.encodes.values()),
+                "dryRun": self.dry_run}
 
 
 # --- what the page shows ---------------------------------------------------------
 class Session:
-    """The page's state. Every change gets a new revision; the page asks for
-    the state whenever the revision it saw is old."""
+    """The page's state: the folder and settings while setting up, then the
+    child run and its progress. Every change gets a new revision; the page
+    asks for the state whenever the revision it saw is old."""
 
     def __init__(self, settings: Settings, origins: dict[str, str], source: Path | None, target: Path | None,
-                 back: tuple[str, str] | None = None) -> None:
+                 back: tuple[str, str] | None = None, *, dry_run: bool = False, reset: bool = False) -> None:
         self.settings = settings
         self.origins = origins
         self.source = source
         self.target = target
         self.back_url, self.back_name = back if back else ("", "")
+        self.dry_run = dry_run            # presets of the form, from -n and --reset
+        self.reset = reset
         self.phase = "setup"              # setup, running, finished
-        self.code: int | None = None      # the exit code once finished
+        self.code: int | None = None      # the exit code of the last run
+        self.child: subprocess.Popen | None = None
+        self.log = Log()
+        self.progress = Progress()
+        self.stopping = False
+        self.run_number = 0               # the page's log belongs to one run
+        self._tmp: tempfile.TemporaryDirectory | None = None
         self._cond = threading.Condition()
         # From 1: the page's first request (since=0) is answered at once and
         # every later one waits; starting at 0 made the page ask in a loop.
         self._rev = 1
 
+    # revisions
     def bump(self) -> None:
         with self._cond:
             self._rev += 1
@@ -108,20 +246,224 @@ class Session:
             if since >= self._rev and timeout > 0:
                 self._cond.wait(timeout)
 
-    def snapshot(self) -> dict:
+    def snapshot(self, log_from: int = 0, log_run: int = 0) -> dict:
         with self._cond:
-            return {"rev": self._rev, "version": __version__, "phase": self.phase, "code": self.code,
+            data = {"rev": self._rev, "version": __version__, "phase": self.phase, "code": self.code,
                     "source": str(self.source) if self.source else "",
                     "target": str(self.target) if self.target else "",
-                    "returnUrl": self.back_url, "returnName": self.back_name or "the previous page"}
+                    "returnUrl": self.back_url, "returnName": self.back_name or "the previous page",
+                    "stopping": self.stopping, "run": self.run_number}
+            if self.phase != "setup":
+                data["progress"] = self.progress.snapshot()
+                # A request that still counts lines of an earlier run gets this one from the start.
+                data["log"] = self.log.since(log_from if log_run == self.run_number else 0)
+            return data
+
+    # setting up
+    def folder_info(self) -> dict:
+        """What the page shows about the chosen folder: whether it can be
+        used, an interrupted run to resume, the subfolders, notes."""
+        from . import cache, folders, orchestrator, safety
+
+        info: dict = {"source": str(self.source) if self.source else "",
+                      "target": str(self.target) if self.target else "", "error": None, "resume": None,
+                      "busy": None, "tree": [], "rootCounts": [0, 0], "notes": [], "dryRun": self.dry_run,
+                      "reset": self.reset}
+        if self.source is None:
+            info["error"] = "Choose the folder to convert."
+            return info
+        if not self.source.is_dir():
+            info["error"] = f"Folder not found: {self.source}"
+            return info
+        if self.target is not None and self.target == self.source:
+            self.target = None
+            info["target"] = ""
+        state, busy = orchestrator._pick_state(orchestrator.Request(self.settings, str(self.source), None))
+        info["busy"] = busy
+        if state is not None:
+            info["resume"] = {"output": state.output, "done": state.done,
+                              "changed": {k: v for k, v in state.settings.items()
+                                          if k in RULES and getattr(Settings(), k) != v}}
+        counts = folders.media_counts(self.source, self.settings)
+        info["rootCounts"] = list(counts.get(folders.ROOT, (0, 0)))
+        info["tree"] = [{"rel": rel, "images": counts.get(rel, (0, 0))[0], "videos": counts.get(rel, (0, 0))[1]}
+                        for rel in folders.subfolder_entries(counts)]
+        work = self.target if self.target is not None else self.source
+        if work.is_dir() and cache.find_legacy(work, self.settings.include_hidden):
+            info["notes"].append("Video caches of an older version were found; this run converts them to the "
+                                 "new format (the old file is kept as .v1.bak).")
+        if not safety.trash_available():
+            info["notes"].append("No trash is available (send2trash, gio, trash-put). Originals are kept and "
+                                 "listed instead of being deleted.")
+        return info
+
+    def setup(self) -> dict:
+        return {"folder": self.folder_info(), "schema": questions.schema(self.settings, self.origins)}
+
+    def set_folder(self, source: str, target: str) -> dict:
+        with self._cond:
+            if self.phase != "setup":
+                raise ApiError(409, "A run is going on.")
+        self.source = Path(source).expanduser().absolute() if source.strip() else None
+        self.target = Path(target).expanduser().absolute() if target.strip() else None
+        self.bump()
+        return self.setup()
+
+    # running
+    def start(self, body: dict) -> None:
+        with self._cond:
+            if self.phase == "running":
+                raise ApiError(409, "A run is going on.")
+        info = self.folder_info()
+        if info["error"]:
+            raise ApiError(400, info["error"])
+        if info["busy"]:
+            raise ApiError(409, info["busy"])
+        mode = body.get("mode", "new")
+        if info["resume"] and mode not in ("resume", "reset"):
+            raise ApiError(409, "This folder has an interrupted run: resume it or start over.")
+        s, errors = _settings_from(self.settings, body.get("settings") or {})
+        if errors:
+            raise ApiError(400, "Some settings are not valid.", {"fields": errors})
+        self._tmp = tempfile.TemporaryDirectory(prefix="mo_web_")
+        events_file = Path(self._tmp.name) / "events.jsonl"
+        events_file.touch()
+        cmd = [sys.executable, "-m", "media_optimizer", "run", "-y", str(self.source)]
+        if self.target is not None:
+            cmd.append(str(self.target))
+        if mode == "reset":
+            cmd.append("--reset")
+        if body.get("dry_run"):
+            cmd.append("-n")
+        cmd += ["--events", str(events_file)]
+        env = {**os.environ, **to_env(s), "MO_HOLD": "0", "COLUMNS": str(LOG_COLUMNS)}
+        master, slave = os.openpty()
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, LOG_COLUMNS, 0, 0))
+        except OSError:
+            pass
+        try:
+            child = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=slave, stderr=slave, env=env,
+                                     close_fds=True)
+        except OSError as exc:
+            os.close(master)
+            os.close(slave)
+            raise ApiError(500, f"Could not start the run: {exc}") from exc
+        os.close(slave)
+        with self._cond:
+            self.child, self.phase, self.code, self.stopping = child, "running", None, False
+            self.log, self.progress = Log(), Progress()
+            self.run_number += 1
+        self.bump()
+        reader = threading.Thread(target=self._read_output, args=(master,), name="mo-web-output", daemon=True)
+        tail = threading.Thread(target=self._read_events, args=(events_file, child), name="mo-web-events",
+                                daemon=True)
+        reader.start()
+        tail.start()
+        threading.Thread(target=self._wait, args=(child, reader, tail), name="mo-web-wait", daemon=True).start()
+
+    def _read_output(self, master: int) -> None:
+        try:
+            while True:
+                try:
+                    data = os.read(master, 65536)
+                except OSError:           # EIO: the child closed the terminal
+                    break
+                if not data:
+                    break
+                with self._cond:
+                    self.log.feed(data)
+                self.bump()
+        finally:
+            os.close(master)
+
+    def _read_events(self, path: Path, child: subprocess.Popen) -> None:
+        with open(path, "rb") as fh:
+            pending = b""
+            while True:
+                chunk = fh.read()
+                if chunk:
+                    pending += chunk
+                    *lines, pending = pending.split(b"\n")
+                    with self._cond:
+                        for line in lines:
+                            try:
+                                ev = json.loads(line)
+                            except ValueError:
+                                continue
+                            self.progress.apply(ev)
+                            if ev.get("event") == "done" and ev.get("stage") == "video":
+                                self.progress.finish_job(ev.get("src"))
+                    self.bump()
+                elif child.poll() is not None:
+                    break
+                else:
+                    time.sleep(0.2)
+
+    def _wait(self, child: subprocess.Popen, reader: threading.Thread, tail: threading.Thread) -> None:
+        code = child.wait()
+        reader.join(timeout=5)
+        tail.join(timeout=5)
+        with self._cond:
+            self.code, self.phase, self.stopping = code, "finished", False
+            if self._tmp is not None:
+                self._tmp.cleanup()
+                self._tmp = None
+        self.bump()
+
+    def stop(self) -> bool:
+        """Ctrl+C for the run: it saves its state and ends with 130."""
+        with self._cond:
+            child = self.child
+            if self.phase != "running" or child is None or child.poll() is not None:
+                return False
+            self.stopping = True
+        try:
+            child.send_signal(signal.SIGINT)
+        except OSError:
+            return False
+        self.bump()
+        return True
+
+    def again(self) -> None:
+        """Back to the form for another folder."""
+        with self._cond:
+            if self.phase != "finished":
+                raise ApiError(409, "The run has not finished.")
+            self.phase = "setup"
+        self.bump()
 
     def quit(self) -> None:
         """The page's "Close" before or after a run."""
         with self._cond:
+            if self.phase == "running":
+                raise ApiError(409, "A run is going on: stop it first.")
             if self.code is None:
                 self.code = RC_OK
             self.phase = "finished"
         self.bump()
+
+
+LOG_COLUMNS = 110
+
+
+def _settings_from(base: Settings, values: dict) -> tuple[Settings, dict[str, str]]:
+    """The form's values, checked by the same rules as a config file."""
+    s = copy.deepcopy(base)
+    errors: dict[str, str] = {}
+    for name, value in values.items():
+        if name not in RULES:
+            errors[name] = "unknown setting"
+            continue
+        rule = RULES[name]
+        base_kind = rule[1][0] if rule[0] == "opt" else rule[0]
+        if base_kind == "num" and isinstance(value, int) and not isinstance(value, bool):
+            value = float(value)
+        if not check_value(rule, value):
+            errors[name] = f"expected {describe(rule)}"
+            continue
+        setattr(s, name, value)
+    return s, errors
 
 
 # --- HTTP ------------------------------------------------------------------------
@@ -244,7 +586,7 @@ class _Handler(BaseHTTPRequestHandler):
             return  # the page went away mid-answer (a closed tab, a reload)
         except ApiError as exc:
             if self.path.startswith("/api/"):
-                self._send_json(exc.status, {"error": exc.message})
+                self._send_json(exc.status, {"error": exc.message, **exc.extra})
             else:
                 self._send(exc.status, exc.message.encode("utf-8"), "text/plain; charset=utf-8")
         except Exception as exc:  # a bug must not kill the server thread silently
@@ -278,10 +620,25 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/state":
             since = (query.get("since") or ["0"])[0]
             since_rev = int(since) if since.isdigit() else 0
+            log_from = (query.get("log") or ["0"])[0]
+            log_run = (query.get("run") or ["0"])[0]
             # Long poll: wait briefly for something new, so progress shows
             # without the page asking ten times a second.
             session.wait_for_change(since_rev, timeout=5.0 if since_rev else 0)
-            return session.snapshot()
+            return session.snapshot(int(log_from) if log_from.isdigit() else 0,
+                                    int(log_run) if log_run.isdigit() else 0)
+        if method == "GET" and path == "/api/setup":
+            return session.setup()
+        if method == "POST" and path == "/api/folder":
+            return session.set_folder(str(body.get("source") or ""), str(body.get("target") or ""))
+        if method == "POST" and path == "/api/start":
+            session.start(body)
+            return {"ok": True}
+        if method == "POST" and path == "/api/stop":
+            return {"stopped": session.stop()}
+        if method == "POST" and path == "/api/again":
+            session.again()
+            return {"ok": True}
         if method == "POST" and path == "/api/quit":
             session.quit()
             return {"ok": True}
@@ -313,10 +670,21 @@ def serve(session: Session, open_browser: bool = True, port: int = 0) -> int:
     sys.stdout.flush()
     try:
         while not server.stop.wait(1.0):
-            if server.page_gone():
+            if server.page_gone() and session.phase != "running":
                 break
     except KeyboardInterrupt:
-        session.code = 130 if session.code is None else session.code
+        # The run is in our process group and got the Ctrl+C too: it saves
+        # its state and ends with 130. Wait for it.
+        child = session.child
+        if child is not None and child.poll() is None:
+            try:
+                child.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+            session.code = child.returncode
+        elif session.code is None:
+            session.code = 130
     finally:
         server.shutdown()
         server.server_close()

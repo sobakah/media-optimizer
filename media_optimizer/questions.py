@@ -35,12 +35,13 @@ class Question:
 
 @dataclass(frozen=True)
 class Section:
-    title: str
+    title: str                    # the terminal's heading
+    label: str                    # the page's
     questions: tuple[Question, ...]
 
 
 FULL_RUN = (
-    Section("GLOBAL SETTINGS", (
+    Section("GLOBAL SETTINGS", "Global settings", (
         Question("preflight", "Correct wrong file extensions by content first?"),
         Question("delete_original", DELETE_TEXT, special="delete"),
         Question("verify_deep", "Fully decode image outputs to verify them (slower)?"),
@@ -49,7 +50,7 @@ FULL_RUN = (
         Question("max_workers", "Parallel workers for images/GIFs (empty = all cores)"),
         Question("use_cache", RESCAN_TEXT, special="rescan"),
     )),
-    Section("IMAGES & GIFS", (
+    Section("IMAGES & GIFS", "Images & GIFs", (
         Question("img_target", "Image target format (jxl or webp)"),
         Question("img_webp_quality", "WebP quality, higher is better (0-100)", ("img_target", "webp")),
         Question("jxl_effort", "JXL effort, higher is slower and smaller (1-10)"),
@@ -57,7 +58,7 @@ FULL_RUN = (
         Question("png_quality", "JXL quality for PNG, higher is better (1-100)", ("png_mode", "lossy")),
         Question("gif_method", "WebP compression level for GIFs (0-6)"),
     )),
-    Section("VIDEO (H.265)", (
+    Section("VIDEO (H.265)", "Video (H.265)", (
         Question("encoder_mode", "Video encoder (auto, gpu or cpu)"),
         Question("bitrate_threshold_kbps", "Bitrate above which the GPU is used (kb/s)", ("encoder_mode", "auto")),
         Question("gpu_qp", "GPU quality, lower is better (24-28)", ("encoder_mode", "auto", "gpu")),
@@ -124,7 +125,7 @@ def schema(s: Settings, origins: dict[str, str] | None = None, sections=FULL_RUN
     cli). JSON-serialisable."""
     origins = origins or {}
     return {
-        "questionnaire": [{"title": sec.title,
+        "questionnaire": [{"title": sec.label,
                            "questions": [{"setting": q.setting, "text": q.text, "when": list(q.when),
                                           "special": q.special or None} for q in sec.questions]}
                           for sec in sections],

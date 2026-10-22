@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import re
 import subprocess
 import sys
@@ -200,3 +201,164 @@ def test_static_files_are_packaged():
     assert files
     uncovered = [f for f in files if not any(Path(f).match(g) and f.count("/") == g.count("/") for g in globs)]
     assert not uncovered
+
+
+# --- the session: setting up, running, stopping ------------------------------------------
+def _session(source, target=None, **kw):
+    from media_optimizer.config import load_settings
+    origins: dict[str, str] = {}
+    s, _, _ = load_settings(origins=origins)
+    return web.Session(s, origins, source, target, **kw)
+
+
+def _wait_finished(session, timeout=120):
+    end = time.monotonic() + timeout
+    while session.phase != "finished" and time.monotonic() < end:
+        time.sleep(0.1)
+    assert session.phase == "finished", session.log.lines[-20:]
+
+
+def _interrupted_state(tmp_path, source, output, **extra):
+    state = {"status": "INTERRUPTED", "source": str(source), "output": str(output) if output else None,
+             "settings": {"img_target": "webp"}, "done": {"images": False, "gifs": True, "clips": True,
+                                                         "video": True}, **extra}
+    (tmp_path / "state").mkdir(exist_ok=True)
+    (tmp_path / "state" / "state.json").write_text(json.dumps(state))
+
+
+def test_folder_info(folder, tmp_path):
+    assert _session(tmp_path / "missing").folder_info()["error"].startswith("Folder not found")
+    assert _session(None).folder_info()["error"] == "Choose the folder to convert."
+    d = folder("w1", "photo.jpg", "a/b/x.jpg=photo.jpg", "a/l.mp4=long.mp4")
+    info = _session(d).folder_info()
+    assert info["error"] is None and info["resume"] is None and info["busy"] is None
+    assert info["rootCounts"] == [1, 0]
+    assert info["tree"] == [{"rel": "a", "images": 0, "videos": 1}, {"rel": "a/b", "images": 1, "videos": 0}]
+    _interrupted_state(tmp_path, d, tmp_path / "w1out")
+    resume = _session(d).folder_info()["resume"]
+    assert resume["changed"] == {"img_target": "webp"} and resume["done"]["images"] is False
+    _interrupted_state(tmp_path, d, None, status="RUNNING", pid=os.getppid())     # a live process, not ours
+    assert "Another run is working" in _session(d).folder_info()["busy"]
+
+
+def test_start_checks_the_values_and_the_resume_choice(folder, tmp_path):
+    d = folder("w2", "photo.jpg")
+    session = _session(d)
+    with pytest.raises(web.ApiError) as exc:
+        session.start({"settings": {"jxl_effort": 99, "nope": 1, "png_mode": "half"}})
+    assert exc.value.status == 400 and set(exc.value.extra["fields"]) == {"jxl_effort", "nope", "png_mode"}
+    _interrupted_state(tmp_path, d, None)
+    with pytest.raises(web.ApiError) as exc:
+        _session(d).start({})
+    assert exc.value.status == 409 and "resume it or start over" in exc.value.message
+    assert session.phase == "setup" and session.child is None
+
+
+def test_a_run_from_the_page(folder, tmp_path):
+    """The form's values reach the child through MO_*, the folder choice
+    included; the progress and the colourless log come back."""
+    d = folder("w3", "photo.jpg", "anim.gif", "sub/x.jpg=photo.jpg")
+    o = tmp_path / "w3out"
+    session = _session(d, o)
+    session.start({"settings": {"img_target": "webp", "exclude_folders": ["sub"], "subfolders": "include"}})
+    assert session.phase == "running"
+    _wait_finished(session)
+    assert session.code == 0
+    assert (o / "photo.webp").exists() and (o / "anim.webp").exists() and not (o / "sub").exists()
+    snap = session.snapshot()
+    stages = {s["stage"]: s for s in snap["progress"]["stages"]}
+    assert stages["images"]["done"] == stages["images"]["total"] == 1 and stages["images"]["state"] == "done"
+    assert stages["images"]["outcomes"] == {"converted": 1} and stages["gifs"]["after"] > 0
+    assert any("ALL STAGES COMPLETED" in line for line in snap["log"]["lines"])
+    assert snap["run"] == 1
+
+
+def test_start_over_passes_reset(folder, tmp_path):
+    d = folder("w4", "photo.jpg")
+    _interrupted_state(tmp_path, d, None)          # its saved settings would make WebP
+    session = _session(d, tmp_path / "w4out")
+    session.start({"mode": "reset", "settings": {}})
+    _wait_finished(session)
+    assert session.code == 0 and (tmp_path / "w4out" / "photo.jxl").exists(), session.log.lines[-10:]
+    assert not any("resuming" in line for line in session.log.lines)
+
+
+def test_quit_and_again_follow_the_phase(folder, tmp_path):
+    session = _session(folder("w5", "photo.jpg"))
+    with pytest.raises(web.ApiError):
+        session.again()
+    session.phase = "running"
+    with pytest.raises(web.ApiError):
+        session.quit()
+    session.phase = "finished"
+    session.again()
+    assert session.phase == "setup"
+
+
+@pytest.mark.slow
+def test_stop_saves_the_state(folder, tmp_path):
+    """Stop is Ctrl+C for the run: 130, and the next start offers to resume."""
+    d = folder("w6", "s.mp4=slow.mp4")
+    session = _session(d, tmp_path / "w6out")
+    session.start({"settings": {"min_size_mb": 0, "enable_probe": False, "encoder_mode": "cpu",
+                                "cpu_preset": "slow"}})
+    end = time.monotonic() + 30
+    while not session.progress.encodes and time.monotonic() < end:
+        time.sleep(0.2)
+    assert session.progress.encodes, session.log.lines[-10:]
+    assert session.stop()
+    _wait_finished(session, 60)
+    assert session.code == 130
+    assert _session(d).folder_info()["resume"] is not None
+
+
+def test_log_keeps_the_newest_state_of_a_redrawn_line():
+    log = web.Log()
+    log.feed(b"one\n  [1/3] 0 skipped\r  [2/3] 0 skipped\r\x1b[K")
+    log.feed("two é".encode()[:-1])            # a character split across reads
+    log.feed("two é".encode()[-1:] + b"\nthree")
+    assert log.lines == ["one", "\x1b[Ktwo é"] and log.partial == "three"
+    assert log.since(1) == {"from": 1, "lines": ["\x1b[Ktwo é"], "partial": "three"}
+
+
+def test_log_drops_old_lines_with_stable_indexes(monkeypatch):
+    monkeypatch.setattr(web, "LOG_LINES", 3)
+    log = web.Log()
+    log.feed(b"".join(b"%d\n" % i for i in range(5)))
+    assert log.lines == ["2", "3", "4"] and log.dropped == 2
+    assert log.since(0)["from"] == 2 and log.since(4)["lines"] == ["4"]
+
+
+def test_a_new_run_sends_its_log_from_the_start(tmp_path):
+    session = web.Session(Settings(), {}, tmp_path, None)
+    session.phase, session.run_number = "running", 2
+    session.log.feed(b"a\nb\n")
+    assert session.snapshot(log_from=5, log_run=1)["log"]["lines"] == ["a", "b"], "lines of run 1 counted"
+    assert session.snapshot(log_from=1, log_run=2)["log"]["lines"] == ["b"]
+
+
+def test_progress_folds_the_events():
+    p = web.Progress()
+    for ev in [{"event": "run_start", "dry_run": False},
+               {"event": "plan", "stages": [{"stage": "images", "total": 3, "done": False},
+                                            {"stage": "video", "total": 1, "done": True}]},
+               {"event": "stage_start", "stage": "images", "total": 3},
+               {"event": "file", "stage": "images", "status": "OK", "src": "/a.jpg", "dest": "a.jxl", "before": 100,
+                "after": 60},
+               {"event": "done", "stage": "images", "src": "/a.jpg", "outcome": "converted"},
+               {"event": "done", "stage": "images", "src": "/b.jpg", "outcome": "skipped", "reason": None},
+               {"event": "message", "level": "error", "tag": "ERROR", "text": "boom"},
+               {"event": "message", "level": "info", "tag": "CACHE", "text": "ignored"},
+               {"event": "job_start", "stage": "video", "idx": 1, "total": 1, "src": "/v.mp4", "encoder": "gpu"},
+               {"event": "encode", "stage": "video", "idx": 1, "percent": 40.0, "speed": "3x", "eta": 12}]:
+        p.apply(ev)
+    snap = p.snapshot()
+    images, video = snap["stages"]
+    assert images == {**images, "total": 3, "done": 2, "state": "running", "before": 100, "after": 60,
+                      "outcomes": {"converted": 1, "skipped": 1}}
+    assert video["state"] == "earlier"
+    assert snap["messages"] == [{"level": "error", "tag": "ERROR", "text": "boom", "stage": "images"}]
+    assert snap["encodes"] == [{"idx": 1, "total": 1, "src": "/v.mp4", "encoder": "gpu", "percent": 40.0,
+                                "speed": "3x", "eta": 12}]
+    p.finish_job("/v.mp4")
+    assert p.snapshot()["encodes"] == []

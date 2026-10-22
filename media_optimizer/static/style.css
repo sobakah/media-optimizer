@@ -88,3 +88,68 @@ main { max-width: 1000px; margin: 0 auto; padding: 20px 24px 40px; display: flex
 .overlay .section { max-width: 440px; }
 .toast { position: fixed; right: 16px; bottom: 16px; z-index: 10; padding: 10px 14px; border-radius: 10px;
          background: var(--bad-bg); color: var(--bad); box-shadow: var(--shadow); max-width: min(480px, calc(100vw - 32px)); }
+
+/* the form */
+input[type=text], input[type=number], select, textarea {
+  border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); padding: 7px 10px; min-width: 0; }
+input[type=text] { width: 100%; }
+.row input[type=text] { flex: 1 1 320px; width: auto; }
+input[type=number] { width: 140px; }
+textarea { width: 100%; resize: vertical; }
+.field { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; }
+.field > label { font-weight: 600; }
+.field.check label, label.check { display: flex; gap: 8px; align-items: baseline; font-weight: 500; cursor: pointer; }
+.field .doc { color: var(--muted); font-size: 12.5px; }
+.field.invalid input, .field.invalid select { border-color: var(--bad); }
+.origin { align-self: flex-start; font-size: 11.5px; color: var(--accent-ink); background: var(--accent-soft);
+          border-radius: 6px; padding: 0 6px; }
+.error { color: var(--bad); }
+.note { color: var(--warn); background: var(--warn-bg); border-radius: 8px; padding: 6px 10px; }
+label.inline, label.choice { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+fieldset.plain { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+fieldset.plain:disabled { opacity: .55; }
+details.all summary { cursor: pointer; list-style: revert; }
+details.all summary h2 { display: inline; }
+.group h3 { margin: 14px 0 2px; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.resume { border: 2px solid var(--warn); }
+.start { border: 2px solid var(--accent); }
+.tree { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.tree label { display: inline-flex; gap: 8px; align-items: baseline; cursor: pointer; }
+.link { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font-size: 12.5px; }
+.link:hover { text-decoration: underline; }
+.between { justify-content: space-between; }
+
+/* the run */
+.tabs { display: flex; gap: 4px; align-items: center; border-bottom: 1px solid var(--border); }
+.tabs [role=tab] { border: 0; background: none; padding: 8px 14px; cursor: pointer; color: var(--muted);
+                   border-bottom: 2px solid transparent; font-weight: 600; }
+.tabs [role=tab].on { color: var(--ink); border-bottom-color: var(--accent); }
+.stage.waiting { opacity: .65; }
+.stage.bad { border-color: var(--bad); }
+.bar { height: 8px; border-radius: 4px; background: var(--hover); overflow: hidden; }
+.bar > div { height: 100%; background: var(--accent); transition: width .4s; }
+.bar.thin { height: 5px; flex: 1 1 120px; }
+@media (prefers-reduced-motion: reduce) { .bar > div { transition: none; } }
+.encode { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding-top: 4px; }
+.encode .path { flex: 1 1 200px; overflow-wrap: anywhere; }
+.msg { display: flex; gap: 8px; align-items: baseline; overflow-wrap: anywhere; }
+.msg.error .tag { color: var(--bad); }
+.msg.warning .tag { color: var(--warn); }
+.tag { font-weight: 700; font-size: 12px; flex-shrink: 0; }
+.files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.files li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.files li .tag { color: var(--ok); min-width: 70px; }
+.files li.other .tag { color: var(--warn); }
+.files .path { flex: 1 1 260px; overflow-wrap: anywhere; }
+.log { background: var(--tool-bg); color: var(--tool-ink); border-radius: 10px; padding: 10px 12px; height: 60vh;
+       overflow: auto; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log .partial { color: var(--tool-faint); }
+.ansi-b { font-weight: 700; }
+.ansi-dim { opacity: .7; }
+.ansi-red { color: #FCA5A5; }
+.ansi-green { color: #86EFAC; }
+.ansi-yellow { color: #FDE68A; }
+.ansi-blue { color: #93C5FD; }
+.ansi-magenta { color: #F0ABFC; }
+.ansi-cyan { color: #67E8F9; }
+.ansi-bg-green { background: #16A34A; color: #0B0B0E; }

@@ -430,7 +430,8 @@ def _run_web(args) -> int:
     source = source or files.suggested_source() or None
     session = web.Session(s, origins, Path(source).expanduser().absolute() if source else None,
                           Path(output).expanduser().absolute() if output else None,
-                          (args.return_url, args.return_name) if args.return_url else None)
+                          (args.return_url, args.return_name) if args.return_url else None,
+                          dry_run=args.dry_run, reset=args.reset)
     return web.serve(session, open_browser=not args.no_browser)
 
 
