@@ -362,3 +362,140 @@ def test_progress_folds_the_events():
                                 "speed": "3x", "eta": 12}]
     p.finish_job("/v.mp4")
     assert p.snapshot()["encodes"] == []
+
+
+# --- closing the tab, the background, the notification ----------------------------------
+_FAKE_RUN = """
+import json, signal, sys, time
+from pathlib import Path
+events, release = sys.argv[1], Path(sys.argv[2])
+def emit(**ev):
+    with open(events, "a") as fh:
+        fh.write(json.dumps({"v": 1, "ts": "", **ev}) + "\\n")
+def stop(*args):
+    print("stopped, state saved", flush=True)
+    emit(event="run_end", code=130)
+    sys.exit(130)
+signal.signal(signal.SIGINT, stop)
+emit(event="run_start", command="run", source="/x", target=None, dry_run=False, pid=0)
+emit(event="plan", stages=[{"stage": "images", "total": 1, "done": False}])
+emit(event="stage_start", stage="images", total=1)
+print("working", flush=True)
+while not release.exists():
+    time.sleep(0.05)
+emit(event="file", stage="images", status="OK", src="/x/a.jpg", dest="a.jxl", before=3000, after=1000)
+emit(event="done", stage="images", src="/x/a.jpg", outcome="converted")
+emit(event="stage_end", stage="images", code=0, counters={})
+emit(event="run_end", code=0)
+"""
+
+
+class _FakeServer:
+    def __init__(self):
+        self.gone = False
+        self.last_contact = None
+
+    def page_gone(self):
+        return self.gone
+
+
+@pytest.fixture
+def fake_run(tmp_path):
+    """A session whose run is a stand-in: it waits until released, or ends
+    with 130 on Ctrl+C."""
+    script = tmp_path / "fake_run.py"
+    script.write_text(_FAKE_RUN)
+    release = tmp_path / "release"
+    session = web.Session(Settings(), {}, tmp_path, None)
+    session.command = lambda mode, dry_run, events_file: [sys.executable, str(script), str(events_file), str(release)]
+    session.start({})
+    end = time.monotonic() + 10
+    while not any("working" in line for line in session.log.lines) and time.monotonic() < end:
+        time.sleep(0.05)
+    session.release = lambda: release.touch()
+    yield session
+    release.touch()
+    if session.child is not None and session.child.poll() is None:
+        session.child.kill()
+
+
+def test_closing_the_tab_stops_the_run(fake_run):
+    server = _FakeServer()
+    watch = web.Watch(server, fake_run, "http://127.0.0.1:1/?token=x", notify=lambda *a, **k: pytest.fail("notified"))
+    assert not watch.tick(), "the page is there"
+    server.gone = True
+    assert not watch.tick() and fake_run.stopping, "Ctrl+C for the run"
+    _wait_finished(fake_run, 10)
+    assert fake_run.code == 130 and any("state saved" in line for line in fake_run.log.lines)
+    assert watch.tick(), "then the program ends"
+
+
+def test_a_background_run_outlives_the_tab(fake_run, monkeypatch):
+    sent = []
+    server = _FakeServer()
+    watch = web.Watch(server, fake_run, "http://127.0.0.1:1/?token=x", notify=lambda *a, **k: sent.append((a, k)))
+    fake_run.keep_in_background()
+    server.gone = True
+    assert not watch.tick() and not fake_run.stopping
+    fake_run.release()
+    _wait_finished(fake_run, 10)
+    assert fake_run.code == 0
+    assert not watch.tick(), "waits for the page to be opened again"
+    assert len(sent) == 1
+    (title, body), options = sent[0]
+    assert title == "media-optimizer finished" and body == "1 file converted, 2.0 KB saved."
+    assert options["action"] == "Open" and callable(options["on_action"])
+    assert not watch.tick() and len(sent) == 1, "once"
+    monkeypatch.setattr(web, "BACKGROUND_WAIT", 0.0)
+    assert watch.tick(), "not opened again in time: the program ends with the run's code"
+
+
+def test_a_page_opened_after_the_background_run_keeps_it_up(fake_run):
+    server = _FakeServer()
+    watch = web.Watch(server, fake_run, "http://127.0.0.1:1/?token=x", notify=lambda *a, **k: None)
+    fake_run.keep_in_background()
+    server.gone = True
+    fake_run.release()
+    _wait_finished(fake_run, 10)
+    assert not watch.tick()
+    server.gone, server.last_contact = False, time.monotonic() + 1      # the notification's "Open"
+    assert not watch.tick() and not fake_run.background, "back to the usual rules"
+    server.gone = True
+    assert watch.tick()
+
+
+def test_background_only_while_running(tmp_path):
+    with pytest.raises(web.ApiError):
+        web.Session(Settings(), {}, tmp_path, None).keep_in_background()
+
+
+def test_notification_with_a_button(stub, tmp_path, monkeypatch):
+    calls = tmp_path / "calls"
+    path = stub("notify-send", f'printf "%s\\n" "$@" > "{calls}"\necho open\n')
+    monkeypatch.setenv("PATH", path)
+    from media_optimizer import notify
+    clicked = threading.Event()
+    assert notify.notify("Done", "3 files", icon="/i.svg", action="Open", on_action=clicked.set)
+    assert clicked.wait(5)
+    assert calls.read_text().split("\n")[:5] == ["--app-name=media-optimizer", "--icon=/i.svg",
+                                                 "--action=open=Open", "Done", "3 files"]
+
+
+def test_notification_falls_back_to_gdbus_and_never_raises(tmp_path, monkeypatch):
+    from media_optimizer import notify
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    calls = tmp_path / "calls"
+    (bindir / "gdbus").write_text(f'#!/bin/bash\nprintf "%s\\n" "$@" > "{calls}"\n')
+    (bindir / "gdbus").chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir))
+    assert notify.notify("Done", "3 files", action="Open", on_action=lambda: None)
+    args = calls.read_text().split("\n")
+    assert "org.freedesktop.Notifications.Notify" in args and "Done" in args and "3 files" in args
+    assert "[]" in args, "no button without notify-send"
+    (bindir / "gdbus").write_text("#!/bin/bash\nexit 1\n")
+    assert notify.notify("Done", "x") is False
+    (bindir / "gdbus").write_text("#!/nonexistent/interpreter\n")
+    assert notify.notify("Done", "x") is False, "a program that cannot even start"
+    (bindir / "gdbus").unlink()
+    assert notify.notify("Done", "x") is False, "nothing to notify with: nothing happens"

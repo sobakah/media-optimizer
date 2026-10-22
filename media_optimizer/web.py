@@ -65,6 +65,9 @@ _CSP = ("default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri '
 COOKIE = "media_optimizer_token"
 HEARTBEAT_TIMEOUT = 90.0
 CLOSE_GRACE = 10.0
+# After a run kept going in the background has ended: how long to wait for
+# the page to be opened again (the notification's "Open") before exiting.
+BACKGROUND_WAIT = 15 * 60.0
 MAX_BODY = 1024 * 1024
 # keepbest and cdimport find a page's address in its output with
 # r"is running at (http://(?:127\.0\.0\.1|localhost):\d+/\?token=[A-Za-z0-9_-]+)": keep the wording.
@@ -228,6 +231,7 @@ class Session:
         self.log = Log()
         self.progress = Progress()
         self.stopping = False
+        self.background = False           # the run goes on when the page is gone
         self.run_number = 0               # the page's log belongs to one run
         self._tmp: tempfile.TemporaryDirectory | None = None
         self._cond = threading.Condition()
@@ -252,7 +256,7 @@ class Session:
                     "source": str(self.source) if self.source else "",
                     "target": str(self.target) if self.target else "",
                     "returnUrl": self.back_url, "returnName": self.back_name or "the previous page",
-                    "stopping": self.stopping, "run": self.run_number}
+                    "stopping": self.stopping, "background": self.background, "run": self.run_number}
             if self.phase != "setup":
                 data["progress"] = self.progress.snapshot()
                 # A request that still counts lines of an earlier run gets this one from the start.
@@ -328,14 +332,7 @@ class Session:
         self._tmp = tempfile.TemporaryDirectory(prefix="mo_web_")
         events_file = Path(self._tmp.name) / "events.jsonl"
         events_file.touch()
-        cmd = [sys.executable, "-m", "media_optimizer", "run", "-y", str(self.source)]
-        if self.target is not None:
-            cmd.append(str(self.target))
-        if mode == "reset":
-            cmd.append("--reset")
-        if body.get("dry_run"):
-            cmd.append("-n")
-        cmd += ["--events", str(events_file)]
+        cmd = self.command(mode, bool(body.get("dry_run")), events_file)
         env = {**os.environ, **to_env(s), "MO_HOLD": "0", "COLUMNS": str(LOG_COLUMNS)}
         master, slave = os.openpty()
         try:
@@ -351,7 +348,7 @@ class Session:
             raise ApiError(500, f"Could not start the run: {exc}") from exc
         os.close(slave)
         with self._cond:
-            self.child, self.phase, self.code, self.stopping = child, "running", None, False
+            self.child, self.phase, self.code, self.stopping, self.background = child, "running", None, False, False
             self.log, self.progress = Log(), Progress()
             self.run_number += 1
         self.bump()
@@ -361,6 +358,43 @@ class Session:
         reader.start()
         tail.start()
         threading.Thread(target=self._wait, args=(child, reader, tail), name="mo-web-wait", daemon=True).start()
+
+    def command(self, mode: str, dry_run: bool, events_file: Path) -> list[str]:
+        """The run the page starts: the real program, asking nothing."""
+        cmd = [sys.executable, "-m", "media_optimizer", "run", "-y", str(self.source)]
+        if self.target is not None:
+            cmd.append(str(self.target))
+        if mode == "reset":
+            cmd.append("--reset")
+        if dry_run:
+            cmd.append("-n")
+        return cmd + ["--events", str(events_file)]
+
+    def keep_in_background(self) -> None:
+        with self._cond:
+            if self.phase != "running":
+                raise ApiError(409, "No run is going on.")
+            self.background = True
+        self.bump()
+
+    def summary(self) -> str:
+        """One line for the notification."""
+        converted = before = after = failed = 0
+        for st in self.progress.stages.values():
+            converted += st["outcomes"].get("converted", 0)
+            failed += st["outcomes"].get("failed", 0)
+            before += st["before"]
+            after += st["after"]
+        if self.code == 130:
+            return "Stopped; the next start offers to resume."
+        parts = [f"{converted} file{'s' if converted != 1 else ''} converted"]
+        if before > after:
+            parts.append(f"{_bytes(before - after)} saved")
+        if failed:
+            parts.append(f"{failed} failed")
+        if self.code not in (0, 3):
+            parts.append(f"exit code {self.code}")
+        return ", ".join(parts) + "."
 
     def _read_output(self, master: int) -> None:
         try:
@@ -445,6 +479,14 @@ class Session:
 
 
 LOG_COLUMNS = 110
+
+
+def _bytes(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
 
 
 def _settings_from(base: Settings, values: dict) -> tuple[Settings, dict[str, str]]:
@@ -636,6 +678,9 @@ class _Handler(BaseHTTPRequestHandler):
             return {"ok": True}
         if method == "POST" and path == "/api/stop":
             return {"stopped": session.stop()}
+        if method == "POST" and path == "/api/background":
+            session.keep_in_background()
+            return {"ok": True}
         if method == "POST" and path == "/api/again":
             session.again()
             return {"ok": True}
@@ -650,6 +695,50 @@ class _Handler(BaseHTTPRequestHandler):
 def _say(message: str) -> None:
     """A line for the terminal media-optimizer was started in."""
     print(message, flush=True)
+
+
+class Watch:
+    """What happens when the page goes away (checked once a second):
+      - before or after a run: the program ends;
+      - during a run: the run gets Ctrl+C (it saves its state, 130), unless
+        "Keep running in the background" was chosen;
+      - a background run that has ended: a notification with "Open", then
+        wait for the page; seen again, the usual rules apply; not seen
+        within BACKGROUND_WAIT, the program ends with the run's code."""
+
+    def __init__(self, server: _Server, session: Session, url: str, notify=None) -> None:
+        self.server = server
+        self.session = session
+        self.url = url
+        self.notify = notify
+        self.finished_at: float | None = None
+
+    def tick(self) -> bool:
+        """True when the program should end."""
+        session, server = self.session, self.server
+        gone = server.page_gone()
+        if session.phase == "running":
+            if gone and not session.background and not session.stopping:
+                session.stop()
+            return False
+        if session.background and session.phase == "finished":
+            now = time.monotonic()
+            if self.finished_at is None:
+                self.finished_at = now
+                self._notify()
+            if server.last_contact is not None and server.last_contact > self.finished_at:
+                session.background = False            # seen again: back to the usual rules
+                return False
+            return now - self.finished_at > BACKGROUND_WAIT
+        return gone
+
+    def _notify(self) -> None:
+        from . import notify
+
+        send = self.notify or notify.notify
+        title = "media-optimizer finished" if self.session.code in (0, 3) else "media-optimizer stopped"
+        send(title, self.session.summary(), icon=str(STATIC_DIR / "icon.svg"), action="Open",
+             on_action=lambda: webbrowser.open(self.url))
 
 
 def serve(session: Session, open_browser: bool = True, port: int = 0) -> int:
@@ -668,9 +757,10 @@ def serve(session: Session, open_browser: bool = True, port: int = 0) -> int:
             _say("Open that address in your browser.")
         _say("Close the page when done, or press Ctrl+C here.")
     sys.stdout.flush()
+    watch = Watch(server, session, url)
     try:
         while not server.stop.wait(1.0):
-            if server.page_gone() and session.phase != "running":
+            if watch.tick():
                 break
     except KeyboardInterrupt:
         # The run is in our process group and got the Ctrl+C too: it saves

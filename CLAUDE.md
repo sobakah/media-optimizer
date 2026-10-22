@@ -52,6 +52,7 @@ events.py        --events FILE: the run's progress as JSON lines, for the browse
 questions.py     the full run's questionnaire as data (terminal and page), the page's settings schema
 web.py           the browser page's server (--web): copied rules from cdimport/lyrembed
 static/          the page: app.js (Preact + htm, no build step), style.css, vendor/ with LICENSES.txt
+notify.py        a desktop notification (notify-send with an "Open" button, else gdbus), copyable
 ```
 
 ## Language
@@ -159,7 +160,11 @@ Breaking any of these has caused real data loss or silent corruption before.
   saved state with `orchestrator._pick_state`, and folds the events into a
   small state (`web.Progress`) instead of sending every event to the page.
   A saved state needs an explicit choice (resume or `--reset`): with `-y`
-  the child would resume on its own.
+  the child would resume on its own. When the page goes away during a run,
+  the run gets Ctrl+C (130, state saved) unless "Keep running in the
+  background" was chosen; a background run ends with a notification and the
+  program waits `BACKGROUND_WAIT` for the page (`web.Watch`). The owner does
+  not want a silent process left running: keep both halves of that rule.
 - **Keep compatible with folders the Bash version worked on**: flock on the
   working directory, `.part.<pid>.<random>.<ext>` and `.<stem>.molock`,
   `.video_conversion_cache.txt`, `.broken_videos.txt`, `.video_suspect.txt`,

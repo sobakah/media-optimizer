@@ -320,7 +320,7 @@ function LogView({ lines, partial }) {
   </div>`;
 }
 
-function RunView({ state, log, onStop }) {
+function RunView({ state, log, onStop, onBackground }) {
   const [tab, setTab] = useState('progress');
   const p = state.progress;
   const running = state.phase === 'running';
@@ -331,9 +331,13 @@ function RunView({ state, log, onStop }) {
       <button role="tab" class=${tab === 'progress' ? 'on' : ''} onClick=${() => setTab('progress')}>Progress</button>
       <button role="tab" class=${tab === 'log' ? 'on' : ''} onClick=${() => setTab('log')}>Log</button>
       <span class="spacer"></span>
+      ${running && !state.background && html`<button class="btn btn-small" disabled=${state.stopping}
+        onClick=${onBackground}>Keep running in the background</button>`}
       ${running && html`<button class="btn btn-small btn-danger" disabled=${state.stopping} onClick=${onStop}>
         ${state.stopping ? 'Stopping…' : 'Stop'}</button>`}
     </div>
+    ${running && state.background && html`<p class="note">Keeps running when you close this tab. A desktop
+      notification says when it is done; its "Open" button brings this page back.</p>`}
     ${tab === 'log' ? html`<${LogView} lines=${log.lines} partial=${log.partial} />` : html`
       ${p.stages.map((s) => html`<${StageCard} key=${s.stage} stage=${s}
         encodes=${s.stage === 'video' ? p.encodes : []} />`)}
@@ -417,17 +421,22 @@ function App() {
     if (phase === 'setup') api('/setup').then(setSetup).catch((err) => setError(err.message));
   }, [phase]);
 
-  // While a run goes on, the browser asks before the tab closes.
+  // While a run goes on, the browser asks before the tab closes (closing it
+  // stops the run), unless it was asked to keep running in the background.
+  const background = !!(state && state.background);
   useEffect(() => {
-    if (phase !== 'running') return undefined;
+    if (phase !== 'running' || background) return undefined;
     const guard = (event) => event.preventDefault();
     addEventListener('beforeunload', guard);
     return () => removeEventListener('beforeunload', guard);
-  }, [phase]);
+  }, [phase, background]);
 
   const stop = async () => {
     if (!confirm('Stop the run? Its progress is saved; the next start offers to resume it.')) return;
     try { await api('/stop', {}); } catch (err) { setError(err.message); }
+  };
+  const keepRunning = async () => {
+    try { await api('/background', {}); } catch (err) { setError(err.message); }
   };
   const again = async () => { try { await api('/again', {}); } catch (err) { setError(err.message); } };
   const close = async () => {
@@ -447,7 +456,8 @@ function App() {
     <main>
       ${phase === 'setup' && (setup ? html`<${SetupView} key=${setup.folder.source + '|' + setup.folder.target}
         setup=${setup} onSetup=${setSetup} onError=${setError} />` : html`<p class="muted">Looking at the folder…</p>`)}
-      ${phase !== 'setup' && state.progress && html`<${RunView} state=${state} log=${log} onStop=${stop} />`}
+      ${phase !== 'setup' && state.progress && html`<${RunView} state=${state} log=${log} onStop=${stop}
+        onBackground=${keepRunning} />`}
       ${phase === 'finished' && html`<${Finished} state=${state} onAgain=${again} onClose=${close} />`}
     </main>
     ${error && !closed && html`<div class="toast" role="alert">${error}</div>`}
