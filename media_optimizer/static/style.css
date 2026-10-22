@@ -1,0 +1,90 @@
+/* media-optimizer's page; the same tokens as cdimport's and lyrembed's, with its own accent. */
+:root {
+  color-scheme: light dark;
+  --bg: #F6F6F3;
+  --surface: #FFFFFF;
+  --border: #E2E2DC;
+  --border-strong: #D4D4CC;
+  --hover: #F1F1EC;
+  --ink: #1B1B1F;
+  --muted: #5E5E66;
+  --faint: #7A7A82;
+  --accent: #6D28D9;
+  --accent-hover: #5B21B6;
+  --accent-soft: #EDE9FE;
+  --accent-ink: #4C1D95;
+  --on-accent: #FFFFFF;
+  --ok: #1E6B3A; --ok-bg: #E3F3E8;
+  --warn: #7A4F00; --warn-bg: #FBF0D9;
+  --bad: #A3342B; --bad-bg: #FBE7E5;
+  --tool-bg: #1E1E23; --tool-ink: #E4E4E8; --tool-faint: #9A9AA4;
+  --shadow: 0 8px 30px rgba(20, 20, 30, .12);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151518;
+    --surface: #1E1E23;
+    --border: #2E2E35;
+    --border-strong: #3B3B44;
+    --hover: #27272D;
+    --ink: #ECECEF;
+    --muted: #A6A6B0;
+    --faint: #85858F;
+    --accent: #8B5CF6;
+    --accent-hover: #A78BFA;
+    --accent-soft: #2E1F4F;
+    --accent-ink: #DDD6FE;
+    --ok: #8FD9A8; --ok-bg: #17351F;
+    --warn: #F0C674; --warn-bg: #3A2C10;
+    --bad: #F4A29A; --bad-bg: #3F1C1A;
+    --tool-bg: #101013; --tool-ink: #E4E4E8; --tool-faint: #8A8A94;
+    --shadow: 0 8px 30px rgba(0, 0, 0, .5);
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Noto Sans", "Noto Sans CJK JP", "Noto Sans CJK KR",
+        "Noto Sans CJK SC", sans-serif;
+}
+a { color: var(--accent); word-break: break-all; }
+button, input, select { font: inherit; color: inherit; }
+h1 { margin: 0; font-size: 22px; }
+h2 { margin: 0; font-size: 15px; font-weight: 600; }
+p { margin: 0; }
+.mono { font-family: ui-monospace, "JetBrains Mono", "Cascadia Mono", "Noto Sans Mono", Menlo, Consolas, monospace; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.label { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+
+.btn { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 14px; border-radius: 8px;
+       border: 1px solid var(--border-strong); background: var(--surface); font-size: 14px; font-weight: 500;
+       cursor: pointer; text-align: left; }
+.btn:hover { background: var(--hover); }
+.btn:disabled { color: var(--faint); cursor: default; background: var(--bg); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-small { min-height: 30px; padding: 0 10px; font-size: 13px; }
+.btn-danger { color: var(--bad); }
+
+.topbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; padding: 10px 24px;
+          background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
+.brand { display: flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 700; }
+.brand .version { font-size: 12px; font-weight: 500; color: var(--faint); }
+.spacer { flex: 1 1 auto; }
+
+main { max-width: 1000px; margin: 0 auto; padding: 20px 24px 40px; display: flex; flex-direction: column; gap: 16px; }
+@media (max-width: 600px) { main { padding: 14px 16px 40px; } .topbar { padding: 10px 16px; } }
+
+.section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
+           display: flex; flex-direction: column; gap: 8px; }
+.section h2 { display: flex; align-items: center; gap: 8px; }
+.finished { border: 2px solid var(--accent); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.path { overflow-wrap: anywhere; }
+.overlay { position: fixed; inset: 0; background: rgba(20, 20, 25, .55); display: flex; align-items: center;
+           justify-content: center; padding: 16px; z-index: 20; }
+.overlay .section { max-width: 440px; }
+.toast { position: fixed; right: 16px; bottom: 16px; z-index: 10; padding: 10px 14px; border-radius: 10px;
+         background: var(--bad-bg); color: var(--bad); box-shadow: var(--shadow); max-width: min(480px, calc(100vw - 32px)); }

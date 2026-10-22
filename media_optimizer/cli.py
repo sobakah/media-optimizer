@@ -121,6 +121,13 @@ def build_parser() -> argparse.ArgumentParser:
     _value(g, "--gpu-workers", setting="gpu_workers", metavar="N", help="GPU encodes at the same time (default: 2)")
     _flag(g, "--no-clips", setting="clip_stage", value=False, help="skip that stage (default)")
     g.add_argument("--reset", action="store_true", help="discard the saved state and start over")
+    g = p.add_argument_group("browser page")
+    g.add_argument("--web", action="store_true", help="ask for the settings and show the run in the browser")
+    g.add_argument("--no-browser", action="store_true", help="with --web: do not open a tab, only print the address")
+    g.add_argument("--return-url", metavar="URL",
+                   help="with --web: the page's last button leads there (only a page on this computer)")
+    g.add_argument("--return-name", metavar="NAME", default="",
+                   help="with --return-url: the name on that button (default: 'the previous page')")
 
     # --- images ---
     p = sub.add_parser("images", help="JPEG/PNG -> JPEG XL or WebP")
@@ -255,15 +262,39 @@ def install_signal_handlers() -> None:
 FOLDER_CHOICE = ("subfolders", "exclude_folders")
 
 
-def _settings(args, *, folder_choice: bool = True) -> Settings:
+def _settings(args, *, folder_choice: bool = True, origins: dict[str, str] | None = None) -> Settings:
+    """origins, when given, receives where each value came from (config,
+    env, cli), for the browser page's presets."""
     ignore = () if folder_choice else FOLDER_CHOICE
-    settings, source, warnings = load_settings(args.config, ignore_env=ignore)
+    settings, source, warnings = load_settings(args.config, ignore_env=ignore, origins=origins)
     for message in warnings:
         ui.say("WARNING", S.YELLOW, message, err=True)
     for key, value in vars(args).items():
         if key.startswith(_SET) and key[len(_SET):] not in ignore:
             setattr(settings, key[len(_SET):], value)
+            if origins is not None:
+                origins[key[len(_SET):]] = "cli"
     return settings
+
+
+def _check_web_options(parser: argparse.ArgumentParser, args) -> None:
+    """As lyrembed's: the return URL only to a page on this computer."""
+    from .web import local_page
+
+    if args.command != "run":
+        return
+    if not args.web:
+        for flag, given in (("--no-browser", args.no_browser), ("--return-url", args.return_url),
+                            ("--return-name", args.return_name)):
+            if given:
+                parser.error(f"{flag} only applies together with --web")
+        return
+    if args.yes:
+        parser.error("--web and -y exclude each other: the page asks for the settings")
+    if args.return_name and not args.return_url:
+        parser.error("--return-name only applies together with --return-url")
+    if args.return_url and not local_page(args.return_url):
+        parser.error("--return-url must be a page on this computer, such as http://127.0.0.1:8000/")
 
 
 def _dirs(args) -> tuple[str | None, str | None]:
@@ -388,9 +419,26 @@ def _run_stage(args, s: Settings) -> int:
     return rc
 
 
+def _run_web(args) -> int:
+    from . import web
+
+    origins: dict[str, str] = {}
+    s = _settings(args, origins=origins)
+    s.validate()
+    source, output = _dirs(args)
+    # Without a folder: the current one, by the rule of the terminal's question.
+    source = source or files.suggested_source() or None
+    session = web.Session(s, origins, Path(source).expanduser().absolute() if source else None,
+                          Path(output).expanduser().absolute() if output else None,
+                          (args.return_url, args.return_name) if args.return_url else None)
+    return web.serve(session, open_browser=not args.no_browser)
+
+
 def _run_full(args) -> int:
     from . import orchestrator
 
+    if args.web:
+        return _run_web(args)
     source, output = _dirs(args)
     first = True
     while True:
@@ -435,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
         argv = _command_first(argv)
     parser = build_parser()
     args = parser.parse_args(argv)
+    _check_web_options(parser, args)
     install_signal_handlers()
     proc.reset()
     reset_notices()

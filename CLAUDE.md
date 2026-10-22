@@ -50,6 +50,8 @@ runlog.py        the run log
 journal.py       the file journal for picktag (JSON Lines)
 events.py        --events FILE: the run's progress as JSON lines, for the browser page
 questions.py     the full run's questionnaire as data (terminal and page), the page's settings schema
+web.py           the browser page's server (--web): copied rules from cdimport/lyrembed
+static/          the page: app.js (Preact + htm, no build step), style.css, vendor/ with LICENSES.txt
 ```
 
 ## Language
@@ -143,6 +145,14 @@ Breaking any of these has caused real data loss or silent corruption before.
   `VideoStage._decide`/`_process`). A new way for a file to end needs its
   `done`. The terminal output must stay byte-for-byte the same with and
   without `--events`.
+- **The browser page is a layer, not a second program** (`web.py`). Its
+  security rules are copied from cdimport and lyrembed and each has a test
+  (`tests/test_web.py`): 127.0.0.1 only, the token-to-cookie redirect with
+  the port in the cookie name, the Host and Origin checks, JSON-only POSTs,
+  the CSP, static files only from `static/` with a fixed list of suffixes.
+  The address line (`web.ADDRESS_LINE`) is read by keepbest with cdimport's
+  `_HANDOFF` pattern: keep its wording. A new file under `static/` needs a
+  pattern in `pyproject.toml`'s package-data (tested).
 - **Keep compatible with folders the Bash version worked on**: flock on the
   working directory, `.part.<pid>.<random>.<ext>` and `.<stem>.molock`,
   `.video_conversion_cache.txt`, `.broken_videos.txt`, `.video_suspect.txt`,

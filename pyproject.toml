@@ -35,6 +35,10 @@ Homepage = "https://github.com/sobakah/media-optimizer"
 [tool.setuptools]
 packages = ["media_optimizer", "media_optimizer.stages"]
 
+[tool.setuptools.package-data]
+# The browser page (--web); without this a pip/pipx install has no page.
+media_optimizer = ["static/*", "static/vendor/*"]
+
 [tool.setuptools.dynamic]
 # Single source of truth; read statically, the package is not imported.
 version = { attr = "media_optimizer.config.__version__" }
