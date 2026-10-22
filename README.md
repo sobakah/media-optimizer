@@ -76,6 +76,7 @@ media-optimizer images ~/Pictures --target webp    # one stage on its own
 media-optimizer video ~/Videos --encoder cpu --crf 20
 media-optimizer verify ~/Videos /mnt/archive --fix --run
 media-optimizer gpu-selftest ~/Videos/clip.mp4
+media-optimizer ~/Pictures --web                   # settings and progress in the browser
 ```
 
 | Command | Does |
@@ -335,6 +336,41 @@ ends. The window therefore stays open unless the parent is an interactive
 shell. `MO_HOLD=1`/`0` (or `--hold`/`--no-hold`) forces it, `MO_HOLD_TIMEOUT=15`
 closes by itself.
 
+### Browser page
+
+`media-optimizer DIR --web` asks for the settings in the browser and shows
+the run there; without `--web` everything stays in the terminal, unchanged.
+The page:
+
+* asks for the folder (preset with the current one, never the home folder),
+  the target folder or in place, and the subfolders as a checkbox tree with
+  their image and video counts;
+* shows the same questions as the terminal, with the same conditions, and
+  every other setting folded away with its description; a value from the
+  config file, the environment or the command line is marked as such and
+  checked by the same rules;
+* offers "Resume" or "Start over" when the folder has an interrupted run;
+* runs the real program and shows a card per stage with its progress and
+  the video encodes, the warnings and errors in one place, the newest files
+  with their sizes, and the raw output with its colours under "Log";
+* ends with the outcome, "Process another folder" and "Close".
+
+Closing the tab during a run stops it like Ctrl+C: it saves its state, and
+the next start offers to resume. "Keep running in the background" lets the
+run go on without the page instead; reopening the printed address shows its
+progress, and at the end a desktop notification (`notify-send`, else
+`gdbus`) has an "Open" button. If the page is not opened again within 15
+minutes, media-optimizer ends with the run's exit code. The exit code is
+always the run's.
+
+The page listens on 127.0.0.1 only and needs the address with its token
+that media-optimizer prints. For other programs that hand a browser tab
+over (keepbest): `--no-browser` only prints the address
+(`media-optimizer is running at http://127.0.0.1:PORT/?token=…`),
+`--return-url URL` (a page on this computer) and `--return-name NAME` turn
+the last button into "Back to NAME". `-n` and `--reset` preset the dry run
+and "Start over".
+
 ### Started from keepbest
 
 [keepbest](https://github.com/sobakah/keepbest) removes duplicate pictures and videos. After a run, its end screen offers `m` to run media-optimizer on the same folder, in the same window. It sets `MO_CALLER=keepbest`: the run still asks whether to use the default settings (normally skipped when the folder is given on the command line), and the closing question reads *Process another directory? (No: back to keepbest)*. keepbest also sets `MO_HOLD=0`, since its window stays open anyway, and passes its folder choice as `MO_SUBFOLDERS` and `MO_EXCLUDE_FOLDERS` (a JSON list), so the run covers the same folders as keepbest's and does not ask about subfolders.
@@ -441,12 +477,14 @@ B-frames (`gpu_bf 0`), rate control (`gpu_rc_mode VBR`), or another encoder
 ## Tests
 
 ```bash
-python3 -m pytest                 # about 245 tests, 3 minutes
+python3 -m pytest                 # about 300 tests, 3.5 minutes
 python3 -m pytest -m "not slow"   # without the signal tests
 ```
 
 Needs the tools above plus `pytest`. Every test runs with its own home,
-config and state folder; the trash is switched off.
+config and state folder; the trash is switched off. The browser page is
+tested without a browser; clicking through it with headless Chrome
+(Playwright) happens outside the suite, on generated files.
 
 ## History
 

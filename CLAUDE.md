@@ -177,7 +177,7 @@ Breaking any of these has caused real data loss or silent corruption before.
 ## Tests
 
 ```bash
-python3 -m pytest                  # all, about 245 tests, 3 minutes
+python3 -m pytest                  # all, about 300 tests, 3.5 minutes
 python3 -m pytest -m "not slow"    # without the signal tests
 python3 -m pytest tests/test_video.py -k cache
 ```
