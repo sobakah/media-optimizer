@@ -111,6 +111,7 @@ Options that behave the same everywhere:
 | `-c, --config <file>` | use this config file |
 | `--log <file>` / `--no-log` | log file / no log |
 | `--journal <file>` / `--no-journal` | file journal (see [Journal](#journal)) / no journal |
+| `--events <file>` | the run's progress as JSON lines (see [Progress for other programs](#progress-for-other-programs)) |
 | `--hold` / `--no-hold` | keep the window open at the end |
 | `-y, --yes` | no questions, settings as given |
 | `-n, --dry-run` | preview only |
@@ -374,6 +375,25 @@ loginctl enable-linger "$USER"    # run even while not logged in
 If the target is a network mount, guard the unit with
 `ConditionPathIsMountPoint=` so it does not run against an empty directory.
 
+### Progress for other programs
+
+`--events FILE` writes the run's progress to FILE while it goes on, one JSON
+object per line (`v` 1, `event`, `ts`), for a program that shows the run;
+the terminal output stays exactly the same. The file is replaced at the
+start, also written in a dry run, and a problem writing it changes nothing
+else.
+
+| Event | Fields |
+|---|---|
+| `run_start` | `command`, `source`, `target`, `dry_run`, `pid` |
+| `plan` | `stages`: `stage`, `total` (candidates), `done` (finished by an earlier, interrupted run) |
+| `stage_start` / `stage_end` | `stage`, `total` / `code`, `counters` (the summary box) |
+| `job_start` / `encode` | a video encode: `idx`, `total`, `src`, `encoder` / `percent`, `speed`, `eta` (seconds), at most once a second |
+| `file` | what the log line says: `stage`, `status` (`OK`, `ERROR`, `DISCARDED`, `SALVAGED`, …), `src`, `dest`, `before`, `after` |
+| `done` | one per finished file: `stage`, `src`, `outcome` (`converted`, `skipped`, `cached`, `failed`, `discarded`, `conflict`, `dry`), `reason` |
+| `message` | `level` (`error`, `warning`, `info`), `tag`, `text` |
+| `run_end` | `code` (the exit code) |
+
 ## Troubleshooting
 
 ### GPU encoding does not start
@@ -421,7 +441,7 @@ B-frames (`gpu_bf 0`), rate control (`gpu_rc_mode VBR`), or another encoder
 ## Tests
 
 ```bash
-python3 -m pytest                 # about 235 tests, 3 minutes
+python3 -m pytest                 # about 245 tests, 3 minutes
 python3 -m pytest -m "not slow"   # without the signal tests
 ```
 

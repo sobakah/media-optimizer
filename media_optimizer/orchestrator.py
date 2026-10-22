@@ -22,6 +22,7 @@ from pathlib import Path
 from . import files, folders, proc, safety, ui
 from .config import (RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RC_OK, RC_PARTIAL, Settings,
                      state_dir)
+from .events import events
 from .journal import journal
 from .runlog import log
 from .stages.clips import ClipStage
@@ -362,6 +363,7 @@ def run(req: Request) -> tuple[int, bool]:
         ui.say("DRY-RUN", S.CYAN, "No writes, no deletions.")
 
     journal.start(s.journal_file, dry_run=req.dry_run, source=source, target=output)
+    events.run_start("run", source, output, req.dry_run)
     if s.preflight and not resuming:
         _preflight(source, output, s, req.dry_run)
     _collision_warning(source, s)
@@ -376,6 +378,7 @@ def run(req: Request) -> tuple[int, bool]:
     for name in STAGES:
         if not wanted[name]:
             state.done[name] = True
+    _plan(wanted, counts, state)
     state.status = "RUNNING"
     state.save(req.dry_run)
     if count_vid:
@@ -403,7 +406,10 @@ def run(req: Request) -> tuple[int, bool]:
             label, message, stage_cls = titles[name]
             ui.out(f"\n{S.CYAN}▶ [{number}/{total}] {message}{S.RESET}")
             log.line("start", f"stage {label} ({counts[name]} candidates)")
-            rc = stage_cls(ctx).run()
+            events.emit("stage_start", stage=name, total=counts[name])
+            stage = stage_cls(ctx)
+            rc = stage.run()
+            events.stage_end(name, rc, stage)
             if rc == RC_INTERRUPTED:
                 raise KeyboardInterrupt
             if rc == RC_PARTIAL:
@@ -416,6 +422,7 @@ def run(req: Request) -> tuple[int, bool]:
                 ui.out(f"{S.CYAN}The state is kept, resume after fixing the problem.{S.RESET}", err=True)
                 log.close(rc)
                 journal.end(rc)
+                events.run_end(rc)
                 return rc, False
             state.done[name] = True
             if name == "images" and not wanted["gifs"] and output is None and not req.dry_run:
@@ -426,6 +433,7 @@ def run(req: Request) -> tuple[int, bool]:
                     wanted["gifs"], state.done["gifs"], counts["gifs"] = True, False, count_gif
                     total += 1
                     titles["gifs"] = ("GIFs", f"Starting GIF conversion ({count_gif} files)...", GifStage)
+                    _plan(wanted, counts, state)
             state.save(req.dry_run)
     except KeyboardInterrupt:
         with proc.shielded():
@@ -434,6 +442,7 @@ def run(req: Request) -> tuple[int, bool]:
             log.line("abort", "Aborted by user")
             log.close(RC_INTERRUPTED)
             journal.end(RC_INTERRUPTED)
+            events.run_end(RC_INTERRUPTED)
             state.status = "INTERRUPTED"
             state.save(req.dry_run)
             ui.out(f"{S.CYAN}Progress and settings have been saved.{S.RESET}\n"
@@ -453,10 +462,14 @@ def run(req: Request) -> tuple[int, bool]:
         else:
             ui.out(f"\n{S.CYAN}▶ Final check of the target directory...{S.RESET}")
             log.line("verify", f"final check of {output}")
-            rc = VerifyStage(ctx).run()
+            events.emit("stage_start", stage="verify", total=None)
+            stage = VerifyStage(ctx)
+            rc = stage.run()
+            events.stage_end("verify", rc, stage)
             if rc == RC_INTERRUPTED:
                 log.close(rc)
                 journal.end(rc)
+                events.run_end(rc)
                 return rc, False
             if rc != RC_OK:
                 ui.say("NOTE", S.YELLOW, "The check reported findings. Nothing was changed;")
@@ -467,6 +480,7 @@ def run(req: Request) -> tuple[int, bool]:
     rc = RC_PARTIAL if failures else RC_OK
     log.close(rc)
     journal.end(rc)
+    events.run_end(rc)
     if failures:
         ui.box("ALL STAGES COMPLETED, WITH FAILURES", [("Failed files in:", " ".join(failures))], S.YELLOW)
     else:
@@ -479,6 +493,13 @@ def run(req: Request) -> tuple[int, bool]:
         question = f"Process another directory? (No: back to {caller})" if caller else "Process another directory?"
         another = ui.prompt_bool(question, False)
     return rc, another
+
+
+def _plan(wanted: dict, counts: dict, state: RunState) -> None:
+    """The stages this run will go through, for the events file; a resumed
+    run marks the ones it finished before."""
+    events.emit("plan", stages=[{"stage": name, "total": counts[name], "done": bool(state.done.get(name))}
+                                for name in STAGES if wanted[name]])
 
 
 def _open(done: dict, name: str) -> str:

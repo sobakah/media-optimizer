@@ -24,6 +24,17 @@ _ANSI = {
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
+class Color(str):
+    """A colour code that knows its name, also when colours are off and it
+    is empty: say() reports red as an error and yellow as a warning to the
+    events file either way."""
+
+    def __new__(cls, code: str, name: str):
+        obj = super().__new__(cls, code)
+        obj.name = name
+        return obj
+
+
 class StyleUI:
     RESET = BOLD = DIM = RED = GREEN = YELLOW = BLUE = MAGENTA = CYAN = BG_GREEN = ""
 
@@ -37,7 +48,7 @@ def colors_enabled() -> bool:
 def apply_color_settings() -> None:
     enabled = colors_enabled()
     for name, code in _ANSI.items():
-        setattr(StyleUI, name, code if enabled else "")
+        setattr(StyleUI, name, Color(code if enabled else "", name))
 
 
 apply_color_settings()
@@ -95,10 +106,17 @@ def badge(text: str, color: str) -> str:
     return f"{color}[{text}]{StyleUI.RESET}"
 
 
+# Set by events.open(): receives every say() as (level, tag, text).
+message_hook = None
+_LEVELS = {"RED": "error", "YELLOW": "warning"}
+
+
 def say(tag: str, color: str, message: str, *, err: bool = False) -> None:
     """``[TAG] message`` - the badge style of the Bash version, which the
     tests and users' log greps rely on."""
     out(f"{badge(tag, color)} {message}", err=err)
+    if message_hook is not None:
+        message_hook(_LEVELS.get(getattr(color, "name", ""), "info"), tag, _ANSI_RE.sub("", message))
 
 
 def progress(text: str) -> None:

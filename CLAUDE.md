@@ -48,6 +48,7 @@ cache.py         per-stage caches (v2 format), old-format detection, conversion,
 ui.py            StyleUI, say/badge, boxes, prompts, progress line, hold-open
 runlog.py        the run log
 journal.py       the file journal for picktag (JSON Lines)
+events.py        --events FILE: the run's progress as JSON lines, for the browser page
 ```
 
 ## Language
@@ -129,6 +130,13 @@ Breaking any of these has caused real data loss or silent corruption before.
   picktag also relies on the temp and lock names
   (`<name>.part.<pid>.<hex>.<ext>`, `.<stem>.molock`), which it ignores
   while scanning: renaming them breaks picktag too.
+- **The events file follows the output calls** (`events.py`): `log.file`
+  reports every file outcome, `ui.say` every message (its colour gives the
+  level, also without colours: `ui.Color` keeps the name), and each stage
+  reports one `done` per finished file (`BatchStage._guarded`,
+  `VideoStage._decide`/`_process`). A new way for a file to end needs its
+  `done`. The terminal output must stay byte-for-byte the same with and
+  without `--events`.
 - **Keep compatible with folders the Bash version worked on**: flock on the
   working directory, `.part.<pid>.<random>.<ext>` and `.<stem>.molock`,
   `.video_conversion_cache.txt`, `.broken_videos.txt`, `.video_suspect.txt`,
@@ -141,7 +149,7 @@ Breaking any of these has caused real data loss or silent corruption before.
 ## Tests
 
 ```bash
-python3 -m pytest                  # all, about 235 tests, 3 minutes
+python3 -m pytest                  # all, about 245 tests, 3 minutes
 python3 -m pytest -m "not slow"    # without the signal tests
 python3 -m pytest tests/test_video.py -k cache
 ```

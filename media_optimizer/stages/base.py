@@ -23,6 +23,7 @@ from typing import Iterator
 
 from .. import cache, proc, safety, ui
 from ..config import RC_FATAL, RC_INTERRUPTED, RC_OK, RC_PARTIAL, Settings
+from ..events import events
 from ..runlog import log
 from ..ui import StyleUI as S
 
@@ -118,6 +119,11 @@ class Counters:
             return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
         except (OSError, ValueError, TypeError):
             return cls()
+
+
+# For the events file: how a file ended (Kind.STOPPED is not reported).
+OUTCOMES = {Kind.SUCCESS: "converted", Kind.SKIP: "skipped", Kind.FAIL: "failed", Kind.DISCARD: "discarded",
+            Kind.COLLISION: "conflict", Kind.DRY: "dry", Kind.CACHED: "cached"}
 
 
 # --- defaults that depend on the mode -------------------------------------------------
@@ -308,6 +314,12 @@ class BatchStage:
 
     # the run
     def _guarded(self, src: Path) -> tuple[FileResult, str | None]:
+        result, missing = self._guarded_handle(src)
+        if result.kind is not Kind.STOPPED:
+            events.done(self.tag, src, OUTCOMES[result.kind], result.cache)
+        return result, missing
+
+    def _guarded_handle(self, src: Path) -> tuple[FileResult, str | None]:
         try:
             if self.cache.lookup(src) is not None:
                 return FileResult(Kind.CACHED), None

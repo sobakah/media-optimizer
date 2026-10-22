@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import ui
 from .config import default_log_file
+from .events import events
 from .ui import StyleUI as S
 
 RULE = "-" * 64
@@ -75,6 +76,7 @@ class RunLog:
             self._write([f"{time.strftime('%H:%M:%S')}  {tag:<6} {message}"])
 
     def file(self, tag: str, status: str, src: Path, dest: str = "", old: int = 0, new: int = 0) -> None:
+        events.file(tag, status, src, dest, old, new)          # with or without the log
         if not self.enabled:
             return
         extra = ""

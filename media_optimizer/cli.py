@@ -23,6 +23,7 @@ from pathlib import Path
 from . import files, folders, gpu, proc, ui
 from .config import (NAME, RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RULES, Settings,
                      SettingsError, __version__, load_settings, parse_value)
+from .events import events
 from .journal import journal
 from .runlog import log
 from .stages.base import Context, apply_mode_defaults, prompt_delete_original, prompt_rescan, reset_notices
@@ -84,6 +85,9 @@ def _common(p: argparse.ArgumentParser, *, dirs: str = "optional", workers: bool
     _value(g, "--journal", setting="journal_file", metavar="FILE",
            help="file journal for picktag (default: journal.jsonl in the state folder)")
     _flag(g, "--no-journal", setting="journal_file", value=False, help="do not write the file journal")
+    if dirs != "none":
+        g.add_argument("--events", type=Path, metavar="FILE",
+                       help="write the run's progress as JSON lines to FILE (for programs that show it)")
     g.add_argument("--hold", dest="hold", action="store_const", const="1", help="keep the window open at the end")
     g.add_argument("--no-hold", dest="hold", action="store_const", const="0", help="never keep the window open")
 
@@ -364,18 +368,23 @@ def _run_stage(args, s: Settings) -> int:
              call=f"{NAME} {shlex.join(sys.argv[1:])}", source=src, target=out, tag=tag)
     if args.command != "verify" or args.fix:            # a plain verify changes nothing
         journal.start(s.journal_file, dry_run=args.dry_run, source=src, target=out)
+    events.run_start(args.command, src, out, args.dry_run)
+    events.emit("stage_start", stage=args.command, total=None)     # the command names are the stage names
     if args.command == "images":
-        rc = ImageStage(ctx).run()
+        stage = ImageStage(ctx)
     elif args.command == "gifs":
-        rc = GifStage(ctx).run()
+        stage = GifStage(ctx)
     elif args.command == "clips":
-        rc = ClipStage(ctx).run()
+        stage = ClipStage(ctx)
     elif args.command == "video":
-        rc = VideoStage(ctx, from_list=args.from_list).run()
+        stage = VideoStage(ctx, from_list=args.from_list)
     else:
-        rc = VerifyStage(ctx, keep_dir=args.keep_samples, fix=args.fix, run_repair=args.run).run()
+        stage = VerifyStage(ctx, keep_dir=args.keep_samples, fix=args.fix, run_repair=args.run)
+    rc = stage.run()
+    events.stage_end(args.command, rc, stage)
     log.close(rc)
     journal.end(rc)
+    events.run_end(rc)
     return rc
 
 
@@ -402,7 +411,7 @@ def _run_full(args) -> int:
 
 # The options of _common that take a value, to find a command after them.
 _VALUE_OPTIONS = {"-i", "--input", "-o", "--output", "-j", "--workers", "--subfolders", "--exclude-folder",
-                  "-c", "--config", "--log", "--journal"}
+                  "-c", "--config", "--log", "--journal", "--events"}
 
 
 def _command_first(argv: list[str]) -> list[str]:
@@ -429,6 +438,8 @@ def main(argv: list[str] | None = None) -> int:
     install_signal_handlers()
     proc.reset()
     reset_notices()
+    if getattr(args, "events", None) is not None:
+        events.open(args.events)
 
     rc = 0
     try:
@@ -453,6 +464,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         log.close(rc)
         journal.end(rc)             # Ctrl+C, SIGTERM, a closed terminal: best effort
+        events.run_end(rc)
+        events.close()
     ui.hold_open(rc, getattr(args, "hold", None))
     return rc
 

@@ -44,6 +44,7 @@ from typing import Iterator
 
 from .. import cache, files, gpu, media, proc, safety, ui
 from ..config import RC_FATAL, RC_INTERRUPTED, RC_OK, RC_PARTIAL
+from ..events import events
 from ..journal import journal
 from ..runlog import log
 from ..ui import StyleUI as S
@@ -434,6 +435,7 @@ class VideoStage:
             self._tool_missing(exc.tool)
         except Exception as exc:  # noqa: BLE001 - a bug ends this file, keeps the original
             self._unexpected(src, exc)
+        events.done(self.tag, src, "failed")
         return None
 
     def _tool_missing(self, tool: str) -> None:
@@ -459,6 +461,7 @@ class VideoStage:
             with self.lock:
                 self.cache_skipped += 1
             self._tick()
+            events.done(self.tag, src, "cached")
             return None
         try:
             size = src.stat().st_size
@@ -468,12 +471,14 @@ class VideoStage:
             self._count(skipped=1)
             self.cache.add(src, "small")
             self._tick()
+            events.done(self.tag, src, "skipped", "small")
             return None
         info = media.probe(src)
         if info.video_codec not in s.source_codecs:
             self._count(skipped=1)
             self.cache.add(src, "codec")
             self._tick()
+            events.done(self.tag, src, "skipped", "codec")
             return None
 
         stem = files.stem(src.name)
@@ -492,6 +497,7 @@ class VideoStage:
             self.cache.add(src, "existing")
             self._add_dest_to_cache(dest)
             self._tick()
+            events.done(self.tag, src, "skipped", "existing")
             return None
 
         kbps = info.bit_rate // 1000
@@ -510,38 +516,51 @@ class VideoStage:
             ui.progress_done()
             ui.say("DRY-RUN", S.CYAN, f"'{src.name}' ({encoder.upper()}, {kbps} kb/s) -> '{dest.name}'")
             self.dry += 1
+            events.done(self.tag, src, "dry")
             return None
         return Job(src, size, dest, encoder, reason, args, info, self.idx)
 
     def _process(self, job: Job) -> None:
         """One video in a worker thread. Never raises: every outcome is
         counted here, an interruption is not counted at all."""
+        ended = self._process_one(job)
+        if ended is not None:
+            events.done(self.tag, job.src, *ended)
+
+    def _process_one(self, job: Job) -> tuple[str, str | None] | None:
+        """(outcome, reason), or None when the file is not finished: handed
+        back to the CPU lane, or interrupted."""
         s, src = self.s, job.src
         try:
             if s.enable_probe and job.info.duration and job.info.duration >= PROBE_MIN_DURATION:
                 if self._probe_says_skip(src, job.info.duration, job.encoder, job.args):
-                    return
+                    return "skipped", "probe"
             ui.out(f"\n{S.BOLD}>>> [{job.idx}/{self.total}] Processing:{S.RESET} {src} "
                    f"({job.encoder.upper()}{', ' + job.reason if job.reason else ''})")
+            events.emit("job_start", stage="video", idx=job.idx, total=self.total, src=str(src),
+                        encoder=job.encoder, reason=job.reason or None)
             try:
                 with safety.Claim(job.dest.parent, files.stem(job.dest.name), job.dest) as claim:
-                    self._encode_and_keep(job, claim)
+                    return self._encode_and_keep(job, claim), None
             except _GpuFailed:
                 with self.lock:
                     self.encoder_mode = "cpu"
                     self.fell_back = True
                     job.encoder, job.args, job.reason = "cpu", None, "GPU failed"
                     self.requeue.append(job)
+                return None
             except safety.Conflict as exc:
                 ui.say("CONFLICT", S.YELLOW, f"'{src.name}': {exc}, original kept.", err=True)
                 self._count(skipped=1)
+                return "conflict", None
             except safety.Failed as exc:
                 ui.say("ERROR", S.RED, f"'{src}': {exc}", err=True)
                 log.file(self.tag, "ERROR", src)
                 self._count(failed=1)
                 self._save_stats()
+                return "failed", None
         except proc.Stopped:
-            pass
+            return None
         except proc.ToolMissing as exc:
             self._tool_missing(exc.tool)
         except Exception as exc:  # noqa: BLE001
@@ -549,6 +568,7 @@ class VideoStage:
         finally:
             with self.lock:
                 self.board.pop(job.idx, None)
+        return "failed", None
 
     # --- probe ---------------------------------------------------------------------
     def _probe_says_skip(self, src: Path, duration: float, encoder: str, args) -> bool:
@@ -631,6 +651,7 @@ class VideoStage:
 
         started = time.monotonic()
         state: dict[str, str] = {}
+        reported = [0.0]                    # last encode event, at most one a second
 
         def on_line(line: str) -> None:
             key, _, value = line.partition("=")
@@ -659,10 +680,21 @@ class VideoStage:
             with self.lock:
                 self.board[job.idx] = text
             self._render()
+            now = time.monotonic()
+            if events.active and now - reported[0] >= 1.0:
+                reported[0] = now
+                pct_done = min(100.0, done / duration * 100) if duration else None
+                eta = None
+                if pct_done is not None and pct_done > 1:
+                    eta = round((now - started) / pct_done * (100 - pct_done))
+                events.emit("encode", stage="video", idx=job.idx, src=str(job.src), encoder=encoder,
+                            percent=round(pct_done, 1) if pct_done is not None else None, speed=speed or None,
+                            eta=eta)
 
         return proc.run(cmd, on_line=on_line)
 
-    def _encode_and_keep(self, job: Job, claim: safety.Claim) -> None:
+    def _encode_and_keep(self, job: Job, claim: safety.Claim) -> str:
+        """Returns how the file ended, for the events file."""
         s = self.s
         src, size, dest, encoder, args = job.src, job.size, job.dest, job.encoder, job.args
         tmp = claim.temp()
@@ -696,7 +728,7 @@ class VideoStage:
             log.file(self.tag, "ERROR", src)
             self._count(failed=1)
             self._save_stats()
-            return
+            return "failed"
 
         new = tmp.stat().st_size
         salvaged = bool(_SALVAGE_SIGNS.search(errors))
@@ -710,7 +742,7 @@ class VideoStage:
             log.file(self.tag, "INVALID", src)
             self._count(unverified=1)
             self._save_stats()
-            return
+            return "failed"
 
         visual_note = ""
         suspect = False
@@ -740,7 +772,7 @@ class VideoStage:
                     log.file(self.tag, "INVALID", src)
                     self._count(unverified=1)
                     self._save_stats()
-                    return
+                    return "discarded"
                 ui.out("            File is kept, original kept. Check with: media-optimizer verify", err=True)
 
         src_h, new_h = ui.format_bytes(size), ui.format_bytes(new)
@@ -760,7 +792,7 @@ class VideoStage:
                 self._count_kept(encoder, size, new, salvaged=True)
                 log.file(self.tag, "SALVAGED", src, dest.name, size, new)
                 self._save_stats()
-                return
+                return "converted"
             if s.discard_if_larger:
                 self.cache.add(src, "discarded")
                 ui.card(S.YELLOW, [f"{S.BOLD}FILE DISCARDED:{S.RESET} {src.name}",
@@ -769,7 +801,7 @@ class VideoStage:
                 log.file(self.tag, "DISCARDED", src, "", size, new)
                 self._count(discarded=1)
                 self._save_stats()
-                return
+                return "discarded"
 
         before = journal.snapshot(src)
         safety.commit(src, tmp, dest)
@@ -797,6 +829,7 @@ class VideoStage:
         self.cache.add(src, "done")
         self._add_dest_to_cache(dest)
         self._save_stats()
+        return "converted"
 
     def _count_kept(self, encoder: str, size: int, new: int, *, salvaged: bool) -> None:
         self._count(processed=1, salvaged=int(salvaged), gpu=int(encoder == "gpu"),

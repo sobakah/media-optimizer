@@ -99,16 +99,19 @@ def isolated(tmp_path, monkeypatch):
         if name.startswith("MO_") and name not in ("MO_STATE_DIR", "MO_CONFIG", "MO_TRASH", "MO_HOLD", "MO_LOG"):
             monkeypatch.delenv(name)
     from media_optimizer import proc
+    from media_optimizer.events import events
     from media_optimizer.journal import journal
     # In-process runs: nothing left open by another test, and no stop of an
     # interrupted one still in force for tests that run tools directly.
     journal.path = journal.run_id = None
+    events.close()
     proc.reset()
     project_log = PYDIR / "media-optimizer.log"
     before = project_log.stat().st_mtime_ns if project_log.exists() else None
     real_journal = REAL_JOURNAL.stat().st_size if REAL_JOURNAL.exists() else None
     yield tmp_path
     journal.path = journal.run_id = None
+    events.close()
     after = project_log.stat().st_mtime_ns if project_log.exists() else None
     assert after == before, "a test wrote the real run log in the project folder"
     assert (REAL_JOURNAL.stat().st_size if REAL_JOURNAL.exists() else None) == real_journal, \
