@@ -352,6 +352,47 @@ class Settings:
 RULES: dict[str, tuple] = {f.name: f.metadata["rule"] for f in fields(Settings)}
 DOCS: dict[str, str] = {f.name: f.metadata["doc"] for f in fields(Settings)}
 
+# Topics for the browser page's "All settings": the first setting of each,
+# in the order of the fields above.
+GROUP_STARTS = {"max_workers": "General", "log": "Log and journal", "img_target": "Images",
+                "gif_target": "GIFs", "discard_if_larger": "GIFs, clips and video", "clip_stage": "Short clips",
+                "video_extensions": "Video", "verify_visual": "Picture check"}
+
+
+def groups() -> list[tuple[str, list[str]]]:
+    """Every setting once, by topic, in field order."""
+    out: list[tuple[str, list[str]]] = []
+    for name in RULES:
+        if name in GROUP_STARTS:
+            out.append((GROUP_STARTS[name], []))
+        out[-1][1].append(name)
+    return out
+
+
+def format_value(rule: tuple, value: Any) -> str:
+    """A value as text that parse_value reads back to the same value: for
+    MO_* variables (the browser page hands every setting to its run that
+    way)."""
+    if rule[0] == "opt":
+        return "" if value is None else format_value(rule[1], value)
+    if rule[0] == "file_or_off":
+        return "" if value is None else "false" if value is False else value
+    if rule[0] == "bool":
+        return "true" if value else "false"
+    if rule[0] == "paths":
+        return json.dumps(value)                  # names may contain ":" and spaces
+    if rule[0] == "words":
+        return " ".join(value)
+    if rule[0] == "num":
+        return repr(float(value))
+    return str(value)
+
+
+def to_env(settings: "Settings") -> dict[str, str]:
+    """Every setting as MO_<NAME>: the environment beats a config file, so
+    inherited MO_* variables (keepbest's folder choice) cannot override it."""
+    return {ENV_PREFIX + name.upper(): format_value(rule, getattr(settings, name)) for name, rule in RULES.items()}
+
 
 # --- locations -----------------------------------------------------------------
 def project_dir() -> Path | None:
@@ -397,11 +438,12 @@ def config_search_paths() -> list[Path]:
 
 
 # --- loading -------------------------------------------------------------------
-def load_settings(explicit: Path | None = None, *,
-                  ignore_env: tuple[str, ...] = ()) -> tuple[Settings, str, list[str]]:
+def load_settings(explicit: Path | None = None, *, ignore_env: tuple[str, ...] = (),
+                  origins: dict[str, str] | None = None) -> tuple[Settings, str, list[str]]:
     """Defaults, then the first config file found, then MO_* environment
     variables (except the settings in ignore_env). Returns (settings, source
-    description, warnings).
+    description, warnings). origins, when given, receives "config" or "env"
+    for every value that did not come from the defaults.
 
     Invalid values raise SettingsError: a typo in a tool that deletes files
     should stop it, not be replaced by a guess. Unknown keys only warn.
@@ -441,6 +483,8 @@ def load_settings(explicit: Path | None = None, *,
                               f"expected {_describe(RULES[key])}.")
                 continue
             setattr(settings, key, value)
+            if origins is not None:
+                origins[key] = "config"
         source = str(path)
         break
 
@@ -453,6 +497,8 @@ def load_settings(explicit: Path | None = None, *,
             continue
         try:
             setattr(settings, name, parse_value(rule, env))
+            if origins is not None:
+                origins[name] = "env"
         except ValueError as exc:
             errors.append(f"[SETTING] {ENV_PREFIX}{name.upper()}='{env}' is invalid, expected {exc}.")
 

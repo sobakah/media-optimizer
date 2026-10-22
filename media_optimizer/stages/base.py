@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .. import cache, proc, safety, ui
+from ..questions import DELETE_TEXT, RESCAN_TEXT
 from ..config import RC_FATAL, RC_INTERRUPTED, RC_OK, RC_PARTIAL, Settings
 from ..events import events
 from ..runlog import log
@@ -198,15 +199,13 @@ def prompt_delete_original(settings: Settings, output: Path | None) -> None:
     default = settings.delete_original
     if default is None:
         default = output is None
-    settings.delete_original = ui.prompt_bool(
-        "Move originals to the trash after a successful conversion?", default)
+    settings.delete_original = ui.prompt_bool(DELETE_TEXT, default)
 
 
 def prompt_rescan(settings: Settings) -> None:
     """Asked the other way round than use_cache, because ignoring the caches
     is the deliberate choice."""
-    rescan = ui.prompt_bool("Scan all files again, ignoring the caches of earlier runs (slower)?",
-                            not settings.use_cache)
+    rescan = ui.prompt_bool(RESCAN_TEXT, not settings.use_cache)
     settings.use_cache = not rescan
 
 

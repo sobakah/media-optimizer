@@ -19,15 +19,14 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import files, folders, proc, safety, ui
+from . import files, folders, proc, questions, safety, ui
 from .config import (RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RC_OK, RC_PARTIAL, Settings,
                      state_dir)
 from .events import events
 from .journal import journal
 from .runlog import log
 from .stages.clips import ClipStage
-from .stages.base import (Context, apply_mode_defaults, prompt_delete_original, prompt_rescan,
-                          resolve_legacy_caches)
+from .stages.base import Context, apply_mode_defaults, resolve_legacy_caches
 from .stages.gifs import GifStage
 from .stages.images import ImageStage
 from .stages.verify import VerifyStage
@@ -156,48 +155,7 @@ class Request:
 
 
 def _settings_menu(s: Settings, output: Path | None) -> None:
-    ui.section("GLOBAL SETTINGS")
-    s.preflight = ui.prompt_bool("Correct wrong file extensions by content first?", s.preflight)
-    prompt_delete_original(s, output)
-    s.verify_deep = ui.prompt_bool("Fully decode image outputs to verify them (slower)?", s.verify_deep)
-    s.clip_stage = ui.prompt_bool("Also convert short silent videos to animations?", s.clip_stage)
-    if s.clip_stage:
-        ui.prompt_setting(s, "clip_format", "Format for them (avif, or webp to animate in GNOME's viewer)")
-    ui.prompt_setting(s, "max_workers", "Parallel workers for images/GIFs (empty = all cores)")
-    prompt_rescan(s)
-
-    ui.section("IMAGES & GIFS")
-    ui.prompt_setting(s, "img_target", "Image target format (jxl or webp)")
-    if s.img_target == "webp":
-        ui.prompt_setting(s, "img_webp_quality", "WebP quality, higher is better (0-100)")
-    ui.prompt_setting(s, "jxl_effort", "JXL effort, higher is slower and smaller (1-10)")
-    ui.prompt_setting(s, "png_mode", "PNG mode (lossless or lossy)")
-    if s.png_mode == "lossy":
-        ui.prompt_setting(s, "png_quality", "JXL quality for PNG, higher is better (1-100)")
-    ui.prompt_setting(s, "gif_method", "WebP compression level for GIFs (0-6)")
-
-    ui.section("VIDEO (H.265)")
-    ui.prompt_setting(s, "encoder_mode", "Video encoder (auto, gpu or cpu)")
-    if s.encoder_mode == "auto":
-        ui.prompt_setting(s, "bitrate_threshold_kbps", "Bitrate above which the GPU is used (kb/s)")
-    if s.encoder_mode in ("auto", "gpu"):
-        ui.prompt_setting(s, "gpu_qp", "GPU quality, lower is better (24-28)")
-    if s.encoder_mode in ("auto", "cpu"):
-        ui.prompt_setting(s, "cpu_crf", "CPU quality, lower is better (20-24)")
-        ui.prompt_setting(s, "cpu_preset", "CPU preset (medium or slow)")
-    s.enable_probe = ui.prompt_bool("Encode a few short test slices first to predict the saving?",
-                                    s.enable_probe)
-    s.discard_if_larger = ui.prompt_bool("Discard a video if the result is larger than the original?",
-                                         s.discard_if_larger)
-    s.keep_salvaged_corrupt = ui.prompt_bool("Keep videos salvaged from damaged sources even if they grew?",
-                                             s.keep_salvaged_corrupt)
-    s.verify_visual = ui.prompt_bool("Compare the picture against the source while converting?",
-                                     s.verify_visual)
-    if s.verify_visual:
-        s.visual_strict = ui.prompt_bool("Discard a video when that comparison looks wrong?", s.visual_strict)
-    if output is not None:
-        s.enable_verify_output = ui.prompt_bool("Re-check the finished target directory at the end?",
-                                                s.enable_verify_output)
+    questions.ask(s, output)          # the same table the browser page shows
 
 
 def _preflight(source: Path, output: Path | None, s: Settings, dry_run: bool) -> None:

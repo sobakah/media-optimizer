@@ -49,6 +49,7 @@ ui.py            StyleUI, say/badge, boxes, prompts, progress line, hold-open
 runlog.py        the run log
 journal.py       the file journal for picktag (JSON Lines)
 events.py        --events FILE: the run's progress as JSON lines, for the browser page
+questions.py     the full run's questionnaire as data (terminal and page), the page's settings schema
 ```
 
 ## Language
@@ -103,7 +104,12 @@ Breaking any of these has caused real data loss or silent corruption before.
   source given on the command line only ever resumes its own state.
 - **New settings**: a field in `Settings` with rule and doc, then regenerate
   `config.example.json` (command in `tests/test_units.py`); the test fails
-  until it is in sync. CLI flags set settings through `_value`/`_flag` in
+  until it is in sync. Its topic on the browser page follows from its place
+  among the fields (`config.GROUP_STARTS`). A setting the full run should ask
+  about goes into `questions.FULL_RUN`, never as a prompt in the
+  orchestrator: the terminal and the page both read that table, and a
+  condition there is data (`when=("png_mode", "lossy")`) so the page can
+  evaluate it too. CLI flags set settings through `_value`/`_flag` in
   `cli.py`, so they are validated by the same rule. A renamed setting goes
   into `config.RENAMED`.
 - **Scans of the source only through `files.source_files`** (same skip rules
