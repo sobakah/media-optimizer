@@ -368,7 +368,7 @@ VAAPI encoder is available, and folders left by the Bash version
 | Removal knows its successor | The trash helper only received the path of the original. It now also gets the output that replaced it, for `removed` events, also when the trash failed and the original is deleted after the question at the end of the run. The list of such originals keeps the Bash format (one path per line), so for an entry left by an earlier run the successor is unknown (`kept: null`); that run's `converted` event names it. |
 | Tests | Every journal line any test writes is checked (complete line, ASCII only, the common fields and those of its event). The tests reset the stop flag of an interrupted in-process run, which tools started directly by a later test still saw. 27 new tests; each rule was broken on purpose once and its test failed. |
 
-## Unreleased
+## 2.4 – Browser page
 
 | Change | Why |
 |---|---|
