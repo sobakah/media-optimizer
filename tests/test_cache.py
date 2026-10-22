@@ -281,3 +281,35 @@ def test_declined_conversion_still_takes_over_subfolder_caches(folder, tmp_path,
     assert "Kept as they are" in out and "Cache (this scan):    2 file(s)" in out, out
     assert not (o / "sub" / "l.mp4").exists() and not (o / "sub" / "l.mkv").exists()
     assert (o / ".video_conversion_cache.txt").read_text().splitlines()[-1] == f"{d}/sub/l.mp4"
+
+
+def test_a_run_from_the_page_keeps_the_fingerprints(monkeypatch):
+    """The page sends every setting to its run through the environment, where
+    cpu_crf 22 came back as 22.0: the video fingerprint changed, and a run
+    from the page checked every video an earlier run had cached again."""
+    from media_optimizer import questions, web
+    from media_optimizer.config import Settings, load_settings, to_env
+    from media_optimizer.stages import clips, gifs, images, video
+
+    s = Settings()
+    form = {f["name"]: f["value"] for g in questions.schema(s, {})["groups"] for f in g["fields"]}
+    sent, errors = web._settings_from(s, form)
+    assert not errors
+    for name, value in to_env(sent).items():
+        monkeypatch.setenv(name, value)
+    child, _, _ = load_settings(origins={})
+    for keys, optional in ((video.CACHE_SETTINGS, video.CACHE_SETTINGS_OPTIONAL), (images.ImageStage.cache_settings, ()),
+                           (gifs.GifStage.cache_settings, ()), (clips.ClipStage.cache_settings, ())):
+        assert cache.fingerprint(child, keys, optional) == cache.fingerprint(s, keys, optional)
+
+
+def test_fingerprints_of_default_typed_values_are_unchanged():
+    """Caches written before numbers were normalised must stay valid."""
+    from media_optimizer.config import Settings
+    from media_optimizer.stages import video
+    s = Settings()
+    assert cache.fingerprint(s, video.CACHE_SETTINGS, video.CACHE_SETTINGS_OPTIONAL) == "682c779ada"
+    s.cpu_crf, s.min_size_mb = 22.0, 5
+    assert cache.fingerprint(s, video.CACHE_SETTINGS, video.CACHE_SETTINGS_OPTIONAL) == "682c779ada"
+    s.cpu_crf = 21.5
+    assert cache.fingerprint(s, video.CACHE_SETTINGS, video.CACHE_SETTINGS_OPTIONAL) != "682c779ada"

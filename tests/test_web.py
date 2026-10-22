@@ -499,3 +499,50 @@ def test_notification_falls_back_to_gdbus_and_never_raises(tmp_path, monkeypatch
     assert notify.notify("Done", "x") is False, "a program that cannot even start"
     (bindir / "gdbus").unlink()
     assert notify.notify("Done", "x") is False, "nothing to notify with: nothing happens"
+
+
+# --- files earlier runs handled ----------------------------------------------------------------
+def _cache_entry(path, cache_file, keys, optional=(), settings=None, outcome="larger"):
+    """An entry as a stage writes it, for *settings* (default: the defaults)."""
+    from media_optimizer import cache
+    stage = cache.StageCache(cache_file, enabled=True, dry_run=False,
+                             fingerprint=cache.fingerprint(settings or Settings(), keys, optional))
+    stage.add(path, outcome)
+
+
+def test_the_folder_tree_counts_what_the_caches_skip(folder):
+    from media_optimizer.stages import images, video
+    d = folder("c1", "photo.jpg", "other.png", "a/l.mp4=long.mp4", "a/b/x.jpg=photo.jpg")
+    _cache_entry(d / "photo.jpg", d / ".img_cache.txt", images.ImageStage.cache_settings)
+    _cache_entry(d / "a/l.mp4", d / ".video_conversion_cache.txt", video.CACHE_SETTINGS,
+                 video.CACHE_SETTINGS_OPTIONAL, outcome="codec")
+    with open(d / ".img_cache.txt", "a") as fh:      # stale: a load that may write would compact it
+        fh.write(f"1\t1\tabc\tlarger\t{d / 'gone.png'}\n")
+    before = {p: p.read_bytes() for p in d.glob(".*_cache*.txt")}
+    session = _session(d)
+    info = session.folder_info()
+    assert info["cached"] == {"root": [1, 0], "tree": {"a": [0, 1]}}
+    assert {p: p.read_bytes() for p in d.glob(".*_cache*.txt")} == before   # only read
+    # Another target format: the image's cached result no longer holds, the video's does.
+    assert session.cached_for({"img_target": "webp"}) == {"root": [0, 0], "tree": {"a": [0, 1]}}
+    assert session.cached_for({"img_target": 7}) == info["cached"]          # invalid: the setting stays
+    os.utime(d / "photo.jpg", ns=(1, 1))                                     # changed since: handled again
+    assert _session(d).folder_info()["cached"] == {"root": [0, 0], "tree": {"a": [0, 1]}}
+
+
+def test_a_video_the_video_stage_skipped_is_marked(folder, run_cli):
+    """End to end: what a real run put into its cache is what the page marks."""
+    d = folder("c2", "a/l.mp4=long.mp4")
+    out = run_cli("video", d, "--no-delete")                 # below min_size_mb: cached as "small"
+    assert out.rc == 0, out.text
+    assert "\tsmall\t" in (d / ".video_conversion_cache.txt").read_text()
+    session = _session(d)
+    assert session.folder_info()["cached"] == {"root": [0, 0], "tree": {"a": [0, 1]}}
+    assert session.cached_for({"min_size_mb": 0.0})["tree"] == {}           # would be converted now
+
+
+def test_the_page_asks_for_the_cached_counts(server):
+    status, _, raw = _http(server, "POST", "/api/cached", {"settings": {"img_target": "webp"}})
+    assert status == 200 and json.loads(raw) == {"root": [0, 0], "tree": {}}
+    status, _, _ = _http(server, "POST", "/api/cached", {"settings": {}}, headers={"Origin": "http://evil"})
+    assert status == 403

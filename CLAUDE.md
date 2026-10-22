@@ -128,6 +128,12 @@ Breaking any of these has caused real data loss or silent corruption before.
   outcomes depend on (`cache_settings`, `video.CACHE_SETTINGS`); add a new
   setting there when it changes a result. Old-format video caches are only
   converted after `resolve_legacy_caches` asked, and only under the run lock.
+  `cache.fingerprint` counts a number in its default's type (the page and
+  the environment give 22.0 for 22; a page run missed every cached video).
+  The page's folder tree reads the caches with `folders.CacheView`
+  (`StageCache(read_only=True)`: never compacted or written) to mark the
+  files a run would skip, recounted for the form's settings (`/api/cached`);
+  a new stage cache belongs there too.
 - **Every change to a media file goes into the journal** (`journal.py`):
   `converted`, `renamed`, `copied`, `removed`, after the action succeeded,
   never for skips, discards, failures or in a dry run. A new place that

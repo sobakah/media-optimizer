@@ -26,10 +26,10 @@ IMAGE_EXTS = ("jpg", "jpeg", "png", "gif")
 
 
 # --- counting --------------------------------------------------------------------
-def media_counts(source: Path, settings) -> dict[str, tuple[int, int]]:
+def media_counts(source: Path, settings, found: list | None = None) -> dict[str, tuple[int, int]]:
     """(images, videos) directly in each folder below source, over the whole
     tree regardless of the current choice, so the picker can show what an
-    excluded folder holds."""
+    excluded folder holds. *found* gets (folder, path, is_video) of each file."""
     images = files.extension_matcher(IMAGE_EXTS)
     videos = files.extension_matcher(settings.video_extensions, exclude_parts=True)
     counts: dict[str, tuple[int, int]] = {}
@@ -39,10 +39,59 @@ def media_counts(source: Path, settings) -> dict[str, tuple[int, int]]:
                                      include_hidden=settings.include_hidden, report=False):
             rel = files.relative_folder(path.parent, source)
             i, v = counts.get(rel, (0, 0))
-            counts[rel] = (i, v + 1) if videos(path.name) else (i + 1, v)
+            is_video = videos(path.name)
+            counts[rel] = (i, v + 1) if is_video else (i + 1, v)
+            if found is not None:
+                found.append((rel, path, is_video))
     finally:
         ui.progress_done()
     return counts
+
+
+class CacheView:
+    """Which of the picker's files a run would skip because a stage's cache
+    already has their outcome (done, discarded as larger, already HEVC, ...):
+    the image, GIF and video stages' caches, read once and never written.
+    An entry counts only while the file is unchanged and the settings it
+    depends on are the same, so counts() takes the settings to check with."""
+
+    def __init__(self, source: Path, work_dir: Path, found: list, include_hidden: bool) -> None:
+        from . import cache
+        from .stages import gifs, images, video
+
+        self.found = found
+        self._stages = []
+        for name, keys, optional in ((".img_cache.txt", images.ImageStage.cache_settings, ()),
+                                     (".gif_cache.txt", gifs.GifStage.cache_settings, ()),
+                                     (cache.VIDEO_CACHE, video.CACHE_SETTINGS, video.CACHE_SETTINGS_OPTIONAL)):
+            path = work_dir / name
+            if name == cache.VIDEO_CACHE and not path.exists() and (source / name).is_file():
+                path = source / name          # the video stage copies it over at its start
+            stage = cache.StageCache(path, enabled=True, dry_run=True, fingerprint="", read_only=True)
+            stage.load()
+            stage.merge_subfolders(work_dir, source, include_hidden)
+            self._stages.append((name, keys, optional, stage))
+
+    def _stage_for(self, path: Path, is_video: bool):
+        name = ".gif_cache.txt" if path.suffix.lower() == ".gif" else ".img_cache.txt"
+        if is_video:
+            from .cache import VIDEO_CACHE
+            name = VIDEO_CACHE
+        return next(stage for stage in self._stages if stage[0] == name)
+
+    def counts(self, settings) -> dict[str, tuple[int, int]]:
+        """(images, videos) per folder that the stages would skip with *settings*."""
+        from . import cache
+
+        prints = {name: cache.fingerprint(settings, keys, optional) for name, keys, optional, _ in self._stages}
+        skipped: dict[str, tuple[int, int]] = {}
+        for rel, path, is_video in self.found:
+            name, _, _, stage = self._stage_for(path, is_video)
+            if stage.lookup(path, prints[name]) is None:
+                continue
+            i, v = skipped.get(rel, (0, 0))
+            skipped[rel] = (i, v + 1) if is_video else (i + 1, v)
+        return skipped
 
 
 def subfolder_entries(counts: dict[str, tuple[int, int]]) -> list[str]:

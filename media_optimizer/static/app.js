@@ -147,8 +147,10 @@ function Question({ q, field, values, setValue, hasTarget, error }) {
 
 // The subfolder choice as the terminal's picker: a folder's checkbox covers
 // its own files; switching one switches the folders below along, unless
-// "only this folder" is used.
-function FolderTree({ folder, excluded, setExcluded }) {
+// "only this folder" is used. While the caches are used, the files an earlier
+// run handled (cached: per folder, for the form's settings) are marked as
+// skipped, and a folder with nothing else says so.
+function FolderTree({ folder, excluded, setExcluded, cached, useCache }) {
   const entries = folder.tree;
   if (!entries.length) return null;
   const below = (rel) => entries.filter((e) => e.rel.startsWith(rel + '/')).map((e) => e.rel);
@@ -160,19 +162,35 @@ function FolderTree({ folder, excluded, setExcluded }) {
   };
   const counts = (i, v) => [i && `${i} image${i === 1 ? '' : 's'}`, v && `${v} video${v === 1 ? '' : 's'}`]
     .filter(Boolean).join(' · ');
+  const skippedOf = (rel) => (useCache ? (rel === '.' ? cached.root : cached.tree[rel]) || [0, 0] : [0, 0]);
+  // "2 images · 1 video, 1 done before: skipped" / "(nothing new: done before)"
+  const amount = (rel, i, v) => {
+    const [si, sv] = skippedOf(rel);
+    const skipped = si + sv;
+    if (!skipped) return html`<span class="muted">${counts(i, v)}</span>`;
+    if (skipped === i + v) return html`<span class="muted">${counts(i, v)}</span> <span class="cached">all done before: skipped</span>`;
+    return html`<span class="muted">${counts(i, v)}</span> <span class="cached">${skipped} done before: skipped</span>`;
+  };
+  const allDone = (rel, i, v) => { const [si, sv] = skippedOf(rel); return i + v > 0 && si + sv === i + v; };
+  const total = [cached.root, ...Object.values(cached.tree)].reduce((n, [i, v]) => n + i + v, 0);
   const [ri, rv] = folder.rootCounts;
   return html`<section class="section">
     <h2>Folders</h2>
     <p class="muted small">A folder's checkbox covers its own files. Switching a folder switches the folders below it too.</p>
+    ${total > 0 && (useCache
+      ? html`<p class="note">${total} file${total === 1 ? ' was' : 's were'} handled by earlier runs and ${total === 1 ? 'is' : 'are'} skipped
+          (marked below): the caches keep their result while a file and the settings that decided it stay the same.
+          To check them again, choose <i>Scan all files again</i> below.</p>`
+      : html`<p class="note">The caches are ignored for this run: the ${total} file${total === 1 ? '' : 's'} earlier runs handled ${total === 1 ? 'is' : 'are'} checked again.</p>`)}
     <ul class="tree">
-      <li><label><input type="checkbox" checked=${!excluded.has('.')} onChange=${() => toggle('.', false)} />
-        <span class="mono">${baseName(folder.source)}</span> <span class="muted">(directly in it${ri || rv ? ': ' + counts(ri, rv) : ''})</span></label></li>
+      <li class=${allDone('.', ri, rv) ? 'done-before' : ''}><label><input type="checkbox" checked=${!excluded.has('.')} onChange=${() => toggle('.', false)} />
+        <span class="mono">${baseName(folder.source)}</span> <span class="muted">(directly in it${ri || rv ? ': ' : ''}</span>${ri || rv ? amount('.', ri, rv) : ''}<span class="muted">)</span></label></li>
       ${entries.map((e) => {
         const depth = e.rel.split('/').length;
         const kids = below(e.rel).length;
-        return html`<li style=${`padding-left:${depth * 20}px`}>
+        return html`<li class=${allDone(e.rel, e.images, e.videos) ? 'done-before' : ''} style=${`padding-left:${depth * 20}px`}>
           <label><input type="checkbox" checked=${!excluded.has(e.rel)} onChange=${() => toggle(e.rel, true)} />
-            <span class="mono">${e.rel.split('/').pop()}</span> <span class="muted">${counts(e.images, e.videos)}</span></label>
+            <span class="mono">${e.rel.split('/').pop()}</span> ${amount(e.rel, e.images, e.videos)}</label>
           ${kids > 0 && html` <button class="link" onClick=${() => toggle(e.rel, false)}>only this folder</button>`}
         </li>`;
       })}
@@ -195,6 +213,20 @@ function SetupView({ setup, onSetup, onError }) {
   const [dryRun, setDryRun] = useState(folder.dryRun);
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(false);
+  // What the caches would skip, for the settings as they are in the form now
+  // (the target format, qualities, ... decide whether a cached result still holds).
+  const [cached, setCached] = useState(folder.cached || { root: [0, 0], tree: {} });
+  useEffect(() => { setCached(folder.cached || { root: [0, 0], tree: {} }); }, [folder]);
+  const firstValues = useRef(true);
+  useEffect(() => {
+    if (firstValues.current) { firstValues.current = false; return undefined; }
+    if (!values.use_cache || folder.error) return undefined;
+    let alive = true;
+    const timer = setTimeout(async () => {
+      try { const data = await api('/cached', { settings: values }); if (alive) setCached(data); } catch (err) { /* keep the last counts */ }
+    }, 300);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [values]);
 
   const setValue = (name, value) => setValues((v) => ({ ...v, [name]: value }));
   const hasTarget = !!folder.target;
@@ -249,7 +281,8 @@ function SetupView({ setup, onSetup, onError }) {
         <label class="choice"><input type="radio" name="mode" checked=${mode === 'reset'} onChange=${() => setMode('reset')} /> Start over with the settings below</label>
       </div>
     </section>`}
-    ${!folder.error && !resumeLocked && html`<${FolderTree} folder=${folder} excluded=${excluded} setExcluded=${setExcluded} />`}
+    ${!folder.error && !resumeLocked && html`<${FolderTree} folder=${folder} excluded=${excluded} setExcluded=${setExcluded}
+      cached=${cached} useCache=${values.use_cache} />`}
     <fieldset class="plain" disabled=${resumeLocked}>
       ${setup.schema.questionnaire.map((sec) => html`<section class="section">
         <h2>${sec.title}</h2>

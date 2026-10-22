@@ -46,7 +46,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import questions
+from . import folders, questions
 from .config import NAME, RC_OK, RULES, Settings, __version__, check_value, to_env
 from .config import _describe as describe
 
@@ -267,7 +267,7 @@ class Session:
     def folder_info(self) -> dict:
         """What the page shows about the chosen folder: whether it can be
         used, an interrupted run to resume, the subfolders, notes."""
-        from . import cache, folders, orchestrator, safety
+        from . import cache, orchestrator, safety
 
         info: dict = {"source": str(self.source) if self.source else "",
                       "target": str(self.target) if self.target else "", "error": None, "resume": None,
@@ -288,11 +288,15 @@ class Session:
             info["resume"] = {"output": state.output, "done": state.done,
                               "changed": {k: v for k, v in state.settings.items()
                                           if k in RULES and getattr(Settings(), k) != v}}
-        counts = folders.media_counts(self.source, self.settings)
+        found: list = []
+        counts = folders.media_counts(self.source, self.settings, found)
         info["rootCounts"] = list(counts.get(folders.ROOT, (0, 0)))
         info["tree"] = [{"rel": rel, "images": counts.get(rel, (0, 0))[0], "videos": counts.get(rel, (0, 0))[1]}
                         for rel in folders.subfolder_entries(counts)]
         work = self.target if self.target is not None else self.source
+        # Files an earlier run handled are skipped while the caches are used.
+        self._cache_view = folders.CacheView(self.source, work, found, self.settings.include_hidden)
+        info["cached"] = self.cached(self.settings)
         if work.is_dir() and cache.find_legacy(work, self.settings.include_hidden):
             info["notes"].append("Video caches of an older version were found; this run converts them to the "
                                  "new format (the old file is kept as .v1.bak).")
@@ -300,6 +304,21 @@ class Session:
             info["notes"].append("No trash is available (send2trash, gio, trash-put). Originals are kept and "
                                  "listed instead of being deleted.")
         return info
+
+    def cached(self, settings: Settings) -> dict:
+        """Per folder, the (images, videos) the stages' caches would skip with
+        *settings* (whether the caches are used at all is the page's to show)."""
+        view = getattr(self, "_cache_view", None)
+        counts = view.counts(settings) if view is not None else {}
+        return {"root": list(counts.get(folders.ROOT, (0, 0))),
+                "tree": {rel: list(c) for rel, c in counts.items() if rel != folders.ROOT}}
+
+    def cached_for(self, values: dict) -> dict:
+        """cached() with the form's values; invalid ones keep their setting."""
+        s, errors = _settings_from(self.settings, values)
+        if errors:
+            s, _ = _settings_from(self.settings, {k: v for k, v in values.items() if k not in errors})
+        return self.cached(s)
 
     def setup(self) -> dict:
         return {"folder": self.folder_info(), "schema": questions.schema(self.settings, self.origins)}
@@ -673,6 +692,9 @@ class _Handler(BaseHTTPRequestHandler):
             return session.setup()
         if method == "POST" and path == "/api/folder":
             return session.set_folder(str(body.get("source") or ""), str(body.get("target") or ""))
+        if method == "POST" and path == "/api/cached":
+            values = body.get("settings")
+            return session.cached_for(values if isinstance(values, dict) else {})
         if method == "POST" and path == "/api/start":
             session.start(body)
             return {"ok": True}

@@ -70,11 +70,26 @@ def fingerprint(settings, names: tuple[str, ...], optional: tuple[str, ...] = ()
     names count only when they differ from their default: settings added to
     a stage's list later, so that the caches of everyone who never changed
     them stay valid."""
-    values = {n: getattr(settings, n) for n in names}
     defaults = type(settings)()
-    values.update({n: getattr(settings, n) for n in optional if getattr(settings, n) != getattr(defaults, n)})
+    values = {n: _as_default_type(getattr(settings, n), getattr(defaults, n)) for n in names}
+    values.update({n: _as_default_type(getattr(settings, n), getattr(defaults, n))
+                   for n in optional if getattr(settings, n) != getattr(defaults, n)})
     data = json.dumps(values, sort_keys=True)
     return hashlib.sha1(data.encode()).hexdigest()[:10]
+
+
+def _as_default_type(value, default):
+    """A number in the type of its default: the browser page and the
+    environment give 22.0 where a config file gives 22, and the hash must
+    not see a different setting (a page run checked every cached video
+    again). Values of the default's own type stay as they are, so existing
+    caches keep their fingerprints."""
+    numeric = (int, float)
+    if (isinstance(value, numeric) and isinstance(default, numeric) and not isinstance(value, bool)
+            and not isinstance(default, bool) and type(value) is not type(default)
+            and type(default)(value) == value):
+        return type(default)(value)
+    return value
 
 
 def _read_lines(path: Path) -> list[str]:
@@ -182,10 +197,14 @@ class Entry:
 
 
 class StageCache:
-    def __init__(self, path: Path, *, enabled: bool, dry_run: bool, fingerprint: str):
+    """read_only: only looked at (the browser page's folder picker): never
+    compacted or written, no messages."""
+
+    def __init__(self, path: Path, *, enabled: bool, dry_run: bool, fingerprint: str, read_only: bool = False):
         self.path = path
         self.enabled = enabled
-        self.dry_run = dry_run
+        self.read_only = read_only
+        self.dry_run = dry_run or read_only
         self.fp = fingerprint
         self.entries: dict[str, Entry] = {}
         self.legacy: set[str] | None = None      # old format, used as before
@@ -218,7 +237,7 @@ class StageCache:
             aliased += key != path
             self.entries[key] = entry
         superseded = count - stale - len(self.entries)
-        if (stale or superseded or aliased) and not self.dry_run:
+        if (stale or superseded or aliased) and not self.dry_run:  # also off when read_only
             self._compact()
             if stale:
                 ui.say("CACHE", S.CYAN, f"{self.path.name}: {stale} stale entries removed.")
@@ -273,7 +292,8 @@ class StageCache:
                     # format (conversion declined): add it the old way.
                     if path not in self.legacy:
                         self.legacy.add(path)
-                        self._append(path)
+                        if not self.read_only:
+                            self._append(path)
                         n += 1
                     continue
                 self._store(path, entry)
@@ -281,13 +301,14 @@ class StageCache:
             if n:
                 taken += n
                 caches += 1
-        if taken:
+        if taken and not self.read_only:
             ui.say("CACHE", S.CYAN, f"{taken} entries taken over from {caches} {self.path.name} file(s) "
                                     "in subfolders.")
 
     # --- use -------------------------------------------------------------------------
-    def lookup(self, path: Path) -> str | None:
-        """The cached outcome, or None when the file needs handling."""
+    def lookup(self, path: Path, fingerprint: str | None = None) -> str | None:
+        """The cached outcome, or None when the file needs handling.
+        fingerprint: of other settings than the stage's own (the page's form)."""
         if not self.enabled:
             return None
         key = canonical(path)
@@ -303,7 +324,7 @@ class StageCache:
         st = _stat(key)
         if st is None or st != (entry.size, entry.mtime):
             return None
-        if entry.fingerprint not in (ANY, self.fp):
+        if entry.fingerprint not in (ANY, fingerprint or self.fp):
             return None
         with self._lock:
             self.hits += 1
