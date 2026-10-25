@@ -386,7 +386,7 @@ VAAPI encoder is available, and folders left by the Bash version
 | A run from the page used the video cache again | The page hands every setting to its run through the environment, and `cpu_crf` came back as `22.0` instead of `22`. The video cache's fingerprint hashes the settings as written, so a run started from the page did not recognise any video a terminal run had handled and checked them all again (probe encodes included); the other way round as well. Fingerprints now count a number in the type of its default; caches written with the defaults keep their fingerprints (tested). Entries written by a page run with 2.4 are not recognised once and are written again. |
 
 
-## Unreleased – Review fixes
+## 2.4.2 – Review fixes
 
 Found by a code review of 2.3..2.4.1. Each fix has a test that fails without it.
 
