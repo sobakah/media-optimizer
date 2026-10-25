@@ -250,7 +250,10 @@ function SetupView({ setup, onSetup, onError }) {
   };
   const resumeLocked = mode === 'resume';
   const ready = !folder.error && !folder.busy && mode !== '';
-  const deleting = values.delete_original === null ? !hasTarget : values.delete_original;
+  // A resumed run keeps its own target and settings, whatever the form says.
+  const runTarget = resumeLocked ? folder.resume.output || '' : folder.target;
+  const deleteSetting = resumeLocked ? folder.resume.changed.delete_original ?? null : values.delete_original;
+  const deleting = deleteSetting === null ? !runTarget : deleteSetting;
   return html`
     <section class="section">
       <h2>Folder</h2>
@@ -264,7 +267,7 @@ function SetupView({ setup, onSetup, onError }) {
       </div>
       ${folder.error && html`<p class="error">${folder.error}</p>`}
       ${folder.busy && html`<p class="error">${folder.busy}</p>`}
-      ${!folder.error && html`<p class="muted">${hasTarget
+      ${!folder.error && html`<p class="muted">${resumeLocked ? `The interrupted run continues ${runTarget ? `into ${runTarget}` : 'in place'}. ` : ''}${runTarget
         ? 'With a target folder the source is never changed.'
         : deleting ? 'In place: originals go to the trash once their result is verified.'
                    : 'In place: results are written next to the originals, which are kept.'}</p>`}

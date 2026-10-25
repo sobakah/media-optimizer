@@ -292,7 +292,7 @@ class StageCache:
                     # format (conversion declined): add it the old way.
                     if path not in self.legacy:
                         self.legacy.add(path)
-                        if not self.read_only:
+                        if not self.dry_run:          # also off when read_only
                             self._append(path)
                         n += 1
                     continue

@@ -283,6 +283,20 @@ def test_declined_conversion_still_takes_over_subfolder_caches(folder, tmp_path,
     assert (o / ".video_conversion_cache.txt").read_text().splitlines()[-1] == f"{d}/sub/l.mp4"
 
 
+def test_a_dry_run_leaves_an_old_format_cache_alone(folder, tmp_path):
+    """Taking over subfolder caches into a root cache in the old format
+    appended to it even in a dry run."""
+    d = folder("s4", "sub/l.mp4=long.mp4")
+    (d / "sub" / cache.VIDEO_CACHE).write_text(f"{d}/sub/l.mp4\n")
+    root = d / cache.VIDEO_CACHE
+    root.write_text(f"{d}/gone.mp4\n")
+    stage = cache.StageCache(root, enabled=True, dry_run=True, fingerprint="x")
+    stage.load()
+    stage.merge_subfolders(d, d, False)
+    assert stage.legacy == {cache.canonical(str(d / "sub" / "l.mp4"))}, "still taken over for the run"
+    assert root.read_text() == f"{d}/gone.mp4\n"
+
+
 def test_a_run_from_the_page_keeps_the_fingerprints(monkeypatch):
     """The page sends every setting to its run through the environment, where
     cpu_crf 22 came back as 22.0: the video fingerprint changed, and a run

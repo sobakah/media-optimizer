@@ -53,7 +53,9 @@ class CacheView:
     already has their outcome (done, discarded as larger, already HEVC, ...):
     the image, GIF and video stages' caches, read once and never written.
     An entry counts only while the file is unchanged and the settings it
-    depends on are the same, so counts() takes the settings to check with."""
+    depends on are the same, so counts() takes the settings to check with.
+    Not the clip stage's cache: what it remembers (not selected, discarded)
+    still goes to the video stage."""
 
     def __init__(self, source: Path, work_dir: Path, found: list, include_hidden: bool) -> None:
         from . import cache

@@ -110,10 +110,14 @@ class Log:
         self.lines: list[str] = []
         self.dropped = 0                  # lines cut off the front: indexes stay stable
         self.partial = ""
+        self._cr = ""                     # a \r at the end of a read: maybe half of a \r\n
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
     def feed(self, data: bytes) -> None:
-        text = self.partial + self._decoder.decode(data)
+        text = self.partial + self._cr + self._decoder.decode(data)
+        self._cr = "\r" if text.endswith("\r") else ""
+        if self._cr:
+            text = text[:-1]
         pieces = _LINE_BREAK.split(text)
         for piece, brk in zip(pieces, _LINE_BREAK.findall(text)):
             if brk != "\r":              # a piece before a lone \r is redrawn by what follows
@@ -233,6 +237,7 @@ class Session:
         self.stopping = False
         self.background = False           # the run goes on when the page is gone
         self.run_number = 0               # the page's log belongs to one run
+        self._starting = False            # a start between its check and its child
         self._tmp: tempfile.TemporaryDirectory | None = None
         self._cond = threading.Condition()
         # From 1: the page's first request (since=0) is answered at once and
@@ -267,23 +272,15 @@ class Session:
     def folder_info(self) -> dict:
         """What the page shows about the chosen folder: whether it can be
         used, an interrupted run to resume, the subfolders, notes."""
-        from . import cache, orchestrator, safety
+        from . import cache, safety
 
+        error, busy, state = self._check()
         info: dict = {"source": str(self.source) if self.source else "",
-                      "target": str(self.target) if self.target else "", "error": None, "resume": None,
-                      "busy": None, "tree": [], "rootCounts": [0, 0], "notes": [], "dryRun": self.dry_run,
+                      "target": str(self.target) if self.target else "", "error": error, "resume": None,
+                      "busy": busy, "tree": [], "rootCounts": [0, 0], "notes": [], "dryRun": self.dry_run,
                       "reset": self.reset}
-        if self.source is None:
-            info["error"] = "Choose the folder to convert."
+        if error:
             return info
-        if not self.source.is_dir():
-            info["error"] = f"Folder not found: {self.source}"
-            return info
-        if self.target is not None and self.target == self.source:
-            self.target = None
-            info["target"] = ""
-        state, busy = orchestrator._pick_state(orchestrator.Request(self.settings, str(self.source), None))
-        info["busy"] = busy
         if state is not None:
             info["resume"] = {"output": state.output, "done": state.done,
                               "changed": {k: v for k, v in state.settings.items()
@@ -304,6 +301,20 @@ class Session:
             info["notes"].append("No trash is available (send2trash, gio, trash-put). Originals are kept and "
                                  "listed instead of being deleted.")
         return info
+
+    def _check(self) -> tuple[str | None, str | None, object]:
+        """(error, busy, saved state) for the chosen folder: what start()
+        needs, without folder_info's scan of the tree."""
+        from . import orchestrator
+
+        if self.source is None:
+            return "Choose the folder to convert.", None, None
+        if not self.source.is_dir():
+            return f"Folder not found: {self.source}", None, None
+        if self.target is not None and self.target == self.source:
+            self.target = None
+        state, busy = orchestrator._pick_state(orchestrator.Request(self.settings, str(self.source), None))
+        return None, busy, state
 
     def cached(self, settings: Settings) -> dict:
         """Per folder, the (images, videos) the stages' caches would skip with
@@ -335,15 +346,23 @@ class Session:
     # running
     def start(self, body: dict) -> None:
         with self._cond:
-            if self.phase == "running":
+            if self.phase == "running" or self._starting:
                 raise ApiError(409, "A run is going on.")
-        info = self.folder_info()
-        if info["error"]:
-            raise ApiError(400, info["error"])
-        if info["busy"]:
-            raise ApiError(409, info["busy"])
+            self._starting = True
+        try:
+            self._start(body)
+        finally:
+            with self._cond:
+                self._starting = False
+
+    def _start(self, body: dict) -> None:
+        error, busy, state = self._check()
+        if error:
+            raise ApiError(400, error)
+        if busy:
+            raise ApiError(409, busy)
         mode = body.get("mode", "new")
-        if info["resume"] and mode not in ("resume", "reset"):
+        if state is not None and mode not in ("resume", "reset"):
             raise ApiError(409, "This folder has an interrupted run: resume it or start over.")
         s, errors = _settings_from(self.settings, body.get("settings") or {})
         if errors:
@@ -434,6 +453,7 @@ class Session:
         with open(path, "rb") as fh:
             pending = b""
             while True:
+                ended = child.poll() is not None      # before the read: what it wrote last is read
                 chunk = fh.read()
                 if chunk:
                     pending += chunk
@@ -448,7 +468,7 @@ class Session:
                             if ev.get("event") == "done" and ev.get("stage") == "video":
                                 self.progress.finish_job(ev.get("src"))
                     self.bump()
-                elif child.poll() is not None:
+                elif ended:
                     break
                 else:
                     time.sleep(0.2)
@@ -740,6 +760,7 @@ class Watch:
         session, server = self.session, self.server
         gone = server.page_gone()
         if session.phase == "running":
+            self.finished_at = None                   # a later run ends on its own terms
             if gone and not session.background and not session.stopping:
                 session.stop()
             return False

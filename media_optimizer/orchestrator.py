@@ -225,6 +225,8 @@ def run(req: Request) -> tuple[int, bool]:
     if busy:
         ui.out(f"{S.RED}{busy}{S.RESET}", err=True)
         return RC_CANNOT_START, False
+    if req.reset and req.dry_run:
+        state = None                    # kept for later, but the preview starts over
     if state is not None:
         ui.box("INCOMPLETE PREVIOUS RUN DETECTED", [], S.YELLOW)
         done = state.done

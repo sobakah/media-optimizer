@@ -385,3 +385,18 @@ VAAPI encoder is available, and folders left by the Bash version
 | The page marks files earlier runs handled | The folder tree counted every image and video, also those a stage's cache already knows (converted before, discarded as larger, already HEVC, too small), which the run then skips: it looked as if they were still to do. Each folder now says how many of its files are "done before: skipped", a folder with nothing else says "all done before", and a note above the tree gives the total and points to "Scan all files again". With that chosen, the marks go and the note says those files are checked again. Whether a cached result still holds depends on the settings it was made with, so the page asks again when the form changes (another image target format brings the images back). The caches are only read for this (`StageCache(read_only=True)`), never compacted or written. Clicked through in headless Chrome with caches written by a real run. |
 | A run from the page used the video cache again | The page hands every setting to its run through the environment, and `cpu_crf` came back as `22.0` instead of `22`. The video cache's fingerprint hashes the settings as written, so a run started from the page did not recognise any video a terminal run had handled and checked them all again (probe encodes included); the other way round as well. Fingerprints now count a number in the type of its default; caches written with the defaults keep their fingerprints (tested). Entries written by a page run with 2.4 are not recognised once and are written again. |
 
+
+## Unreleased – Review fixes
+
+Found by a code review of 2.3..2.4.1. Each fix has a test that fails without it.
+
+| Change | Why |
+|---|---|
+| A second background run gets its notification | The page remembered when the first background run had ended. A second one in the same session ("Process another folder", then "Keep running in the background") ended without a notification, and the program could end at once instead of waiting `BACKGROUND_WAIT` for the page. |
+| No log lines lost on the page | The pty ends lines with `\r\n`. When a read ended between the two, the line was taken for a progress redraw and dropped. |
+| The last events of a run are read | The events reader could see an empty file, then the run's last events and its exit, and stop without reading them: a stage card stayed "running". It now reads once more after the run has ended. |
+| Resuming on the page names the run's own target | The folder text followed the form ("With a target folder the source is never changed") while the resumed run works with its saved target and settings, possibly in place with originals going to the trash. It now says where the interrupted run continues and what happens to originals there. |
+| "Start over" with "Preview only" shows the form's settings | `--reset -n` kept the saved state (a dry run removes nothing) and then resumed it, so the preview showed the old run, in the terminal too. A preview of starting over now ignores the saved run; it stays for a real run. |
+| One start at a time | Two starts at once (a double click, two tabs) could both pass the check and start two runs, one of them no longer tracked. Starting also no longer scans the folder tree again. |
+| A dry run leaves an old-format video cache alone | Taking over subfolder caches into a root cache in the old format appended to it even with `-n`. |
+| The strict picture check counts as failed on the page | A video `--strict-visual` threw away was reported as "discarded (larger)", hiding a failed picture check. Its `done` event now says `failed`, like the stage's counters and the log. |

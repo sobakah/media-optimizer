@@ -230,13 +230,17 @@ def test_suspicious_picture_keeps_original(folder, main, monkeypatch):
     assert "l.mp4" in (d / ".video_suspect.txt").read_text()
 
 
-def test_strict_visual_discards(folder, main, monkeypatch):
+def test_strict_visual_discards(folder, main, monkeypatch, tmp_path):
     d = folder("h2d", "l.mp4=long.mp4")
     monkeypatch.setattr(media, "verify_visual", lambda *a, **k: media.Visual(False, 10.0, "x"))
-    out = main("video", d, *FAST, "--delete", "--force-delete", "--strict-visual")
+    ev = tmp_path / "h2d.jsonl"
+    out = main("video", d, *FAST, "--delete", "--force-delete", "--strict-visual", "--events", ev)
     assert out.rc == 3, out
     assert (d / "l.mp4").exists() and not (d / "l_h265.mp4").exists()
     assert not leftovers(d)
+    # A failed picture check, not "discarded (larger)" on the page.
+    done = [json.loads(line) for line in ev.read_text().splitlines() if '"done"' in line]
+    assert [e["outcome"] for e in done] == ["failed"]
 
 
 def test_runtime_mismatch_keeps_original(folder, main, monkeypatch):

@@ -321,6 +321,59 @@ def test_log_keeps_the_newest_state_of_a_redrawn_line():
     assert log.since(1) == {"from": 1, "lines": ["\x1b[Ktwo é"], "partial": "three"}
 
 
+def test_log_keeps_a_line_whose_line_break_is_split_across_reads():
+    """The pty sends \\r\\n; a read ending between the two dropped the line as
+    a redraw."""
+    log = web.Log()
+    log.feed(b"[ERROR] x.mp4\r")
+    assert log.lines == [] and log.since(0)["partial"] == "[ERROR] x.mp4"
+    log.feed(b"\nnext\r")
+    log.feed(b"redrawn\n")
+    assert log.lines == ["[ERROR] x.mp4", "redrawn"]
+
+
+def test_the_last_events_of_a_run_are_read(tmp_path):
+    """A run that writes its last events and ends between an empty read and
+    the check whether it has ended."""
+    events_file = tmp_path / "events.jsonl"
+    events_file.touch()
+
+    class Child:
+        def poll(self):
+            if not events_file.read_text():
+                with open(events_file, "a") as fh:
+                    fh.write(json.dumps({"event": "stage_start", "stage": "images", "total": 1}) + "\n")
+                    fh.write(json.dumps({"event": "stage_end", "stage": "images", "code": 0, "counters": {}}) + "\n")
+            return 0
+
+    session = web.Session(Settings(), {}, tmp_path, None)
+    session._read_events(events_file, Child())
+    assert session.progress.snapshot()["stages"][0]["state"] == "done"
+
+
+def test_one_start_at_a_time(folder):
+    """Two starts at once (a double click, two tabs) both got past the check."""
+    session = _session(folder("w7", "photo.jpg"))
+    session._starting = True
+    with pytest.raises(web.ApiError) as exc:
+        session.start({})
+    assert exc.value.status == 409 and session.child is None
+
+
+def test_a_preview_of_starting_over_ignores_the_saved_run(folder, tmp_path):
+    """--reset -n kept the state (a dry run removes nothing) and then resumed
+    it: the preview showed the saved settings, not the form's."""
+    d = folder("w8", "photo.jpg")
+    _interrupted_state(tmp_path, d, None)          # its saved settings would make WebP
+    session = _session(d)
+    session.start({"mode": "reset", "dry_run": True, "settings": {}})
+    _wait_finished(session)
+    log = "\n".join(session.log.lines)
+    assert session.code == 0 and "photo.jxl" in log and "photo.webp" not in log, log
+    assert "resuming" not in log
+    assert _session(d).folder_info()["resume"] is not None, "the state stays for a real run"
+
+
 def test_log_drops_old_lines_with_stable_indexes(monkeypatch):
     monkeypatch.setattr(web, "LOG_LINES", 3)
     log = web.Log()
@@ -462,6 +515,31 @@ def test_a_page_opened_after_the_background_run_keeps_it_up(fake_run):
     assert not watch.tick() and not fake_run.background, "back to the usual rules"
     server.gone = True
     assert watch.tick()
+
+
+def test_a_second_background_run_gets_its_notification(tmp_path):
+    """The time the first background run ended was kept: the second one
+    ended without a notification and the program ended at once."""
+    from types import SimpleNamespace
+
+    sent = []
+    server = _FakeServer()
+    session = SimpleNamespace(phase="running", background=True, stopping=False, code=None,
+                              summary=lambda: "done.")
+    watch = web.Watch(server, session, "http://127.0.0.1:1/?token=x", notify=lambda *a, **k: sent.append(a))
+    server.gone = True
+    session.phase, session.code = "finished", 0
+    assert not watch.tick() and len(sent) == 1
+    time.sleep(0.01)
+    server.gone, server.last_contact = False, time.monotonic()      # opened again
+    assert not watch.tick() and not session.background
+    session.phase, session.background, session.code = "running", True, None      # another folder
+    server.gone = True
+    assert not watch.tick()
+    time.sleep(0.01)
+    session.phase, session.code = "finished", 0
+    assert not watch.tick() and not watch.tick(), "waits for the page again"
+    assert len(sent) == 2 and session.background
 
 
 def test_background_only_while_running(tmp_path):

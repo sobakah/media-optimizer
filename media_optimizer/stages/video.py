@@ -772,7 +772,7 @@ class VideoStage:
                     log.file(self.tag, "INVALID", src)
                     self._count(unverified=1)
                     self._save_stats()
-                    return "discarded"
+                    return "failed"
                 ui.out("            File is kept, original kept. Check with: media-optimizer verify", err=True)
 
         src_h, new_h = ui.format_bytes(size), ui.format_bytes(new)
