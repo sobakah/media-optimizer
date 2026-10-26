@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from media_optimizer import config, files, safety
+from media_optimizer import config, files, safety, ui
 from media_optimizer.config import Settings, SettingsError, load_settings, parse_value
 
 
@@ -314,14 +314,21 @@ def test_options_before_the_command(folder, main, tmp_path):
     assert out.rc == 0 and "IMAGE SUMMARY" in out and (d / "photo.jxl").exists(), out
 
 
-def test_value_options_list_is_complete():
+def test_stage_option_before_the_command(folder, main):
+    """'--gpu-workers 2 video DIR' was a full run of a folder called "video"
+    into DIR: only the general options were known to take a value."""
+    d = folder("u1b", "photo.jpg")
+    out = main("--webp-quality", "80", "images", d, "--no-delete")
+    assert out.rc == 0 and "IMAGE SUMMARY" in out and (d / "photo.jxl").exists(), out
+
+
+def test_no_option_is_a_flag_in_one_command_and_takes_a_value_in_another():
+    """_command_first cannot know the command yet: the meaning must be the same everywhere."""
     import argparse
     from media_optimizer import cli
-    run = next(a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction)).choices["run"]
-    general = next(g for g in run._action_groups if g.title == "general")
-    taking = {o for a in general._group_actions if a.nargs != 0 for o in a.option_strings}
-    taking |= {o for a in run._actions if a.dest in ("input", "output") for o in a.option_strings}
-    assert taking == cli._VALUE_OPTIONS
+    sub = next(a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+    flags = {o for p in sub.choices.values() for a in p._actions if a.nargs == 0 for o in a.option_strings}
+    assert not flags & cli.value_options(cli.build_parser())
 
 
 def test_protected_folders_are_not_suggested(tmp_path, monkeypatch):
@@ -342,3 +349,76 @@ def test_protected_folders_are_not_suggested(tmp_path, monkeypatch):
     assert files.suggested_source() == str(link)
     monkeypatch.setenv("PWD", "/somewhere/else")
     assert files.suggested_source() == str(home / "Pictures")
+
+
+def test_a_path_queued_twice_is_deleted_once(tmp_path):
+    """Queued by two runs: the second unlink failed, the run reported a
+    failure and the list stayed."""
+    from media_optimizer import safety
+    f = tmp_path / "photo.jpg"
+    f.write_bytes(b"x")
+    pending = tmp_path / ".img_pending_deletes.txt"
+    pending.write_text(f"{f}\n{f}\n")
+    assert safety.Trash(pending, force=True).resolve() == [f]
+    assert not f.exists() and not pending.exists()
+
+
+@pytest.mark.parametrize("argv, typed_into", [
+    (["-fish"], True), (["/bin/bash", "-l"], True), (["fish", "--no-config"], True), (["bash", "--norc"], True),
+    (["zsh", "-i", "-c", "x"], True), (["bash", "-c", "media-optimizer"], False), (["bash", "-lc", "x"], False),
+    (["fish", "--command=x"], False), (["bash", "run.sh"], False), (["konsole"], False), ([], False)])
+def test_interactive_shell(argv, typed_into):
+    """'fish --no-config' or 'bash --norc' held the window open after every run."""
+    assert ui.interactive_shell(argv) is typed_into
+
+
+def test_a_shell_behind_sudo_is_still_the_shell(monkeypatch):
+    """Started as 'sudo media-optimizer' or 'uv run', the parent is no shell:
+    the window was held open in a terminal."""
+    tree = {10: (["sudo", "media-optimizer"], 9), 9: (["uv", "run"], 8), 8: (["fish"], 1)}
+    monkeypatch.setattr(ui.os, "getppid", lambda: 10)
+    monkeypatch.setattr(ui, "_cmdline", lambda pid: tree[pid][0])
+    monkeypatch.setattr(ui, "_parent_of", lambda pid: tree[pid][1])
+    assert ui._parent_is_interactive_shell()
+    tree[8] = (["bash", "-c", "uv run media-optimizer"], 1)
+    assert not ui._parent_is_interactive_shell()
+
+
+def test_input_with_two_more_folders_is_an_error(folder, run_cli, tmp_path):
+    """'-i A B C': C was ignored without a word."""
+    d = folder("u9", "photo.jpg")
+    out = run_cli("images", "-i", d, tmp_path / "b", tmp_path / "c")
+    assert out.rc == 2 and "which one is the target" in out, out
+    assert not (tmp_path / "b").exists()
+
+
+def test_jpeg_info_stops_at_image_data(tmp_path):
+    """Image data before any frame header was scanned for markers."""
+    f = tmp_path / "odd.jpg"
+    sof = b"\xff\xc0\x00\x11\x08\x00\x10\x00\x10\x03" + bytes(9)
+    f.write_bytes(b"\xff\xd8" + b"\xff\xda\x00\x02" + sof)
+    assert files.jpeg_info(f) is None
+
+
+@pytest.mark.parametrize("head, kind", [(b"\x00\x00\x00\x08ftyp", ""), (b"\x00\x00\x00\x18ftypMA1B" + bytes(12), ""),
+                                        (b"\x00\x00\x00\x18ftypisom" + bytes(12), "mp4")])
+def test_real_type_of_short_and_avif_headers(tmp_path, head, kind):
+    """A file that ends after 'ftyp', or an AVIF with a profile brand, was an MP4."""
+    f = tmp_path / "x.bin"
+    f.write_bytes(head)
+    assert files.real_type(f) == kind
+
+
+def test_a_symlink_pointing_elsewhere_is_seen_at_the_next_load(tmp_path):
+    """The resolved folders were remembered for the life of the process (the
+    page's server, 'Process another directory?')."""
+    from media_optimizer import cache
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "a")
+    assert cache.canonical(link / "x.mp4") == str(tmp_path / "a" / "x.mp4")
+    link.unlink()
+    link.symlink_to(tmp_path / "b")
+    cache.StageCache(tmp_path / ".img_cache.txt", enabled=True, dry_run=True, fingerprint="f").load()
+    assert cache.canonical(link / "x.mp4") == str(tmp_path / "b" / "x.mp4")

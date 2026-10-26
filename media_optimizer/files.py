@@ -211,8 +211,8 @@ def target_folder(src: Path, source_dir: Path, output_dir: Path | None) -> Path:
 # --- real file type ------------------------------------------------------------------
 _JXL_CONTAINER = b"\x00\x00\x00\x0cJXL \r\n\x87\n"
 # ISO base media brands that are not plain video.
-_NOT_MP4_BRANDS = {b"avif", b"avis", b"heic", b"heix", b"heim", b"heis", b"mif1", b"msf1",
-                   b"qt  ", b"crx "}
+_NOT_MP4_BRANDS = {b"avif", b"avis", b"MA1A", b"MA1B", b"heic", b"heix", b"heim", b"heis", b"mif1",
+                   b"msf1", b"qt  ", b"crx "}
 
 
 def real_type(path: Path) -> str:
@@ -232,7 +232,7 @@ def real_type(path: Path) -> str:
         return "webp"
     if head.startswith(b"\xff\x0a") or head.startswith(_JXL_CONTAINER):
         return "jxl"
-    if head[4:8] == b"ftyp" and head[8:12] not in _NOT_MP4_BRANDS:
+    if head[4:8] == b"ftyp" and len(head) >= 12 and head[8:12] not in _NOT_MP4_BRANDS:
         return "mp4"
     return ""
 
@@ -303,7 +303,7 @@ def jpeg_info(path: Path) -> JpegInfo | None:
                 marker = byte[0]
                 if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
                     continue                    # markers without a length
-                if marker == 0xD9:
+                if marker in (0xD9, 0xDA):      # the end, or image data before any frame header
                     return None
                 raw = fh.read(2)
                 if len(raw) < 2:

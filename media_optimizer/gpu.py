@@ -210,6 +210,20 @@ def selftest_device(s: Settings) -> str:
     return nodes[0] if nodes else "/dev/dri/renderD128"
 
 
+def selftest_advice(winners: list[str]) -> str:
+    """What the usable variants mean. The current settings first: the plain
+    variants run before them, and a working machine was told its settings
+    were the problem."""
+    if "current" in winners:
+        return "  The current settings work, nothing to change."
+    if any(name in winners for name in ("original", "device-first", "bf0", "hvc1", "faststart")):
+        return "  hevc_vaapi works in principle. The current settings\n  are the problem, not the driver."
+    if "av1" in winners:
+        return ('  For the config file:\n\n    "gpu_codec": "av1_vaapi"\n\n'
+                "  AV1 saves more space than HEVC but is not played by older\n  players and TVs.")
+    return '  For the config file:\n\n    "gpu_codec": "hevc_vulkan"'
+
+
 def selftest(s: Settings, src: Path) -> int:
     if not src.is_file():
         ui.out(f"Test file not found: {src}", err=True)
@@ -223,7 +237,8 @@ def selftest(s: Settings, src: Path) -> int:
     ui.out(f"  File:   {src.name}\n  Device: {device}\n  Slice:  {seclen}s at {start}s\n")
 
     with tempfile.TemporaryDirectory(prefix="mo_selftest_") as tmpdir:
-        ref = Path(tmpdir) / "ref.mp4"
+        # MKV takes any codec; "-c copy" of an AVI's or WMV's video into MP4 fails.
+        ref = Path(tmpdir) / "ref.mkv"
         if not proc.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", str(start), "-t", str(seclen),
                          "-i", str(src), "-map", "0:v:0", "-an", "-c", "copy", str(ref)]).ok:
             ui.out("Could not create the reference slice.", err=True)
@@ -281,15 +296,6 @@ def selftest(s: Settings, src: Path) -> int:
                "           Until then: --encoder cpu")
         return 1
     ui.say("RESULT", S.GREEN, f"Usable: {' '.join(winners)}\n")
-    first = winners[0]
-    if first in ("original", "device-first", "bf0", "hvc1", "faststart"):
-        ui.out("  hevc_vaapi works in principle. The current settings\n  are the problem, not the driver.")
-    elif first == "current":
-        ui.out("  The current settings work, nothing to change.")
-    elif first == "av1":
-        ui.out('  For the config file:\n\n    "gpu_codec": "av1_vaapi"\n\n'
-               "  AV1 saves more space than HEVC but is not played by older\n  players and TVs.")
-    else:
-        ui.out('  For the config file:\n\n    "gpu_codec": "hevc_vulkan"')
+    ui.out(selftest_advice(winners))
     ui.out()
     return 0

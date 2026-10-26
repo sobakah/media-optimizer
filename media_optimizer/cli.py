@@ -277,10 +277,13 @@ def _settings(args, *, folder_choice: bool = True, origins: dict[str, str] | Non
     return settings
 
 
-def _check_web_options(parser: argparse.ArgumentParser, args) -> None:
-    """As lyrembed's: the return URL only to a page on this computer."""
+def _check_options(parser: argparse.ArgumentParser, args) -> None:
+    """Combinations argparse cannot see. As lyrembed's: the return URL only to a page on this computer."""
     from .web import local_page
 
+    if getattr(args, "input", None) and args.source and (args.target or args.output):
+        # "-i A B C": C was ignored without a word.
+        parser.error("-i with two folders, or with -o: which one is the target?")
     if args.command != "run":
         return
     if not args.web:
@@ -301,7 +304,7 @@ def _dirs(args) -> tuple[str | None, str | None]:
     source = args.input or args.source
     output = args.output or args.target
     if args.input and args.source:          # "-i A B": the positional is the target
-        output = args.output or args.source
+        output = args.source
     return source, output
 
 
@@ -459,16 +462,21 @@ def _run_full(args) -> int:
 
 
 # The options of _common that take a value, to find a command after them.
-_VALUE_OPTIONS = {"-i", "--input", "-o", "--output", "-j", "--workers", "--subfolders", "--exclude-folder",
-                  "-c", "--config", "--log", "--journal", "--events"}
+def value_options(parser: argparse.ArgumentParser) -> set[str]:
+    """Every option of any command that takes a value. All of them, not only
+    the general ones: '--gpu-workers 2 video DIR' was a full run of a folder
+    called "video" into DIR."""
+    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    return {o for p in sub.choices.values() for a in p._actions if a.nargs != 0 for o in a.option_strings}
 
 
-def _command_first(argv: list[str]) -> list[str]:
+def _command_first(argv: list[str], parser: argparse.ArgumentParser) -> list[str]:
     """Options before the command belong to it: '-c cfg images DIR' was a full
     run of a source folder called "images". Without a command: run."""
+    taking = value_options(parser)
     i = 0
     while i < len(argv) and argv[i].startswith("-") and argv[i] != "--":
-        i += 2 if argv[i] in _VALUE_OPTIONS else 1
+        i += 2 if argv[i] in taking else 1
     if i < len(argv) and argv[i] in COMMANDS:
         return [argv[i], *argv[:i], *argv[i + 1:]]
     return ["run", *argv]
@@ -480,11 +488,11 @@ def main(argv: list[str] | None = None) -> int:
         ui.out("The command 'avif' was renamed to 'clips' (it also writes WebP): "
                "media-optimizer clips --help", err=True)
         return RC_BAD_SETTING
-    if not argv or (argv[0] not in COMMANDS and argv[0] not in ("-h", "--help", "--version")):
-        argv = _command_first(argv)
     parser = build_parser()
+    if not argv or (argv[0] not in COMMANDS and argv[0] not in ("-h", "--help", "--version")):
+        argv = _command_first(argv, parser)
     args = parser.parse_args(argv)
-    _check_web_options(parser, args)
+    _check_options(parser, args)
     install_signal_handlers()
     proc.reset()
     reset_notices()

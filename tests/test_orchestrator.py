@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from conftest import leftovers, running, snapshot, wait_running
+from media_optimizer import orchestrator
 
 FAST_VIDEO = {"MO_MIN_SIZE_MB": "0", "MO_ENCODER_MODE": "cpu", "MO_ENABLE_PROBE": "false",
               "MO_CPU_PRESET": "ultrafast"}
@@ -285,8 +286,22 @@ def test_discarding_a_stopped_run(folder, tmp_path, pty_run):
         {"status": "INTERRUPTED", "source": str(a), "output": str(tmp_path / "rc-out"), "settings": {},
          "done": {"images": False, "gifs": True, "clips": True, "video": True}}))
     out = pty_run(["n", str(b), str(tmp_path / "rd-out"), "", "n"])
-    assert "Discarding state" in out, out
+    assert "Starting a new run" in out, out
     assert (tmp_path / "rd-out" / "photo.jxl").exists() and not (tmp_path / "rc-out").exists()
+    # Declined before the folder was chosen: a run on another folder used to
+    # delete the stopped run's state anyway.
+    assert [st.source for st in orchestrator.open_states()] == [str(a)]
+
+
+def test_declining_and_running_the_same_folder_replaces_its_state(folder, tmp_path, pty_run):
+    a = folder("rc2", "photo.jpg")
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "state.json").write_text(json.dumps(
+        {"status": "INTERRUPTED", "source": str(a), "output": str(tmp_path / "rc2-old"), "settings": {},
+         "done": {"images": False, "gifs": True, "clips": True, "video": True}}))
+    out = pty_run(["n", str(a), str(tmp_path / "rc2-out"), "", "n"])
+    assert (tmp_path / "rc2-out" / "photo.jxl").exists(), out
+    assert orchestrator.open_states() == [], out
 
 
 def test_settings_menu(folder, tmp_path, pty_run):

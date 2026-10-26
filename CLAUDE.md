@@ -301,3 +301,6 @@ media-optimizer gpu-selftest /path/to/video.mp4      # which GPU options work
   12 MP image, so 16 workers need ~4.3 GB. Not a problem in practice.
 - **More than one CPU video encode at a time.** x265 already saturates the
   cores.
+- **Keeping cover art.** The video encode maps `0:v:0`, audio and subtitles:
+  an MP4 cover (attached picture) or an MKV attachment is not carried over
+  (measured 2026-10-26). Covers are usually generated and easy to make again.

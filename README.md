@@ -242,7 +242,8 @@ chips that downclock for it (Skylake-X, Ice Lake server) and on Zen 4.
   The resume state of a full run is in `~/.local/state/media-optimizer/`, one
   file per source folder: a run on another folder neither resumes nor
   overwrites it. Without a source on the command line the most recent one is
-  offered; a dry run never removes it.
+  offered; declined, it stays until a run on its own folder replaces it. A
+  dry run never removes it.
 * **Caches.** Each stage remembers the files that need no work next time:
   `.img_cache.txt`, `.gif_cache.txt`, `.clip_cache.txt` keep results without
   an output (discarded as larger, unsupported, clips not selected),
@@ -333,7 +334,8 @@ per event. If it cannot be written, the run warns once and carries on.
 
 Started from a file manager, the terminal would close as soon as the program
 ends. The window therefore stays open unless the parent is an interactive
-shell. `MO_HOLD=1`/`0` (or `--hold`/`--no-hold`) forces it, `MO_HOLD_TIMEOUT=15`
+shell (also behind `sudo`, `env` or `uv run`; a shell running a command with
+`-c` or a script counts as none). `MO_HOLD=1`/`0` (or `--hold`/`--no-hold`) forces it, `MO_HOLD_TIMEOUT=15`
 closes by itself.
 
 ### Browser page

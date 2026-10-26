@@ -328,19 +328,21 @@ class Trash:
         ui.say("TRASH", S.YELLOW, f"failed, original kept for now: {path.name}")
         return False
 
-    def resolve(self) -> None:
+    def resolve(self) -> list[Path]:
         """At the end of a run: one question for everything that could not
-        go to the trash."""
+        go to the trash. Returns the originals deleted now."""
         if self.pending is None or not self.pending.is_file():
-            return
+            return []
         try:
             lines = self.pending.read_text(encoding="utf-8", errors="surrogateescape").splitlines()
         except OSError:
-            return
-        files = [Path(line) for line in lines if line and Path(line).exists()]
+            return []
+        # Once each: a file queued by two runs failed its second unlink, and
+        # the list stayed.
+        files = list(dict.fromkeys(Path(line) for line in lines if line and Path(line).exists()))
         if not files:
             self.pending.unlink(missing_ok=True)
-            return
+            return []
         ui.card(S.YELLOW, [f"{S.BOLD}TRASH NOT AVAILABLE{S.RESET}",
                            f"{len(files)} original(s) could not be moved to the trash.",
                            "They were deliberately NOT deleted."])
@@ -353,10 +355,11 @@ class Trash:
         elif not ui.interactive():
             ui.out(f"  {S.CYAN}Cannot prompt (not interactive).{S.RESET} Originals are kept.")
             ui.out(f"  List: {self.pending}")
-            return
+            return []
         elif not ui.prompt_bool("Delete these file(s) permanently now (no trash)?", False):
             ui.out(f"  Originals are kept. List: {self.pending}")
-            return
+            return []
+        deleted = []
         ok = err = 0
         for f in files:
             before = journal.snapshot(f)
@@ -366,6 +369,7 @@ class Trash:
             except OSError:
                 err += 1
             else:
+                deleted.append(f)
                 journal.removed(f, before, how="permanent", reason="converted", kept=self.kept.get(str(f)))
         line = f"  {S.GREEN}{ok} deleted{S.RESET}"
         if err:
@@ -373,3 +377,4 @@ class Trash:
         ui.out(line)
         if err == 0:
             self.pending.unlink(missing_ok=True)
+        return deleted

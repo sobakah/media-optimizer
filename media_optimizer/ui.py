@@ -14,6 +14,7 @@ import shutil
 import sys
 import threading
 import unicodedata
+from pathlib import Path
 
 _ANSI = {
     "RESET": "\033[0m", "BOLD": "\033[1m", "DIM": "\033[2m",
@@ -295,18 +296,57 @@ def prompt_setting(settings, name: str, question: str) -> None:
 SHELLS = {"bash", "sh", "zsh", "dash", "fish", "ksh", "ksh93", "tcsh", "csh", "elvish", "nu"}
 
 
-def _parent_is_interactive_shell() -> bool:
+# Programs that start the tool for a shell: the shell is one step up.
+WRAPPERS = {"sudo", "doas", "env", "nice", "ionice", "nohup", "time", "chrt", "taskset", "uv", "uvx",
+            "poetry", "pipx", "pdm", "hatch", "direnv"}
+
+
+def _cmdline(pid: int) -> list[str]:
     try:
-        raw = open(f"/proc/{os.getppid()}/cmdline", "rb").read()
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
+        return []
+    return [a.decode(errors="replace") for a in raw.split(b"\0") if a]
+
+
+def _parent_of(pid: int) -> int:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return int(stat[stat.rindex(")") + 2:].split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def _program(argv: list[str]) -> str:
+    return argv[0].lstrip("-").rsplit("/", 1)[-1] if argv else ""
+
+
+def interactive_shell(argv: list[str]) -> bool:
+    """A shell someone types into. Options alone do not make it a script:
+    'fish --no-config' and 'bash --norc' held the window open after every
+    run. A command (-c) or a script file does."""
+    if _program(argv) not in SHELLS:
         return False
-    argv = [a.decode(errors="replace") for a in raw.split(b"\0") if a]
-    if not argv:
-        return False
-    name = argv[0].lstrip("-").rsplit("/", 1)[-1]
-    if name not in SHELLS:
-        return False
-    return all(a in ("-i", "-l", "--login", "-il", "-li", "--interactive") for a in argv[1:])
+    for arg in argv[1:]:
+        if arg in ("-i", "--interactive"):
+            return True
+        if arg == "--command" or arg.startswith("--command="):
+            return False
+        if arg.startswith("-") and not arg.startswith("--") and "c" in arg[1:]:
+            return False                # -c, -lc
+        if not arg.startswith("-"):
+            return False                # a script
+    return True
+
+
+def _parent_is_interactive_shell() -> bool:
+    pid = os.getppid()
+    for _ in range(5):
+        argv = _cmdline(pid)
+        if _program(argv) not in WRAPPERS:
+            return interactive_shell(argv)
+        pid = _parent_of(pid)           # sudo, uv run, ...: the shell is further up
+    return False
 
 
 def should_hold(mode: str | None) -> bool:

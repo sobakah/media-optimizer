@@ -125,6 +125,22 @@ def test_resumed_run_marks_finished_stages(folder, tmp_path, run_cli):
     assert [r["stage"] for r in _of(recs, "stage_start")] == ["gifs"]
 
 
+def test_resumed_run_keeps_a_stage_whose_files_are_gone(folder, tmp_path, run_cli):
+    """In place, the images were converted before the stop: recounted, the
+    stage had no files and fell out of the plan and the numbering."""
+    d = folder("e6b", "anim.gif")
+    state = {"status": "INTERRUPTED", "source": str(d), "output": None, "settings": {"delete_original": True},
+             "done": {"images": True, "gifs": False, "clips": True, "video": True},
+             "planned": {"images": 1, "gifs": 1}}
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "state.json").write_text(json.dumps(state))
+    ev = tmp_path / "events.jsonl"
+    out = run_cli("-y", d, "--events", ev, "--force-delete")
+    assert "resuming" in out and "[2/2] Starting GIF conversion" in out, out
+    assert _of(_events(ev), "plan")[0]["stages"] == [{"stage": "images", "total": 1, "done": True},
+                                                     {"stage": "gifs", "total": 1, "done": False}]
+
+
 def test_unwritable_events_file_changes_nothing(folder, tmp_path, run_cli):
     d = folder("e7", "photo.jpg")
     out = run_cli("images", d, "--no-delete", "--events", tmp_path / "missing" / "events.jsonl")

@@ -400,3 +400,21 @@ Found by a code review of 2.3..2.4.1. Each fix has a test that fails without it.
 | One start at a time | Two starts at once (a double click, two tabs) could both pass the check and start two runs, one of them no longer tracked. Starting also no longer scans the folder tree again. |
 | A dry run leaves an old-format video cache alone | Taking over subfolder caches into a root cache in the old format appended to it even with `-n`. |
 | The strict picture check counts as failed on the page | A video `--strict-visual` threw away was reported as "discarded (larger)", hiding a failed picture check. Its `done` event now says `failed`, like the stage's counters and the log. |
+
+## Unreleased – Second review
+
+Found by a review of 2.4.2 (Google Gemini), each finding checked against the code; several did not hold (a Ctrl+C race: the stages wait for their workers; open pipes: measured, none stay open; cover art taken for the main video: real covers come after it). Each fix has a test that fails without it.
+
+| Change | Why |
+|---|---|
+| Stage options before the command | Only the general options were known to take a value, so `--gpu-workers 2 video DIR` became a full run of a folder called `video` into `DIR` (with such a folder in the current directory, every stage ran on it). The list now comes from the parser: every option of every command. No option is a flag in one command and takes a value in another (tested). |
+| Declining to resume keeps the state | Without a source, the most recent stopped run is offered; answering no deleted its state before a folder was chosen, also when the new run was on another folder. It is now removed only when the new run is on the same folder. |
+| The rename in place after the last question | When the trash refused an original, `name_h265.mp4` could not take its name; deleting the original at the end of the stage (the one question) left the suffix. The output is renamed then. |
+| A path queued twice is deleted once | Queued by two runs, the second unlink failed: "1 failed", and the pending list stayed. |
+| The GPU self-test on a working machine | The plain variants run before "current", and the verdict looked at the first usable one: a machine where everything worked was told its current settings were the problem. |
+| The GPU self-test takes AVI and WMV | The reference slice was copied into an MP4, which cannot hold MPEG-4 v3 or WMV video (measured: exit 234). It is an MKV now. |
+| Subfolder caches: the later line wins | A file listed twice in a subfolder's cache got its older line (a cache miss, never a wrong skip). |
+| A resumed run keeps a finished stage | In place, the converted images are gone on resume: recounted, the stage fell out of the numbering (`[1/1]` instead of `[2/2]`) and out of the page's list. The state now remembers the stages a run started with (`planned`); older states behave as before. |
+| The window is not held open behind `sudo` | The hold check looked only at the direct parent and took any shell option (`fish --no-config`, `bash --norc`) for a script. Wrappers (`sudo`, `env`, `uv run`, ...) are looked through; only `-c` or a script file makes a shell non-interactive. |
+| `-i A B C` is an error | The third folder was ignored without a word. |
+| Smaller ones | `jpeg_info` stops at image data before any frame header; a file that ends after `ftyp`, or an AVIF with the brand `MA1A`/`MA1B`, is no MP4; resolved folders are forgotten at each cache load (a symlink pointing elsewhere in a long page session); the tests' pty helper closes its descriptor. |

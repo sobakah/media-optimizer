@@ -379,7 +379,7 @@ class VideoStage:
                 proc.stop_all()
                 pool.shutdown(wait=True)
                 self._save_stats()
-                self.trash.resolve()
+                self._resolve_trash()
             return RC_INTERRUPTED
         pool.shutdown(wait=True)
         ui.progress_done()
@@ -857,6 +857,16 @@ class VideoStage:
         return src
 
     # --- finish ----------------------------------------------------------------------
+    def _resolve_trash(self) -> None:
+        """Originals the trash refused, deleted at the end after all: their
+        outputs take the name now ('holiday_h265.mp4' stayed)."""
+        for src in self.trash.resolve():
+            dest = self.trash.kept.get(str(src))
+            if dest is not None and dest.exists():
+                renamed = self._rename_inplace(src, dest)
+                if renamed != dest:
+                    self._add_dest_to_cache(renamed)
+
     def _finish(self) -> int:
         c = self.c
         if self.ctx.dry_run:
@@ -903,7 +913,7 @@ class VideoStage:
         log.line(self.tag, f"summary: {c.processed} encoded, {c.verified} picture-verified "
                            f"(GPU {c.gpu} / CPU {c.cpu}), {c.skipped} skipped, {c.probe_skipped} by probe, "
                            f"{c.discarded} discarded, {c.failed} failed")
-        self.trash.resolve()
+        self._resolve_trash()
         self.stats_file.unlink(missing_ok=True)
         # Failed encodes and outputs that did not pass verification: their
         # originals are kept, and the caller has to learn about it.

@@ -327,3 +327,19 @@ def test_fingerprints_of_default_typed_values_are_unchanged():
     assert cache.fingerprint(s, video.CACHE_SETTINGS, video.CACHE_SETTINGS_OPTIONAL) == "682c779ada"
     s.cpu_crf = 21.5
     assert cache.fingerprint(s, video.CACHE_SETTINGS, video.CACHE_SETTINGS_OPTIONAL) != "682c779ada"
+
+
+def test_a_subfolder_cache_with_a_file_twice_gives_the_later_line(folder):
+    """Taken over line by line, the first (older) line of a file won and the
+    newer one was skipped: a cache miss for a file the cache knew."""
+    d = folder("s5", "sub/photo.jpg=photo.jpg")
+    sub = d / "sub" / ".img_cache.txt"
+    for fp in ("old", "new"):
+        st = cache.StageCache(sub, enabled=True, dry_run=False, fingerprint=fp)
+        st.load()
+        st.add(d / "sub" / "photo.jpg", "larger")
+    assert len([line for line in sub.read_text().splitlines() if not line.startswith("#")]) == 2
+    root = cache.StageCache(d / ".img_cache.txt", enabled=True, dry_run=False, fingerprint="new")
+    root.load()
+    root.merge_subfolders(d, d, False)
+    assert root.lookup(d / "sub" / "photo.jpg") == "larger"

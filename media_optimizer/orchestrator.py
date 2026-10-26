@@ -67,6 +67,9 @@ class RunState:
     settings: dict = field(default_factory=dict)
     done: dict = field(default_factory=lambda: {name: False for name in STAGES})
     pid: int = 0
+    # Stage -> candidates when the run started: a resumed run still numbers
+    # and lists a stage it finished, although its files are gone by now.
+    planned: dict = field(default_factory=dict)
     loaded_from: Path | None = field(default=None, repr=False, compare=False)
 
     def save(self, dry_run: bool) -> None:
@@ -221,6 +224,7 @@ def run(req: Request) -> tuple[int, bool]:
                 st.remove()
 
     resuming = False
+    declined: RunState | None = None
     state, busy = _pick_state(req)
     if busy:
         ui.out(f"{S.RED}{busy}{S.RESET}", err=True)
@@ -234,10 +238,10 @@ def run(req: Request) -> tuple[int, bool]:
                f"GIFs: {_open(done, 'gifs')} | video: {_open(done, 'video')}\n")
         if ui.interactive() and not req.assume_yes and \
                 not ui.prompt_bool("Resume the last run with its saved settings?", True, indent=""):
-            ui.out("-> Discarding state.\n")
-            if not req.dry_run:
-                state.remove()
-            state = None
+            # Removed once the new run turns out to be on the same folder:
+            # a run on another folder must leave it (README).
+            ui.out("-> Starting a new run.\n")
+            declined, state = state, None
         else:
             resuming = True
             ui.out(f"-> {S.GREEN}Settings loaded, resuming.{S.RESET}\n")
@@ -300,6 +304,8 @@ def run(req: Request) -> tuple[int, bool]:
             ui.out(f"{S.RED}Another run is working on '{source}' (process {other.pid}).{S.RESET}\n"
                    "If there is none, start over with --reset.", err=True)
             return RC_CANNOT_START, False
+        if declined is not None and _same_folder(declined.source, source) and not req.dry_run:
+            declined.remove()
 
     ctx = Context(s, source, output, dry_run=req.dry_run, resuming=resuming, assume_yes=req.assume_yes)
     apply_mode_defaults(ctx, with_rename=True)
@@ -334,6 +340,12 @@ def run(req: Request) -> tuple[int, bool]:
     counts = {"images": count_img, "gifs": count_gif, "clips": count_vid, "video": count_vid}
     wanted = {"images": count_img > 0, "gifs": count_gif > 0,
               "clips": count_vid > 0 and s.clip_stage, "video": count_vid > 0}
+    if state.planned:
+        for name, n in state.planned.items():
+            if name in wanted and not wanted[name] and state.done.get(name):
+                wanted[name], counts[name] = True, n
+    else:
+        state.planned = {name: counts[name] for name in STAGES if wanted[name]}
     total = sum(wanted.values())
     for name in STAGES:
         if not wanted[name]:

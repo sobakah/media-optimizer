@@ -213,6 +213,7 @@ class StageCache:
 
     # --- loading -------------------------------------------------------------------
     def load(self) -> None:
+        _real_dirs.clear()          # a symlink may point elsewhere than at the last run
         if not self.enabled or not self.path.is_file():
             return
         if is_legacy(self.path):
@@ -270,7 +271,8 @@ class StageCache:
         for sub in files.find_state_files(work_dir, self.path.name, include_hidden=include_hidden):
             prefix = os.path.realpath(source / sub.parent.relative_to(work_dir)) + os.sep
             legacy = is_legacy(sub)
-            n = 0
+            # Later lines win, as in load: a file listed twice got its older line.
+            found: dict[str, Entry] = {}
             for line in _read_lines(sub):
                 if not line or line.startswith("#"):
                     continue
@@ -284,7 +286,9 @@ class StageCache:
                     if parsed is None:
                         continue
                     path, entry = parsed
-                path = canonical(path)
+                found[canonical(path)] = entry
+            n = 0
+            for path, entry in found.items():
                 if not path.startswith(prefix) or path in self.entries or not os.path.exists(path):
                     continue
                 if self.legacy is not None:

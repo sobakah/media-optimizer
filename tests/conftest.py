@@ -237,6 +237,7 @@ def pty_run():
             elif quiet > idle:
                 os.kill(pid, signal.SIGHUP)       # still waiting for an answer: give up
                 break
+        os.close(fd)
         _, status = os.waitpid(pid, 0)
         rc = os.waitstatus_to_exitcode(status)
         return Out(rc, out.decode(errors="replace").replace("\r", ""))

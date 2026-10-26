@@ -69,6 +69,16 @@ def test_in_place_rename_and_delete(folder, run_cli):
     assert "[RENAME]" in out
 
 
+def test_rename_after_the_permanent_delete_at_the_end(folder, pty_run):
+    """The trash refused the original, so 'l_h265.mp4' could not take its
+    name; deleting it at the end of the stage left the suffix."""
+    d = folder("h1d", "l.mp4=long.mp4")
+    out = pty_run(["y"], "video", d, *FAST, "--delete", "--rename-inplace")
+    assert "TRASH NOT AVAILABLE" in out and "1 deleted" in out, out
+    assert sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) == ["l.mp4"], out
+    assert _probe_json(d / "l.mp4")["streams"][0]["codec_name"] == "hevc"
+
+
 def test_in_place_without_delete_keeps_suffix(folder, run_cli):
     d = folder("h1c", "l.mp4=long.mp4")
     out = run_cli("video", d, *FAST, "--no-delete")
@@ -159,6 +169,26 @@ def test_gpu_failure_still_gets_the_container_retry(folder, tmp_path, run_cli, s
                   env={"TRACK": tmp_path / "x265"})
     assert out.rc == 0 and "[CONTAINER]" in out, out
     assert (tmp_path / "o" / "v.mp4").exists()
+
+
+def test_selftest_advice_on_a_working_machine():
+    """The plain variants run first: a machine where everything worked was
+    told its current settings were the problem."""
+    assert "nothing to change" in gpu.selftest_advice(["original", "bf0", "current", "av1"])
+    assert "settings\n  are the problem" in gpu.selftest_advice(["original", "bf0"])
+    assert "av1_vaapi" in gpu.selftest_advice(["av1", "vulkan"])
+    assert "hevc_vulkan" in gpu.selftest_advice(["vulkan"])
+
+
+def test_selftest_takes_an_avi(tmp_path, main, monkeypatch):
+    """The reference slice was copied into an MP4, which cannot hold an
+    AVI's MPEG-4 v3 video: the test ended before it began."""
+    src = tmp_path / "old.avi"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120", "-t", "2",
+                    "-c:v", "msmpeg4v3", str(src)], check=True)
+    monkeypatch.setattr(media, "has_encoder", lambda name: False)     # no variant runs
+    out = main("gpu-selftest", src)
+    assert "Could not create the reference slice" not in out and "encoder missing" in out, out
 
 
 def test_selftest_uses_the_device_the_run_would_use(tmp_path, monkeypatch):
