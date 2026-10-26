@@ -128,3 +128,10 @@ def test_environment_takes_a_json_list(folder, run_cli):
     d = folder("q12", "photo.jpg", "c/photo.jpg=photo.jpg")
     run_cli("images", d, "--no-delete", env={"MO_SUBFOLDERS": "exclude"})
     assert _converted(d) == {"photo.jxl"}
+
+
+def test_a_folder_with_only_gifs_is_offered(folder):
+    """GIFs count as images in the subfolder question and the page's tree."""
+    d = folder("f9", "sub/anim.gif=anim.gif")
+    counts = folders.media_counts(d, config.Settings())
+    assert counts == {"sub": (1, 0)} and folders.subfolder_entries(counts) == ["sub"]
