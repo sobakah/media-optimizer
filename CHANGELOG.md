@@ -401,7 +401,7 @@ Found by a code review of 2.3..2.4.1. Each fix has a test that fails without it.
 | A dry run leaves an old-format video cache alone | Taking over subfolder caches into a root cache in the old format appended to it even with `-n`. |
 | The strict picture check counts as failed on the page | A video `--strict-visual` threw away was reported as "discarded (larger)", hiding a failed picture check. Its `done` event now says `failed`, like the stage's counters and the log. |
 
-## Unreleased – Second review
+## 2.4.3 – Second review
 
 Found by a review of 2.4.2 (Google Gemini), each finding checked against the code; several did not hold (a Ctrl+C race: the stages wait for their workers; open pipes: measured, none stay open; cover art taken for the main video: real covers come after it). Each fix has a test that fails without it.
 
