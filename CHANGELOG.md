@@ -9,7 +9,7 @@ later revision with **Claude (Anthropic)**.
 
 ---
 
-## 0.1 – Initial version
+## Initial version
 
 `media-optimizer.sh` as orchestrator plus `img-to-jxl.sh`, `gif-to-webp.sh` and
 `h264-to-h265.sh`. It already had resume via state files, trash instead of `rm`,
@@ -18,7 +18,9 @@ through `xargs` and GPU/CPU switching based on source bitrate.
 
 ---
 
-## 0.2 – Revision
+## 0.1 – First release
+
+The initial version, revised before it was released.
 
 ### Bugs fixed in the initial version
 
@@ -176,6 +178,16 @@ added.
 Lesson for future debugging: when an explanation contradicts a solid
 observation, the explanation is wrong, not the observation. Comparing against a
 version known to work beats any theory.
+
+---
+
+## 0.2 – Metadata kept for AVIF and PNG sources
+
+| Change | Why |
+|---|---|
+| Container tags kept in AVIF clips | `video-to-avif.sh` never passed `-map_metadata 0`, so tags such as `creation_time` were lost on every conversion. AVIF has no field for a title, so free-form text tags are still lost; that is a limit of the format. |
+| EXIF copied from PNG sources | Neither `cjxl` nor `cwebp` reads a PNG's `eXIf` chunk, so capture date, GPS position and copyright disappeared in both target formats. exiftool copies them into the finished file, controlled by `IMG_COPY_METADATA` (`auto` when exiftool is installed, `always` with a warning at startup when it is missing, `never`). JPEG sources are skipped: the JXL path repacks the JPEG bit-exactly and cwebp reads JPEG metadata itself, so an exiftool call per photo would only cost time. exiftool becomes an optional dependency. |
+| Timestamp after the copy | exiftool updates the modification time, so `touch -r` now runs after it. |
 
 ---
 
