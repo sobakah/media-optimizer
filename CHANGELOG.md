@@ -9,7 +9,7 @@ later revision with **Claude (Anthropic)**.
 
 ---
 
-## Initial version
+## 0.1 – Initial version
 
 `media-optimizer.sh` as orchestrator plus `img-to-jxl.sh`, `gif-to-webp.sh` and
 `h264-to-h265.sh`. It already had resume via state files, trash instead of `rm`,
@@ -18,7 +18,7 @@ through `xargs` and GPU/CPU switching based on source bitrate.
 
 ---
 
-## Revision
+## 0.2 – Revision
 
 ### Bugs fixed in the initial version
 
@@ -179,7 +179,7 @@ version known to work beats any theory.
 
 ---
 
-## 1.2 – Review of img-to-jxl.sh
+## 0.3 – Review of img-to-jxl.sh
 
 An external review found several ways the image stage could lose originals or
 quality. Each was reproduced against real files before and verified after the
@@ -223,7 +223,7 @@ cannot drift apart again.
 
 ---
 
-## 1.2.1 – Restart fix
+## 0.3.1 – Restart fix
 
 | Finding | Effect |
 |---|---|
@@ -232,17 +232,17 @@ cannot drift apart again.
 
 The tests had missed it because they always started the script as
 `./media-optimizer.sh`. The new group `orch-restart` starts it with `bash`
-and covers both restart paths; all four tests fail against 1.2.
+and covers both restart paths; all four tests fail against 0.3.
 
 ---
 
-## 2.0 – Python version
+## 0.4 – Python version
 
 The suite is now a Python program, `media-optimizer`, with a subcommand per
 stage (`run`, `images`, `gifs`, `clips`, `video`, `verify`, `gpu-selftest`).
 The Bash scripts are gone; the last commit with them is `4d3a676`.
 
-### Upgrading from 1.2.x
+### Upgrading from 0.3.x
 
 - Install with `pipx install git+https://github.com/sobakah/media-optimizer`
   (Python 3.10+). The external tools are the same; `file`, `gio` and
@@ -255,7 +255,7 @@ The Bash scripts are gone; the last commit with them is `4d3a676`.
   `~/.config/media-optimizer/config.json` with lower-case names
   (`CPU_CRF` → `cpu_crf`); `config.example.json` lists all of them, the README
   the few that were renamed. Environment variables are `MO_<NAME>`.
-- An interrupted 1.2 run cannot be resumed by 2.0. Folders processed by 1.2
+- An interrupted 0.3 run cannot be resumed by 0.4. Folders processed by 0.3
   continue seamlessly: the video cache, the lists and the run lock are the
   same.
 
@@ -267,7 +267,7 @@ The Bash scripts are gone; the last commit with them is `4d3a676`.
 | `verify-output.sh --fix` prunes subfolder caches too | Otherwise the next run would take the removed entry over again from the subfolder cache and never regenerate the broken output. |
 | Rescan in the interactive settings | The custom settings of `h264-to-h265.sh` had no way to ignore the cache; the orchestrator asked "Use the cache…?". Both now ask "Scan all videos again, ignoring the cache of finished ones?" (default no). A run that ignores the cache says so at the start. |
 
-Test group `h264-cache` (15 tests); 7 fail against 1.2.1, the two
+Test group `h264-cache` (15 tests); 7 fail against 0.3.1, the two
 `verify --fix` checks fail when only the merge is in place.
 
 ### Port to Python
@@ -316,24 +316,24 @@ VAAPI encoder is available, and folders left by the Bash version
 
 ---
 
-## 2.1 – Caches for every stage, started from keepbest
+## 0.5 – Caches for every stage, started from keepbest
 
 | Change | Why |
 |---|---|
 | A cache per stage | Before, only videos were cached. Discarded images and GIFs were encoded again on every run, only to be discarded again (for GIFs results larger than the original are discarded by default), and CMYK or arithmetic JPEGs were tried every time. `.img_cache.txt`, `.gif_cache.txt` and `.clip_cache.txt` remember results without an output; failures are never cached. |
-| Entries store size, modification time and a settings fingerprint | The 1.x cache stored only the path, so a different file under the same name counted as done. A changed setting that a result depends on (e.g. PNG quality) now makes the files count as new. |
+| Entries store size, modification time and a settings fingerprint | The Bash version's cache stored only the path, so a different file under the same name counted as done. A changed setting that a result depends on (e.g. PNG quality) now makes the files count as new. |
 | Cache paths are compared with symlinks resolved | Runs on `~/Videos/Link` (a symlink to `/mnt/disk/Videos`) recorded the link path; a run started on `/mnt/disk/Videos` found none of those entries and converted cached videos again, and the subfolder caches were not taken over, since their paths did not start with the real folder. Entries are written with the folders resolved, and older entries are resolved when read. |
-| Old video caches are converted after a question | Format v2 has a header line. A 1.x cache is detected at the start (also in subfolders); converted entries keep their path with the current size and time, the old file stays as `.v1.bak`. Declined, the old file is used as before (paths only), entries from subfolder caches are added to it as plain paths, and the question comes again next run. Without a terminal or with `-y` it is converted. A dry run neither asks nor converts. |
+| Old video caches are converted after a question | Format v2 has a header line. An old-format cache is detected at the start (also in subfolders); converted entries keep their path with the current size and time, the old file stays as `.v1.bak`. Declined, the old file is used as before (paths only), entries from subfolder caches are added to it as plain paths, and the question comes again next run. Without a terminal or with `-y` it is converted. A dry run neither asks nor converts. |
 | Clips: output check before ffprobe | The clip stage ran ffprobe on every video before looking for an existing output, and probed every long video on every run. Now the output is checked first and "not selected" is cached. |
 | `--no-cache` for every stage | `use_cache` moved from the video settings to the general ones; "Scan all files again" is asked in the global part of the settings menu and in every stage menu. |
-| Misnamed files copied again on every run | In target mode, a GIF named `.png` was copied to the target on every run (`isgif.gif`, `isgif_1.gif`, ...); the 1.x Bash version did the same. The take-over now compares the content with an existing correctly named copy first. |
+| Misnamed files copied again on every run | In target mode, a GIF named `.png` was copied to the target on every run (`isgif.gif`, `isgif_1.gif`, ...); the Bash version did the same. The take-over now compares the content with an existing correctly named copy first. |
 | SVT-AV1 hangs on narrow frames | Found while testing the cache with a tiny GIF: libsvtav1 (SVT-AV1 3.1.2) hangs forever on frames narrower than about 31 px; only SIGKILL ends it. Such files are encoded with libaom-av1, and every AV1 encode of a GIF or clip is stopped after 10 minutes. |
 | Shorter video progress line, cut by display width | The line was cut by characters; file names with CJK characters or emoji (two columns each) made it wrap, and every update left a new line behind. It is now cut by columns and shows `#n GPU 45% 2.3x 1m 05s left` per running encode; the file name is in the `>>> [n/total] Processing:` line above. |
 | Started from keepbest (`MO_CALLER=keepbest`) | keepbest offers media-optimizer for the same folder after a run and continues in the terminal afterwards. With a folder on the command line the defaults question was skipped, so the settings could not be changed there; with `MO_CALLER` set it is asked. The closing question says that No goes back to keepbest. |
 
 ---
 
-## 2.2 – Subfolder choice, review fixes
+## 0.6 – Subfolder choice, review fixes
 
 | Change | Why |
 |---|---|
@@ -347,19 +347,19 @@ VAAPI encoder is available, and folders left by the Bash version
 | Own outputs never encoded twice | With `hevc` in `source_codecs` in place, any changed setting made an output (renamed to the source name) count as new, and it lost quality in a second encode. Output entries in the video cache now hold for any settings. `gpu_bitrate`, `gpu_bf`, `gpu_low_power` and `gpu_allow_10bit` count for the cache, but only when changed, so existing caches stay valid. |
 | Smaller fixes | A photo named `.gif` became a lossy one-frame AVIF with `--target avif` (and failed every run with WebP); it is skipped as `[UNSUPPORTED]`. In place, a GIF named `.png` is converted in the same run (the GIFs were counted before the image stage renamed it). A `--from-list` written for a symlinked path works on the real folder and vice versa, and missing entries no longer inflate the total. A PNG whose WebP fallback exists already is no `[CONFLICT]` on every run. The name collision warning follows the real output names (`foo.jpg` and `foo.gif` do not clash, `foo.mp4` and `foo.mov` do). `--keep-samples` keeps equal names in different folders apart. A tool started while a stop was under way was not stopped; `timeout` now also applies to streamed output. Options before the command (`-c FILE images DIR`) belong to it. "Process another directory" no longer inherits the folder choice keepbest passed. Box frames count terminal columns; a bad `MO_HOLD_TIMEOUT` no longer crashes; `gpu-selftest` tests the render node a run would use. |
 
-## 2.2.1 – GPU check names the cause
+## 0.6.1 – GPU check names the cause
 
 | Change | Why |
 |---|---|
 | GPU check names the cause | The startup check showed only ffmpeg's last line, `Nothing was written into output file, because at least one of its streams received no packets`, which follows any failure. The cause came first: `No usable encoding profile found`, the driver has no HEVC encoder. On the development machine the Fedora 45 release upgrade (`--allowerasing`) had removed `mesa-va-drivers-freeworld`, because Fedora 45 shipped an older Mesa (26.2.3) than the installed RPM Fusion build (26.2.4); the reinstall then failed on `mesa-filesystem = 26.2.5`, which Fedora only had in `updates-testing`. The check now reports the first line that is not a consequence, without memory addresses, and for a driver without an HEVC encoder explains the freeworld package on Fedora, including that dependency error. |
 
-## 2.2.2 – The current directory is the preset source
+## 0.6.2 – The current directory is the preset source
 
 | Change | Why |
 |---|---|
 | The current directory is the preset source | Started without a source directory, a run asked with an empty prompt, so the folder one had just changed into had to be typed again. The question now shows the current directory (`Source directory [/path]:`): Enter takes it, typing replaces it. A prefilled, editable line (readline) was not used: a path typed over it would have been appended to the preset. The path is the one the shell shows (`$PWD`), so a folder reached through a symlink keeps it. Never preset are the home folder, the folders above it, `/` and system folders (keepbest's rule): a launcher starts in the home folder, no question before the run confirms the folder, and Enter at every prompt would have converted the whole home folder in place. A single stage started with its default settings never asked for the source and ended in "No source directory given"; it asks now. |
 
-## 2.3 – File journal for picktag
+## 0.7 – File journal for picktag
 
 | Change | Why |
 |---|---|
@@ -368,27 +368,27 @@ VAAPI encoder is available, and folders left by the Bash version
 | Removal knows its successor | The trash helper only received the path of the original. It now also gets the output that replaced it, for `removed` events, also when the trash failed and the original is deleted after the question at the end of the run. The list of such originals keeps the Bash format (one path per line), so for an entry left by an earlier run the successor is unknown (`kept: null`); that run's `converted` event names it. |
 | Tests | Every journal line any test writes is checked (complete line, ASCII only, the common fields and those of its event). The tests reset the stop flag of an interrupted in-process run, which tools started directly by a later test still saw. 27 new tests; each rule was broken on purpose once and its test failed. |
 
-## 2.4 – Browser page
+## 0.8 – Browser page
 
 | Change | Why |
 |---|---|
-| `--events FILE` | The groundwork for the browser page (planned with keepbest's page, which hands its tab over to media-optimizer): the run's progress as JSON lines, written while it goes on. A plan of the stages with their candidate counts, per stage a start and an end with the summary counters, one `done` event per finished file with its outcome and the reason for a skip, the log line of each file outcome with the sizes, every message with its level, and the live progress of each video encode. The events come from the calls that print (`log.file`, `ui.say`) and from where each stage finishes a file, never from parsing the printed text, which changes with every wording. The terminal output was compared with 2.3 for a full run, a dry run, in place with deletion, and the image and video stages: identical. Without colours every colour code is empty, so red could not be told from yellow; the codes now carry their name (`ui.Color`), and print the same. |
-| The questionnaire as data | The full run's settings questions were written out in the orchestrator. The browser page has to show the same questions with the same conditions (the PNG quality only for lossy PNG, the GPU quality only for the GPU), so they now live in one table (`questions.FULL_RUN`) that the terminal asks and the page will draw; a condition is data the page can evaluate as well. The terminal transcript was compared with 2.3 on a pseudo-terminal for all defaults, every condition switched on, and an invalid value asked again: identical. Every setting can be handed to a run as `MO_*` and comes back exactly (tested for all 75, including lists, empty values and folder names with `:` and spaces); the environment wins over a config file, so the page can rely on it. |
+| `--events FILE` | The groundwork for the browser page (planned with keepbest's page, which hands its tab over to media-optimizer): the run's progress as JSON lines, written while it goes on. A plan of the stages with their candidate counts, per stage a start and an end with the summary counters, one `done` event per finished file with its outcome and the reason for a skip, the log line of each file outcome with the sizes, every message with its level, and the live progress of each video encode. The events come from the calls that print (`log.file`, `ui.say`) and from where each stage finishes a file, never from parsing the printed text, which changes with every wording. The terminal output was compared with 0.7 for a full run, a dry run, in place with deletion, and the image and video stages: identical. Without colours every colour code is empty, so red could not be told from yellow; the codes now carry their name (`ui.Color`), and print the same. |
+| The questionnaire as data | The full run's settings questions were written out in the orchestrator. The browser page has to show the same questions with the same conditions (the PNG quality only for lossy PNG, the GPU quality only for the GPU), so they now live in one table (`questions.FULL_RUN`) that the terminal asks and the page will draw; a condition is data the page can evaluate as well. The terminal transcript was compared with 0.7 on a pseudo-terminal for all defaults, every condition switched on, and an invalid value asked again: identical. Every setting can be handed to a run as `MO_*` and comes back exactly (tested for all 75, including lists, empty values and folder names with `:` and spaces); the environment wins over a config file, so the page can rely on it. |
 | Browser page: the server (`--web`) | The skeleton of the page keepbest will hand its tab to, behind `--web` on the full run; the terminal stays the default and is not touched. The server is copied from cdimport and lyrembed with every rule they learned by failure: 127.0.0.1 only, the printed token turned into a cookie whose name includes the port, Host and Origin checks, JSON-only requests, a content security policy, static files only from `static/`, long polling, the stop flag set only after the reply. `--no-browser`, `--return-url` (only a page on this computer) and `--return-name` are lyrembed's options for the hand-off, and the address line has the form keepbest looks for. Starting the revisions at 0 would have made the page ask for news in a tight loop while nothing changed; a test caught it. The page's files are in the package data, or a pipx install would have none. |
 | Browser page: settings and the run | The page asks for the folder (preset by the terminal's rule), the subfolders as a checkbox tree with image and video counts (switching a folder switches the ones below it, as in the terminal), the questionnaire with its conditions and every other setting folded away with its description and where its value came from (config file, environment, command line). An interrupted run of the folder needs a choice: resume with its saved settings or start over. The values are checked by the same rules as a config file and shown at their field. The run is the real program (`run -y`) on a pseudo-terminal, so its log keeps the colours and the progress line; the page shows a card per stage with a progress bar and the running video encodes, the warnings and errors in one place, the newest files with their sizes, the log, and at the end the outcome with "Process another folder" or "Back to …". A run with thousands of files sends the page a summary, not every event. Clicked through in headless Chrome on generated files. |
 | Browser page: closing the tab, the background | Closing the tab during a run stops it as Ctrl+C would (it saves its state and the next start offers to resume), after the grace a reload needs; the browser asks before it closes. "Keep running in the background" lets the run go on without the page: reopening the address shows its progress and Stop still works, and at its end a desktop notification ("media-optimizer finished: 412 files converted, 18.3 GB saved.") has an "Open" button that brings the page back. Not opened within 15 minutes, the program ends with the run's exit code, so no process is left behind. The notification uses `notify-send`, else `gdbus` without the button, else nothing, and never changes the run. Both ways were clicked through in headless Chrome. |
 
-## 2.4.1 – Cached files in the folder tree
+## 0.8.1 – Cached files in the folder tree
 
 | Change | Why |
 |---|---|
 | The page marks files earlier runs handled | The folder tree counted every image and video, also those a stage's cache already knows (converted before, discarded as larger, already HEVC, too small), which the run then skips: it looked as if they were still to do. Each folder now says how many of its files are "done before: skipped", a folder with nothing else says "all done before", and a note above the tree gives the total and points to "Scan all files again". With that chosen, the marks go and the note says those files are checked again. Whether a cached result still holds depends on the settings it was made with, so the page asks again when the form changes (another image target format brings the images back). The caches are only read for this (`StageCache(read_only=True)`), never compacted or written. Clicked through in headless Chrome with caches written by a real run. |
-| A run from the page used the video cache again | The page hands every setting to its run through the environment, and `cpu_crf` came back as `22.0` instead of `22`. The video cache's fingerprint hashes the settings as written, so a run started from the page did not recognise any video a terminal run had handled and checked them all again (probe encodes included); the other way round as well. Fingerprints now count a number in the type of its default; caches written with the defaults keep their fingerprints (tested). Entries written by a page run with 2.4 are not recognised once and are written again. |
+| A run from the page used the video cache again | The page hands every setting to its run through the environment, and `cpu_crf` came back as `22.0` instead of `22`. The video cache's fingerprint hashes the settings as written, so a run started from the page did not recognise any video a terminal run had handled and checked them all again (probe encodes included); the other way round as well. Fingerprints now count a number in the type of its default; caches written with the defaults keep their fingerprints (tested). Entries written by a page run with 0.8 are not recognised once and are written again. |
 
 
-## 2.4.2 – Review fixes
+## 0.8.2 – Review fixes
 
-Found by a code review of 2.3..2.4.1. Each fix has a test that fails without it.
+Found by a code review of 0.7..0.8.1. Each fix has a test that fails without it.
 
 | Change | Why |
 |---|---|
@@ -401,9 +401,9 @@ Found by a code review of 2.3..2.4.1. Each fix has a test that fails without it.
 | A dry run leaves an old-format video cache alone | Taking over subfolder caches into a root cache in the old format appended to it even with `-n`. |
 | The strict picture check counts as failed on the page | A video `--strict-visual` threw away was reported as "discarded (larger)", hiding a failed picture check. Its `done` event now says `failed`, like the stage's counters and the log. |
 
-## 2.4.3 – Second review
+## 0.8.3 – Second review
 
-Found by a review of 2.4.2 (Google Gemini), each finding checked against the code; several did not hold (a Ctrl+C race: the stages wait for their workers; open pipes: measured, none stay open; cover art taken for the main video: real covers come after it). Each fix has a test that fails without it.
+Found by a review of 0.8.2 (Google Gemini), each finding checked against the code; several did not hold (a Ctrl+C race: the stages wait for their workers; open pipes: measured, none stay open; cover art taken for the main video: real covers come after it). Each fix has a test that fails without it.
 
 | Change | Why |
 |---|---|
@@ -418,3 +418,13 @@ Found by a review of 2.4.2 (Google Gemini), each finding checked against the cod
 | The window is not held open behind `sudo` | The hold check looked only at the direct parent and took any shell option (`fish --no-config`, `bash --norc`) for a script. Wrappers (`sudo`, `env`, `uv run`, ...) are looked through; only `-c` or a script file makes a shell non-interactive. |
 | `-i A B C` is an error | The third folder was ignored without a word. |
 | Smaller ones | `jpeg_info` stops at image data before any frame header; a file that ends after `ftyp`, or an AVIF with the brand `MA1A`/`MA1B`, is no MP4; resolved folders are forgotten at each cache load (a symlink pointing elsewhere in a long page session); the tests' pty helper closes its descriptor. |
+
+---
+
+## 1.0 – First stable release
+
+media-optimizer converts images, GIFs and videos to more efficient formats
+(JPEG XL, WebP, HEVC, animated WebP or AVIF for short clips), checks every
+output against its original before the original goes, and can be stopped
+and resumed at any point; from the terminal or a local browser page. The
+program is the same as pre-release 0.8.3.

@@ -37,7 +37,7 @@ STAGES = ("images", "gifs", "clips", "video")
 IMAGE_EXTS = ("jpg", "jpeg", "png")
 
 
-LEGACY_STATE = "state.json"       # one file for every folder, up to 2.1
+LEGACY_STATE = "state.json"       # one file for every folder, up to 0.5
 
 
 def state_file(source: Path | str) -> Path:

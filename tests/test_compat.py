@@ -1,4 +1,4 @@
-"""Folders processed by the former Bash version (up to 1.2.1).
+"""Folders processed by the former Bash version (up to 0.3.1).
 
 Its caches, lists and leftovers use the same names and formats, so a folder
 it worked on continues seamlessly: finished videos are not probed again,

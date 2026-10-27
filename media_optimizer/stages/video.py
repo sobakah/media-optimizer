@@ -24,7 +24,7 @@ INVARIANTS
   - With a target directory no state files are written to the source.
 
 The cache file (.video_conversion_cache.txt), the lists and their names are
-the same as in the former Bash version (up to 1.2.1), so its caches and lists
+the same as in the former Bash version (up to 0.3.1), so its caches and lists
 are still used.
 """
 

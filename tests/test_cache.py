@@ -121,7 +121,7 @@ def test_dry_run_reads_but_never_writes_the_cache(folder, run_cli):
 
 # --- the old video cache format -------------------------------------------------------------
 def _old_cache(folder, tmp_path, run_cli, name):
-    """A target folder with a converted video and a cache in the 1.x format."""
+    """A target folder with a converted video and a cache in the old format."""
     d = folder(name, "l.mp4=long.mp4")
     o = tmp_path / f"{name}out"
     run_cli("video", d, o, *FAST)
@@ -242,7 +242,7 @@ def test_cache_written_through_a_symlink_counts_for_the_real_path(folder, tmp_pa
 
 
 def test_old_subfolder_cache_written_through_a_symlink_is_taken_over(folder, tmp_path, run_cli):
-    """The reported case: 1.x caches in subfolders, written under a symlinked
+    """The reported case: old-format caches in subfolders, written under a symlinked
     path, a run started on the parent's real path."""
     d = folder("s2", "sub/l.mp4=long.mp4")
     link = tmp_path / "s2link"

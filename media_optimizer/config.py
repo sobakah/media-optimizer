@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-__version__ = "2.4.3"
+__version__ = "1.0"
 NAME = "media-optimizer"
 PROJECT_URL = "https://github.com/sobakah/media-optimizer"
 ENV_PREFIX = "MO_"
@@ -36,7 +36,7 @@ CPU_PRESETS = ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium",
                "slow", "slower", "veryslow", "placebo")
 
 
-# Settings renamed in 0.1.x: the short-clip stage was called "avif" although
+# Renamed settings: the short-clip stage was once called "avif" although
 # it can write WebP. Old names give a clear message instead of "unknown key",
 # and a saved resume state with old names still loads.
 RENAMED = {

@@ -24,7 +24,7 @@ the same folder reached through a symlink (~/Videos/Link -> /mnt/disk/Videos)
 is the same folder. Entries are written resolved; older entries written
 under a symlinked path are resolved when they are read.
 
-The video cache of version 1.x (and of the Bash version) holds bare paths.
+The video cache of the Bash version holds bare paths.
 It is converted to v2 only after asking (``find_legacy``, ``convert``);
 converted entries get the fingerprint "*" (matches any settings), because
 the settings of that run are unknown. Declined, the old file stays untouched

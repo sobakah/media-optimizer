@@ -16,7 +16,7 @@ INVARIANTS (each one has cost real data before, see CHANGELOG.md)
      at the end of the run.
 
 The lock directory and temp file names are the same as in the former Bash
-version (up to 1.2.1), so its leftovers are cleaned up too.
+version (up to 0.3.1), so its leftovers are cleaned up too.
 """
 
 from __future__ import annotations

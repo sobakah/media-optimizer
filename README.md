@@ -58,6 +58,9 @@ pipx install git+https://github.com/sobakah/media-optimizer
 media-optimizer --help
 ```
 
+To install a specific release, add it to the URL: `...media-optimizer@1.0`.
+Releases before 1.0 are pre-releases.
+
 From a checkout: `pipx install .`, or without installing:
 
 ```bash
@@ -254,11 +257,11 @@ chips that downclock for it (Skylake-X, Ice Lake server) and on Zen 4.
   from earlier runs on a subfolder are taken over. `--no-cache`, or "Scan all
   files again" in the settings menu, checks everything again; deleting a cache
   only costs time.
-* **Old video caches** from version 1.x (paths only) are detected at the start
+* **Old video caches** from the Bash version (paths only) are detected at the start
   and converted to the new format after a question (`.v1.bak` keeps the old
   file; without a terminal or with `-y` they are converted). Declined, they
   are used as before and the question comes again next run. The Bash scripts
-  of 1.x cannot read the converted format.
+  cannot read the converted format.
 * **Subfolders.** When the source has subfolders with images or videos, a
   run asks first: *include* (Enter), *exclude* (only the files directly in
   the source) or *custom*, which opens a folder list like keepbest's: a tree
@@ -492,9 +495,9 @@ tested without a browser; clicking through it with headless Chrome
 
 ## History
 
-Up to release 1.2.1 this was a set of Bash scripts (`media-optimizer.sh` and
+Up to pre-release 0.3.1 this was a set of Bash scripts (`media-optimizer.sh` and
 `scripts/`), first written with **Google Gemini**, later revised with
-**Claude (Anthropic)**. Release 2.0 replaced them with this Python version;
+**Claude (Anthropic)**. Pre-release 0.4 replaced them with this Python version;
 the last commit with the scripts is `4d3a676`. Settings from the old
 `media-optimizer.conf` translate one to one into lower case
 (`CPU_CRF` → `cpu_crf`), except `COMPRESSION_METHOD` → `gif_method`,

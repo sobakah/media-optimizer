@@ -11,10 +11,10 @@ batch-converts images, GIFs and videos to more efficient formats. It computes
 little itself — it orchestrates `ffmpeg`, `cjxl`, `cwebp`, `gif2webp` and
 `exiftool`. Treat it as a process orchestrator.
 
-Up to release 1.2.1 it was a set of Bash scripts. They were replaced by this
+Up to pre-release 0.3.1 it was a set of Bash scripts. They were replaced by this
 Python version on 2026-10-10 (last commit with them: `4d3a676`); a backup is
 in `~/Software/Claude/Projects/media-optimizer/bash-backup-2026-10-10/`.
-Release 2.0 is the first Python release. Python 3.10+, dependencies
+Pre-release 0.4 is the first Python version. Python 3.10+, dependencies
 send2trash and Pillow. Developed on Fedora 44 with
 an RX 9070 XT (VAAPI) and a Ryzen 7 9700X.
 
@@ -179,6 +179,19 @@ Breaking any of these has caused real data loss or silent corruption before.
   continues with the next stage), `2` bad option or setting, `1` cannot start,
   `130` interrupted, `255` an encoder vanished.
 - Box output uses fixed columns (`ui.box`): do not pad labels by hand.
+
+## Releases
+
+A fix commit, then "Release X" (sets `config.__version__`, renames the
+CHANGELOG heading), an annotated tag `X` with the message "X – Title",
+`gh release create X --latest` with notes in three parts: Upgrade, Fixed,
+For contributors. Without a version bump `pipx upgrade` doesn't pick up
+changes. Tag, push and release only with the owner's go-ahead.
+
+- The pre-releases 0.1–0.8 are an archive: the fixes between them are tags
+  only, and nothing is released as a pre-release any more.
+- Since 1.0 the history is never rewritten (no rebase, no force-push of
+  `main`); a mistake in a release is fixed with a new version.
 
 ## Tests
 
