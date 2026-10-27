@@ -46,8 +46,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import folders, questions
-from .config import NAME, RC_OK, RULES, Settings, __version__, check_value, to_env
+from . import folders, questions, selfupdate
+from .config import NAME, PROJECT_URL, RC_OK, RULES, Settings, __version__, check_value, state_dir, to_env
 from .config import _describe as describe
 
 log = logging.getLogger(__name__)
@@ -72,6 +72,10 @@ MAX_BODY = 1024 * 1024
 # keepbest and cdimport find a page's address in its output with
 # r"is running at (http://(?:127\.0\.0\.1|localhost):\d+/\?token=[A-Za-z0-9_-]+)": keep the wording.
 ADDRESS_LINE = "media-optimizer is running at {url}"
+# After an update: the address the new program takes over ("port token"), so the tab stays.
+RESTART_ENV = "MO_RESTART_PAGE"
+# How long the page gets to see that the program starts again.
+RESTART_GRACE = 1.0
 
 
 def cookie_name(port: int) -> str:
@@ -238,6 +242,10 @@ class Session:
         self.background = False           # the run goes on when the page is gone
         self.run_number = 0               # the page's log belongs to one run
         self._starting = False            # a start between its check and its child
+        self.boot = secrets.token_urlsafe(6)  # a new one after an update: the page loads itself again
+        self.update: dict | None = None       # a newer media-optimizer (offer_update)
+        self._update_commands: list | None = None
+        self.restart = False                  # installed: serve() starts the new version
         self._tmp: tempfile.TemporaryDirectory | None = None
         self._cond = threading.Condition()
         # From 1: the page's first request (since=0) is answered at once and
@@ -261,12 +269,61 @@ class Session:
                     "source": str(self.source) if self.source else "",
                     "target": str(self.target) if self.target else "",
                     "returnUrl": self.back_url, "returnName": self.back_name or "the previous page",
-                    "stopping": self.stopping, "background": self.background, "run": self.run_number}
+                    "stopping": self.stopping, "background": self.background, "run": self.run_number,
+                    "boot": self.boot,
+                    "update": dict(self.update, ready=self._update_ready()) if self.update else None}
             if self.phase != "setup":
                 data["progress"] = self.progress.snapshot()
                 # A request that still counts lines of an earlier run gets this one from the start.
                 data["log"] = self.log.since(log_from if log_run == self.run_number else 0)
             return data
+
+    # a newer media-optimizer
+    def offer_update(self, version: str, how: selfupdate.Install) -> None:
+        with self._cond:
+            self.update = {"version": version, "current": __version__, "command": how.command,
+                           "installable": bool(how.commands), "kind": how.kind, "state": "available",
+                           "notes": f"{PROJECT_URL}/releases/tag/{version}", "output": ""}
+            self._update_commands = how.commands
+        self.bump()
+
+    def _update_ready(self) -> bool:
+        """No run going on: the next one would start the new version's code
+        under this old page, so an update is followed by a restart."""
+        return self.phase != "running" and not self._starting
+
+    def _updating(self) -> bool:
+        return self.update is not None and self.update["state"] in ("installing", "restarting")
+
+    def start_update(self) -> None:
+        """Install the newer version (in a thread); no run starts meanwhile.
+        Then the program starts again, or the page shows what went wrong."""
+        with self._cond:
+            update = self.update
+            if update is None or not self._update_commands:
+                raise ApiError(409, "There is no update to install here.")
+            if update["state"] not in ("available", "failed"):
+                raise ApiError(409, "The update is already being installed.")
+            if not self._update_ready():
+                raise ApiError(409, "A run is going on: update when it has finished.")
+            update.update(state="installing", output="")
+        self.bump()
+        commands = self._update_commands
+        _say(f"Updating {NAME} to {update['version']}: {' ; '.join(update['command'].splitlines())}")
+
+        def run() -> None:
+            code, tail = selfupdate.install(commands, state_dir() / "update.log")
+            with self._cond:
+                if code != 0:
+                    update.update(state="failed", output=tail, code=code)
+                else:
+                    update["state"] = "restarting"
+                    self.restart = True
+            self.bump()
+            _say(f"{NAME} {update['version']} is installed." if code == 0 else
+                 f"The update failed (exit code {code}):\n{tail}")
+
+        threading.Thread(target=run, name="mo-update", daemon=True).start()
 
     # setting up
     def folder_info(self) -> dict:
@@ -348,6 +405,8 @@ class Session:
         with self._cond:
             if self.phase == "running" or self._starting:
                 raise ApiError(409, "A run is going on.")
+            if self._updating():
+                raise ApiError(409, f"{NAME} is being updated; it starts again in a moment.")
             self._starting = True
         try:
             self._start(body)
@@ -726,6 +785,9 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/again":
             session.again()
             return {"ok": True}
+        if method == "POST" and path == "/api/update":
+            session.start_update()
+            return {"ok": True}
         if method == "POST" and path == "/api/quit":
             session.quit()
             return {"ok": True}
@@ -784,10 +846,33 @@ class Watch:
              on_action=lambda: webbrowser.open(self.url))
 
 
-def serve(session: Session, open_browser: bool = True, port: int = 0) -> int:
-    """Run the page until it is closed; returns the exit code."""
-    token = secrets.token_urlsafe(24)
-    server = _Server(session, token, port)
+def _check_for_update(session: Session) -> None:
+    version = selfupdate.available()
+    if version is not None:
+        session.offer_update(version, selfupdate.how_installed(version))
+
+
+def _server(session: Session, port: int) -> tuple[_Server, bool]:
+    """The page's server; after an update on the address the old program had
+    (True), so its tab carries on. Taken meanwhile: a new address."""
+    restarted = os.environ.pop(RESTART_ENV, "")
+    old_port, _, old_token = restarted.partition(" ")
+    if old_port.isdigit() and old_token:
+        try:
+            return _Server(session, old_token, int(old_port)), True
+        except OSError:
+            pass
+    return _Server(session, secrets.token_urlsafe(24), port), False
+
+
+def serve(session: Session, open_browser: bool = True, port: int = 0, check_updates: bool = False) -> int:
+    """Run the page until it is closed; returns the exit code. With
+    *check_updates* the page offers a newer version, and after installing it
+    this process becomes the new one."""
+    server, restarted = _server(session, port)
+    token = server.token
+    if restarted:  # the tab is still open
+        open_browser = False
     url = f"http://127.0.0.1:{server.port}/?token={token}"
     thread = threading.Thread(target=server.serve_forever, name="media-optimizer-web", daemon=True)
     thread.start()
@@ -796,13 +881,18 @@ def serve(session: Session, open_browser: bool = True, port: int = 0) -> int:
     if session.back_url:
         _say(f"When the run is done, its page leads back to {session.back_name or 'the previous page'}.")
     else:
-        if not opened:
+        if not opened and not restarted:
             _say("Open that address in your browser.")
         _say("Close the page when done, or press Ctrl+C here.")
     sys.stdout.flush()
+    if check_updates:
+        threading.Thread(target=_check_for_update, args=(session,), name="mo-update-check", daemon=True).start()
     watch = Watch(server, session, url)
     try:
         while not server.stop.wait(1.0):
+            if session.restart:  # the page sees that the program starts again, then waits for it
+                server.stop.wait(RESTART_GRACE)
+                break
             if watch.tick():
                 break
     except KeyboardInterrupt:
@@ -821,4 +911,8 @@ def serve(session: Session, open_browser: bool = True, port: int = 0) -> int:
     finally:
         server.shutdown()
         server.server_close()
+    if session.restart:
+        _say(f"Starting {NAME} {session.update['version']}.")
+        os.environ[RESTART_ENV] = f"{server.port} {token}"
+        selfupdate.restart(selfupdate.restart_argv())
     return RC_OK if session.code is None else session.code

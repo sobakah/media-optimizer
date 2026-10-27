@@ -410,6 +410,47 @@ function Finished({ state, onAgain, onClose }) {
 }
 
 // --- the page ---------------------------------------------------------------------
+// A newer media-optimizer, in one line under the top bar: the command, and with
+// pipx a button that installs it; then the program starts again on the same
+// address and this page loads itself again.
+function UpdateNotice({ update, onError }) {
+  const [hidden, setHidden] = useState(false);
+  const [sending, setSending] = useState(false);
+  if (!update || (hidden && update.state === 'available')) return null;
+  const { version, state } = update;
+  const install = async () => {
+    setSending(true);
+    try { await api('/update', {}); } catch (err) { onError(err.message); }
+    setSending(false);
+  };
+  if (state === 'installing' || state === 'restarting') {
+    return html`<div class="update" role="status">${state === 'installing'
+      ? `Installing media-optimizer ${version}; this takes a minute or two, then it starts again.`
+      : `media-optimizer ${version} is installed and starts again…`}</div>`;
+  }
+  const failed = state === 'failed';
+  const where = 'Possible when no run is going on';
+  return html`<div class="update" role="status">
+    <div class="row">
+      ${failed
+        ? html`<span class="update-bad">The update to media-optimizer ${version} didn't work (exit code ${update.code}).</span>`
+        : html`<span><b>media-optimizer ${version} is available</b> <span class="muted">(this is ${update.current})</span></span>`}
+      ${update.installable && html`<button class="btn btn-small" disabled=${!update.ready || sending}
+        title=${update.ready ? 'Install it with pipx, then media-optimizer starts again here' : where}
+        onClick=${install}>${failed ? 'Try again' : 'Update'}</button>`}
+      <a class="small" href=${update.notes} target="_blank" rel="noopener noreferrer">What's new</a>
+      ${!failed && html`<button class="btn btn-small" onClick=${() => setHidden(true)}>Not now</button>`}
+      ${update.installable && !update.ready && html`<span class="small muted">Update: when the run has finished</span>`}
+    </div>
+    ${failed && html`<pre class="update-command">${update.output}</pre>
+      <p class="small muted">All of pipx's output is in update.log in the state folder.</p>`}
+    <details class="small" open=${failed}>
+      <summary>${update.installable ? 'The command, to run it in a terminal' : 'How to update'}</summary>
+      <pre class="update-command">${update.command}</pre>
+    </details>
+  </div>`;
+}
+
 function App() {
   const [state, setState] = useState(null);
   const [setup, setSetup] = useState(null);
@@ -422,11 +463,17 @@ function App() {
     let alive = true;
     (async () => {
       let rev = 0;
+      let boot = null;
+      let restarting = false;
       while (alive) {
         try {
           const known = logRef.current;
-          const next = await api(`/state?since=${rev}&log=${known.next}&run=${known.run}`);
+          // Updated: the old program goes away, the new one answers on the same address.
+          const next = await api(`/state?since=${restarting ? 0 : rev}&log=${known.next}&run=${known.run}`);
+          if (boot && next.boot !== boot) { location.reload(); return; }
+          boot = next.boot;
           rev = next.rev;
+          restarting = !!next.update && next.update.state === 'restarting';
           if (next.log) {
             // The server sends the lines from where this page stopped, or a
             // new run's from its start.
@@ -438,8 +485,10 @@ function App() {
           }
           setState(next);
           setError('');
-          if (next.phase === 'finished') await sleep(2000);
+          if (restarting) await sleep(300);
+          else if (next.phase === 'finished') await sleep(2000);
         } catch (err) {
+          if (restarting) { await sleep(300); continue; }
           setError(err.message);
           await sleep(2000);
         }
@@ -483,12 +532,13 @@ function App() {
 
   if (!state) return html`<main><p class="muted">Connecting…</p></main>`;
   return html`
-    <header class="topbar">
+    <div class="top"><header class="topbar">
       <span class="brand"><img src="/static/icon.svg" alt="" width="26" height="26" /> media-optimizer
         <span class="version">${state.version}</span></span>
       <span class="spacer"></span>
       ${phase === 'setup' && html`<button class="btn btn-small" onClick=${close}>${state.returnUrl ? `Back to ${state.returnName}` : 'Close'}</button>`}
     </header>
+    <${UpdateNotice} update=${state.update} onError=${setError} /></div>
     <main>
       ${phase === 'setup' && (setup ? html`<${SetupView} key=${setup.folder.source + '|' + setup.folder.target}
         setup=${setup} onSetup=${setSetup} onError=${setError} />` : html`<p class="muted">Looking at the folder…</p>`)}

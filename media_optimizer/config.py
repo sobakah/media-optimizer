@@ -186,6 +186,9 @@ class Settings:
         "Remember files that need no work next time: finished videos, and results without an output "
         "(discarded as larger, unsupported, not selected). Each stage has its own cache file; entries "
         "store size, modification time and the settings they depend on. false = check everything again.")
+    check_for_updates: bool = _setting(True, ("bool",),
+        "Look for a newer media-optimizer at most once a day (git asks GitHub, with the same access as "
+        "pipx). A full run in the terminal offers to install it before it starts; the page shows it.")
     log: bool = _setting(True, ("bool",), "Write the run log.")
     log_file: str | None = _setting(None, ("opt", ("text",)),
         "Path of the run log. null = media-optimizer.log in the project folder (checkout) "

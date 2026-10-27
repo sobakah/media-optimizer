@@ -69,13 +69,23 @@ p { margin: 0; }
 .btn-danger { color: var(--bad); }
 
 .topbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; padding: 10px 24px;
-          background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
+          background: var(--surface); border-bottom: 1px solid var(--border); }
+.top { position: sticky; top: 0; z-index: 5; }
+.update { display: flex; flex-direction: column; gap: 6px; padding: 8px 24px; font-size: 14px;
+          background: var(--accent-soft); color: var(--accent-ink); border-bottom: 1px solid var(--border);
+          max-height: 50vh; overflow-y: auto; }
+.update a { color: var(--accent-ink); }
+.update summary { cursor: pointer; }
+.update-bad { color: var(--bad); }
+.update-command { margin: 6px 0 0; padding: 6px 10px; border-radius: 6px; background: var(--tool-bg); color: var(--tool-ink);
+                  font-family: ui-monospace, "JetBrains Mono", "Cascadia Mono", "Noto Sans Mono", Menlo, Consolas, monospace;
+                  font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 700; }
 .brand .version { font-size: 12px; font-weight: 500; color: var(--faint); }
 .spacer { flex: 1 1 auto; }
 
 main { max-width: 1000px; margin: 0 auto; padding: 20px 24px 40px; display: flex; flex-direction: column; gap: 16px; }
-@media (max-width: 600px) { main { padding: 14px 16px 40px; } .topbar { padding: 10px 16px; } }
+@media (max-width: 600px) { main { padding: 14px 16px 40px; } .topbar, .update { padding: 10px 16px; } }
 
 .section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
            display: flex; flex-direction: column; gap: 8px; }

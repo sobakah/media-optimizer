@@ -61,6 +61,9 @@ media-optimizer --help
 To install a specific release, add it to the URL: `...media-optimizer@1.0`.
 Releases before 1.0 are pre-releases.
 
+To update: `pipx upgrade media-optimizer`, or let the program do it (see
+[Updates](#updates)).
+
 From a checkout: `pipx install .`, or without installing:
 
 ```bash
@@ -381,6 +384,21 @@ and "Start over".
 ### Started from keepbest
 
 [keepbest](https://github.com/sobakah/keepbest) removes duplicate pictures and videos. After a run, its end screen offers `m` to run media-optimizer on the same folder, in the same window. It sets `MO_CALLER=keepbest`: the run still asks whether to use the default settings (normally skipped when the folder is given on the command line), and the closing question reads *Process another directory? (No: back to keepbest)*. keepbest also sets `MO_HOLD=0`, since its window stays open anyway, and passes its folder choice as `MO_SUBFOLDERS` and `MO_EXCLUDE_FOLDERS` (a JSON list), so the run covers the same folders as keepbest's and does not ask about subfolders.
+
+### Updates
+
+Once a day a full run looks for a newer release (it asks GitHub through git,
+so it has the same access as `pipx install`, and never asks for a password).
+When there is one, the terminal says so before the run starts. Installed with
+pipx, it asks *Install it now?* (Enter: no); yes runs pipx and starts the new
+version with the same command. With `-y`, without a terminal or from a
+checkout it prints the command instead. The browser page shows the same with
+an *Update* button, when no run is going on; the page then reloads with the
+new version. An install pinned to a release (`...media-optimizer@1.0`) moves
+to the new release and stays pinned. Runs started by keepbest and the stage
+commands (`images`, `video`, ...) don't check. pipx's output from the page is
+kept in `update.log` in the state folder. `"check_for_updates": false` turns
+this off.
 
 ### Automated runs
 

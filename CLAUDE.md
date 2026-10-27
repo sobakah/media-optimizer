@@ -53,6 +53,7 @@ questions.py     the full run's questionnaire as data (terminal and page), the p
 web.py           the browser page's server (--web): copied rules from cdimport/lyrembed
 static/          the page: app.js (Preact + htm, no build step), style.css, vendor/ with LICENSES.txt
 notify.py        a desktop notification (notify-send with an "Open" button, else gdbus), copyable
+selfupdate.py    a newer release: git ls-remote tags (x.y or x.y.z), once a day, pipx commands, restart (exec)
 ```
 
 ## Language
@@ -171,6 +172,14 @@ Breaking any of these has caused real data loss or silent corruption before.
   background" was chosen; a background run ends with a notification and the
   program waits `BACKGROUND_WAIT` for the page (`web.Watch`). The owner does
   not want a silent process left running: keep both halves of that rule.
+- **Updates** (`selfupdate.py`, as in picktag and keepbest): only a full run
+  started by a person checks (not with `MO_CALLER`, `--events` or
+  `--return-url`); `MO_UPDATE_REPO` replaces the repository (the tests point
+  it at a missing one). The terminal asks before the run and `exec`s the new
+  version with the same argv; the page installs only when no run is going on
+  (`Session._update_ready`), refuses starts meanwhile, then `serve` `exec`s
+  with `MO_RESTART_PAGE` = "port token" so the tab keeps its address and
+  reloads when `boot` changes. The process id stays: keepbest waits on it.
 - **Keep compatible with folders the Bash version worked on**: flock on the
   working directory, `.part.<pid>.<random>.<ext>` and `.<stem>.molock`,
   `.video_conversion_cache.txt`, `.broken_videos.txt`, `.video_suspect.txt`,
@@ -196,7 +205,7 @@ changes. Tag, push and release only with the owner's go-ahead.
 ## Tests
 
 ```bash
-python3 -m pytest                  # all, about 300 tests, 3.5 minutes
+python3 -m pytest                  # all, about 355 tests, 4 minutes
 python3 -m pytest -m "not slow"    # without the signal tests
 python3 -m pytest tests/test_video.py -k cache
 ```

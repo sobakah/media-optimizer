@@ -18,11 +18,12 @@ import argparse
 import shlex
 import signal
 import sys
+import threading
 from pathlib import Path
 
-from . import files, folders, gpu, proc, ui
+from . import files, folders, gpu, proc, selfupdate, ui
 from .config import (NAME, RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RULES, Settings,
-                     SettingsError, __version__, load_settings, parse_value)
+                     SettingsError, __version__, load_settings, parse_value, state_dir)
 from .events import events
 from .journal import journal
 from .runlog import log
@@ -422,6 +423,50 @@ def _run_stage(args, s: Settings) -> int:
     return rc
 
 
+# How long a full run waits for the update check before it starts (it goes on
+# in the background and is remembered for the next start).
+UPDATE_WAIT = 3.0
+
+
+def _checks_for_updates(args, s: Settings) -> bool:
+    """Only a full run started by a person checks: not one started by keepbest
+    (it checks itself) and not the run the page starts (--events)."""
+    return s.check_for_updates and not ui.caller() and getattr(args, "events", None) is None \
+        and not getattr(args, "return_url", None)
+
+
+def _newer_version() -> str | None:
+    found: list[str | None] = [None]
+
+    def check() -> None:
+        found[0] = selfupdate.available()
+
+    thread = threading.Thread(target=check, name="mo-update-check", daemon=True)
+    thread.start()
+    thread.join(UPDATE_WAIT)
+    return found[0]
+
+
+def _offer_update(version: str, assume_yes: bool) -> None:
+    """Before a full run in the terminal: install a newer version and start it
+    with the same command, or show the command."""
+    how = selfupdate.how_installed(version)
+    ui.say("UPDATE", S.CYAN, f"{NAME} {version} is available (this is {__version__}).")
+    if how.commands and ui.interactive() and not assume_yes:
+        if not ui.prompt_bool("Install it now? The run then starts with the new version", False, indent=""):
+            ui.out()
+            return
+        code, _ = selfupdate.install(how.commands, state_dir() / "update.log", show=True)
+        if code == 0:
+            ui.say("UPDATE", S.GREEN, f"{NAME} {version} is installed; starting it.")
+            selfupdate.restart(selfupdate.restart_argv())
+        ui.say("UPDATE", S.RED, f"The update didn't work (exit code {code}); this run uses {__version__}.")
+    ui.out("  To update:")
+    for line in how.command.splitlines():
+        ui.out(f"    {line}")
+    ui.out()
+
+
 def _run_web(args) -> int:
     from . import web
 
@@ -435,7 +480,7 @@ def _run_web(args) -> int:
                           Path(output).expanduser().absolute() if output else None,
                           (args.return_url, args.return_name) if args.return_url else None,
                           dry_run=args.dry_run, reset=args.reset)
-    return web.serve(session, open_browser=not args.no_browser)
+    return web.serve(session, open_browser=not args.no_browser, check_updates=_checks_for_updates(args, s))
 
 
 def _run_full(args) -> int:
@@ -448,6 +493,10 @@ def _run_full(args) -> int:
     while True:
         s = _settings(args, folder_choice=first)
         s.validate()
+        if first and _checks_for_updates(args, s):
+            version = _newer_version()
+            if version is not None:
+                _offer_update(version, args.yes)
         req = orchestrator.Request(settings=s, source=source if first else None,
                                    output=output if first else None,
                                    dry_run=args.dry_run, assume_yes=args.yes, reset=args.reset and first,

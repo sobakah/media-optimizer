@@ -98,6 +98,8 @@ def isolated(tmp_path, monkeypatch):
     for name in list(os.environ):
         if name.startswith("MO_") and name not in ("MO_STATE_DIR", "MO_CONFIG", "MO_TRASH", "MO_HOLD", "MO_LOG"):
             monkeypatch.delenv(name)
+    # The update check asks a repository that isn't there, never GitHub (tests/test_updates.py makes one).
+    monkeypatch.setenv("MO_UPDATE_REPO", str(tmp_path / "no-releases"))
     from media_optimizer import proc
     from media_optimizer.events import events
     from media_optimizer.journal import journal
@@ -118,6 +120,17 @@ def isolated(tmp_path, monkeypatch):
         "a test wrote the real journal"
     if (tmp_path / "state" / "journal.jsonl").exists():
         check_journal(tmp_path / "state" / "journal.jsonl")
+
+
+def releases(folder: Path, *tags: str) -> str:
+    """A git repository with these release tags, for the update check (MO_UPDATE_REPO)."""
+    git = ["git", "-C", str(folder), "-c", "user.name=test", "-c", "user.email=test@example.invalid"]
+    folder.mkdir(parents=True, exist_ok=True)
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "release"], check=True)
+    for tag in tags:
+        subprocess.run([*git, "tag", tag], check=True)
+    return f"file://{folder}"
 
 
 class Out:

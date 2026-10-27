@@ -439,4 +439,8 @@ media-optimizer converts images, GIFs and videos to more efficient formats
 (JPEG XL, WebP, HEVC, animated WebP or AVIF for short clips), checks every
 output against its original before the original goes, and can be stopped
 and resumed at any point; from the terminal or a local browser page. The
-program is the same as pre-release 0.8.3.
+program is pre-release 0.8.3 plus one addition: it looks for a newer release
+once a day (setting `check_for_updates`; git asks GitHub, with the same
+access as pipx). A full run in the terminal offers to install it with pipx
+before it starts, the browser page has an *Update* button, and either way the
+new version starts with the same command; otherwise it shows the command.
