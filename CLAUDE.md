@@ -202,23 +202,66 @@ Breaking any of these has caused real data loss or silent corruption before.
   `130` interrupted, `255` an encoder vanished.
 - Box output uses fixed columns (`ui.box`): do not pad labels by hand.
 
-## Releases
+## Commits, pushing and releases
 
-A fix commit, then "Release X" (sets `config.__version__`, renames the
-CHANGELOG heading), an annotated tag `X` with the message "X – Title",
-`gh release create X --latest` with notes in three parts: Upgrade, Fixed,
-For contributors. Without a version bump `pipx upgrade` doesn't pick up
-changes. Tag, push and release only with the owner's go-ahead.
+The same as in keepbest, picktag and lyrembed. This project used to work
+differently (a bare "Release X" commit, two-part versions, notes in /tmp);
+that is history, not a pattern.
 
-- The pre-releases 0.1–0.8 are an archive: the fixes between them are tags
-  only, and nothing is released as a pre-release any more.
-- Since 1.0 the history is never rewritten (no rebase, no force-push of
+- **Commits**: commit locally when a piece of work is done and its tests
+  pass; experiments stay uncommitted. English, subject at most 72
+  characters, body wrapped at 72, saying what changed and why (what was
+  measured, not what was assumed). End the report with what was committed
+  and its message.
+- **Pushing**: commits the owner has approved are pushed to `main` without
+  asking again, and so are finished, substantial ones that belong in a
+  future release. Trivial or experimental commits stay local. Before
+  pushing, check the diff for details of the owner's own files and folders.
+  **Tags and GitHub releases only with the owner's go-ahead.**
+- **Unreleased changes**: each user-visible change goes under
+  `## Unreleased` at the end of `CHANGELOG.md` (this file's format: a
+  `Change | Why` table per release, oldest first). Don't propose a release
+  after every change: say what is waiting, and suggest a release with the
+  number it would get once enough has gathered (a feature, or a few fixes,
+  or one fix that loses data). The owner may also ask to fold a change into
+  the current release.
+- **Version numbers**: always three parts (`1.2.0`), tags without `v`.
+  New features or changed behaviour raise the minor version (1.1.1 → 1.2.0),
+  pure fixes the patch (1.1.2). `__version__` in `config.py` is the only
+  source (`pyproject.toml` reads it); without a bump `pipx upgrade` doesn't
+  pick up changes. The tag `1.0` keeps its two parts (history is not
+  rewritten); `selfupdate` reads both forms.
+- **Old numbers**: the pre-releases 0.1–0.8 are an archive (the fixes
+  between them are tags only); nothing is released as a pre-release any
+  more. Earlier numbering is never mentioned anywhere in the repo, the
+  tags or the release notes.
+- **History**: since 1.0 it is never rewritten (no rebase, no force-push of
   `main`); a mistake in a release is fixed with a new version.
+
+A release, once the owner said so:
+
+1. `config.__version__` raised; the `## Unreleased` heading in
+   `CHANGELOG.md` becomes `## X.Y.Z – Title`.
+2. The full test suite passes.
+3. One commit `media-optimizer X.Y.Z: <what it brings, lower case>`, its
+   body a short summary for users and `Tests: N passing`.
+4. `git tag -a X.Y.Z -m "media-optimizer X.Y.Z"`, then
+   `git push origin main X.Y.Z`.
+5. `gh release create X.Y.Z --latest --title "media-optimizer X.Y.Z – Title"
+   --notes-file <notes>`. The notes: one line on what changed for the user,
+   `### Added` / `### Changed` / `### Fixed` as needed (bullets with a bold
+   lead-in), `### Upgrading` (`pipx upgrade media-optimizer`, or the update
+   offer in the terminal and the page's *Update* button), and a link to
+   `CHANGELOG.md`.
+
+Commit messages and release notes are drafted outside the checkout, in
+`~/Software/Claude/Projects/media-optimizer/` (`COMMIT_MSG_<version>.txt`,
+`releases/RELEASE_NOTES_<version>.md`), never in the repo or in /tmp.
 
 ## Tests
 
 ```bash
-python3 -m pytest                  # all, about 365 tests, 4 minutes
+python3 -m pytest                  # all, about 370 tests, 4 minutes
 python3 -m pytest -m "not slow"    # without the signal tests
 python3 -m pytest tests/test_video.py -k cache
 ```
