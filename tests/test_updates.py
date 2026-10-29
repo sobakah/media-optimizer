@@ -1,5 +1,5 @@
-"""A newer media-optimizer: the check (git tags with two or three parts, once
-a day), the command for each kind of install, the question before a full run
+"""A newer media-optimizer: the check (git tags with two or three parts, at
+every start), the command for each kind of install, the question before a full run
 in the terminal, and installing it from the page, which then starts again in
 the same process and tab. The releases are a local repository, never GitHub."""
 
@@ -56,16 +56,19 @@ def test_a_repository_that_cant_be_read_is_an_error(tmp_path):
         selfupdate.latest(releases(tmp_path / "none"))
 
 
-def test_github_is_asked_once_a_day_and_the_answer_kept(newer_release, monkeypatch):
+def test_github_is_asked_at_every_start_and_the_answer_kept(newer_release, monkeypatch):
+    """A release made a minute ago shows at the next start; the answer is kept
+    for a start that can't wait (known) or can't reach GitHub."""
     asked = []
     real = selfupdate.latest
     monkeypatch.setattr(selfupdate, "latest", lambda: asked.append(1) or real())
-    now = time.time()
-    assert selfupdate.available(now) == NEWER
-    assert selfupdate.available(now + 3600) == NEWER        # remembered, not asked again
-    assert len(asked) == 1
-    assert selfupdate.available(now + 25 * 3600) == NEWER
-    assert len(asked) == 2
+    assert selfupdate.known() is None                       # nothing found yet
+    assert selfupdate.available() == NEWER
+    assert selfupdate.available() == NEWER
+    assert len(asked) == 2                                  # asked again, not taken from the last time
+    assert selfupdate.known() == NEWER
+    monkeypatch.setenv(selfupdate.REPO_ENV, "/nowhere")
+    assert selfupdate.available() == NEWER                  # offline: the release found last time
 
 
 def test_a_failed_check_is_quiet_and_tried_again(tmp_path):
@@ -128,11 +131,16 @@ def test_starting_again_uses_the_same_command(monkeypatch, tmp_path):
 
 # --- a full run in the terminal -----------------------------------------------------
 def test_a_full_run_shows_the_command_without_asking(newer_release, run_cli, tmp_path):
+    """The run never waits for GitHub: what the check finds meanwhile comes after
+    it, and from the next start on before it."""
     (tmp_path / "src").mkdir()
     out = run_cli("run", "-y", "-n", tmp_path / "src")      # from the checkout: git pull, not pipx
     assert f"[UPDATE] media-optimizer {NEWER} is available (this is {__version__})." in out
     assert f"git -C {PYDIR} pull" in out
-    assert out.text.index("[UPDATE]") < out.text.index("MEDIA OPTIMIZER")
+    assert out.text.index("[UPDATE]") > out.text.index("MEDIA OPTIMIZER")    # found during the run
+    again = run_cli("run", "-y", "-n", tmp_path / "src")
+    assert again.text.count("[UPDATE]") == 1
+    assert again.text.index("[UPDATE]") < again.text.index("MEDIA OPTIMIZER")   # known: before it
 
 
 @pytest.mark.parametrize("how", ["keepbest", "events", "setting", "stages"])
@@ -174,6 +182,7 @@ def pipx_install(monkeypatch, newer_release):
     monkeypatch.setattr(selfupdate, "install", install)
     monkeypatch.setattr(selfupdate, "restart", restart)
     calls["outcome"], calls["Restarted"] = outcome, Restarted
+    assert selfupdate.available() == NEWER    # an earlier start found it: offered before the run
     return calls
 
 

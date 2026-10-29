@@ -426,8 +426,8 @@ def _run_stage(args, s: Settings) -> int:
     return rc
 
 
-# How long a full run waits for the update check before it starts (it goes on
-# in the background and is remembered for the next start).
+# How long a full run waits at its end for an update check that hasn't answered
+# yet (it never waits before it starts).
 UPDATE_WAIT = 3.0
 
 
@@ -438,16 +438,25 @@ def _checks_for_updates(args, s: Settings) -> bool:
         and not getattr(args, "return_url", None)
 
 
-def _newer_version() -> str | None:
-    found: list[str | None] = [None]
+class _UpdateCheck:
+    """A newer media-optimizer for a full run in the terminal, without making
+    the run wait: the one the last check found is offered before it (known at
+    once), GitHub is asked meanwhile, and a newer answer is shown after the run."""
 
-    def check() -> None:
-        found[0] = selfupdate.available()
+    def __init__(self) -> None:
+        self.offered = selfupdate.known()
+        self.found: str | None = None
+        self.thread = threading.Thread(target=self._check, name="mo-update-check", daemon=True)
+        self.thread.start()
 
-    thread = threading.Thread(target=check, name="mo-update-check", daemon=True)
-    thread.start()
-    thread.join(UPDATE_WAIT)
-    return found[0]
+    def _check(self) -> None:
+        self.found = selfupdate.available()
+
+    def report(self) -> None:
+        self.thread.join(UPDATE_WAIT)
+        if self.found is not None and self.found != self.offered:
+            ui.say("UPDATE", S.CYAN, f"{NAME} {self.found} is available (this is {__version__}).")
+            _show_command(selfupdate.how_installed(self.found))
 
 
 def _offer_update(version: str, assume_yes: bool) -> None:
@@ -464,6 +473,10 @@ def _offer_update(version: str, assume_yes: bool) -> None:
             ui.say("UPDATE", S.GREEN, f"{NAME} {version} is installed; starting it.")
             selfupdate.restart(selfupdate.restart_argv())
         ui.say("UPDATE", S.RED, f"The update didn't work (exit code {code}); this run uses {__version__}.")
+    _show_command(how)
+
+
+def _show_command(how: selfupdate.Install) -> None:
     ui.out("  To update:")
     for line in how.command.splitlines():
         ui.out(f"    {line}")
@@ -493,19 +506,22 @@ def _run_full(args) -> int:
         return _run_web(args)
     source, output = _dirs(args)
     first = True
+    check = None
     while True:
         s = _settings(args, folder_choice=first)
         s.validate()
         if first and _checks_for_updates(args, s):
-            version = _newer_version()
-            if version is not None:
-                _offer_update(version, args.yes)
+            check = _UpdateCheck()
+            if check.offered is not None:
+                _offer_update(check.offered, args.yes)
         req = orchestrator.Request(settings=s, source=source if first else None,
                                    output=output if first else None,
                                    dry_run=args.dry_run, assume_yes=args.yes, reset=args.reset and first,
                                    call=f"{NAME} {shlex.join(sys.argv[1:])}")
         rc, again = orchestrator.run(req)
         if not again:
+            if check is not None:
+                check.report()
             return rc
         first = False
         proc.reset()

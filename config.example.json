@@ -26,7 +26,7 @@
   "preflight": false,
   "_use_cache": "Remember files that need no work next time: finished videos, and results without an output (discarded as larger, unsupported, not selected). Each stage has its own cache file; entries store size, modification time and the settings they depend on. false = check everything again.",
   "use_cache": true,
-  "_check_for_updates": "Look for a newer media-optimizer at most once a day (git asks GitHub, with the same access as pipx). A full run in the terminal offers to install it before it starts; the page shows it.",
+  "_check_for_updates": "Look for a newer media-optimizer at every start, in the background (git asks GitHub, with the same access as pipx). A full run in the terminal offers what the last check found before it starts, and shows a newer one after the run; the page shows it.",
   "check_for_updates": true,
   "_log": "Write the run log.",
   "log": true,

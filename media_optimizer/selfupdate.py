@@ -2,10 +2,11 @@
 
 The same approach as picktag and keepbest. The repository is private, so the
 check asks git (``git ls-remote``), which uses the same access as ``pipx
-install`` (``gh auth setup-git``); it never prompts for a password. At most
-once a day; the newest version found is remembered in the state folder, so
-the notice stays until the program is updated. Release tags have two or three
-parts (``1.0``, ``0.8.3``). A pipx install is updated by pipx: ``pipx
+install`` (``gh auth setup-git``); it never prompts for a password. At every
+start, in a thread, so the start doesn't wait; the newest version found is
+remembered in the state folder (``known``), so a full run in the terminal can
+offer it before it starts without asking GitHub first. Release tags have two
+or three parts (``1.0``, ``0.8.3``). A pipx install is updated by pipx: ``pipx
 upgrade`` for an install from the repository, ``pipx install --force`` with
 the new tag for one pinned to a release (it stays pinned; injected packages
 are injected again). Any other install gets the command to run, not an offer.
@@ -29,7 +30,6 @@ from .config import NAME, PROJECT_URL, __version__, state_dir
 REPO = PROJECT_URL
 # Another repository to ask (a local one in the tests, so they never reach GitHub).
 REPO_ENV = "MO_UPDATE_REPO"
-CHECK_EVERY_S = 24 * 3600
 STATE_FILE = "update_check.json"
 _VERSION = r"(\d+)\.(\d+)(?:\.(\d+))?"
 _TAG = re.compile(rf"refs/tags/{_VERSION}$")
@@ -94,32 +94,28 @@ def _load_state() -> dict:
     return state if isinstance(state, dict) else {}
 
 
-def due(state: dict, now: float | None = None) -> bool:
-    """A check at most once a day."""
-    last = state.get("checked")
-    now = time.time() if now is None else now
-    return not isinstance(last, (int, float)) or not 0 <= now - last < CHECK_EVERY_S
-
-
-def available(now: float | None = None) -> str | None:
-    """A newer release than this media-optimizer, or None: asked once a day,
-    else the one found last time. A failed check stays quiet and is tried
-    again at the next start."""
+def known() -> str | None:
+    """The newer release the last check found, without asking GitHub: for a
+    start that mustn't wait (a full run in the terminal offers it before it starts)."""
     state = _load_state()
     found = state.get("latest") if isinstance(state.get("latest"), str) else None
-    if due(state, now):
-        try:
-            found = latest()
-        except UpdateError:
-            pass
-        else:
-            try:
-                path = _state_path()
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(json.dumps({"checked": time.time() if now is None else now, "latest": found}),
-                                encoding="utf-8")
-            except OSError:
-                pass
+    return found if newer(found) else None
+
+
+def available() -> str | None:
+    """A newer release than this media-optimizer, or None. GitHub is asked at
+    every start (callers run this in a thread, so the start doesn't wait); when
+    it can't be reached, the one found last time counts."""
+    try:
+        found = latest()
+    except UpdateError:
+        return known()
+    try:
+        path = _state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"checked": time.time(), "latest": found}), encoding="utf-8")
+    except OSError:
+        pass
     return found if newer(found) else None
 
 

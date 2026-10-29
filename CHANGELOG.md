@@ -460,3 +460,11 @@ top to bottom, and keepbest shows the run's numbers next to its own.
 | Finished stages fold their files away | Each stage keeps its last 50 files (the page had 300 for the whole run, newest first) and says how many there were; the log has all of them. The errors stay in view as messages, with the reason, so even after many thousand files the summary is right after the stages. |
 | The summary in tiles | Converted, space saved (before → after), skipped, larger results kept, name conflicts, failed and the time, then the outcome and its buttons. A run that could not start shows no numbers. |
 | `--results FILE` | The run's numbers as JSON when it ends, also after a stop, for the program that started it: per stage its state, outcomes, sizes and time, and the sums. It comes from the same events as `--events` (one fold, `results.Tally`, which the page builds on too), so the page and keepbest count alike. The terminal output and the exit code are the same with and without it (tested). The page passes it on to its run. |
+
+---
+
+## Unreleased
+
+| Change | Why |
+|---|---|
+| Looks for a newer release at every start, not once a day | A release made today only showed up a day after the last check. The check runs in the background: the page shows the update when GitHub answers; a full run in the terminal offers what the last check found before it starts (`selfupdate.known`) and shows a newer answer after the run, so the run never waits for GitHub (it waited up to 3 s before). |

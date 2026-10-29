@@ -393,9 +393,11 @@ and "Start over".
 
 ### Updates
 
-Once a day a full run looks for a newer release (it asks GitHub through git,
-so it has the same access as `pipx install`, and never asks for a password).
-When there is one, the terminal says so before the run starts. Installed with
+At every start media-optimizer looks for a newer release, in the background,
+so the start doesn't wait (it asks GitHub through git, so it has the same
+access as `pipx install`, and never asks for a password). When an earlier
+check found one, the terminal says so before a full run starts; one found
+while the run goes on is shown after it. Installed with
 pipx, it asks *Install it now?* (Enter: no); yes runs pipx and starts the new
 version with the same command. With `-y`, without a terminal or from a
 checkout it prints the command instead. The browser page shows the same with
