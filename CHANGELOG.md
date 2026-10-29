@@ -468,3 +468,12 @@ top to bottom, and keepbest shows the run's numbers next to its own.
 | Change | Why |
 |---|---|
 | Looks for a newer release at every start, not once a day | A release made today only showed up a day after the last check. The check runs in the background: the page shows the update when GitHub answers; a full run in the terminal offers what the last check found before it starts (`selfupdate.known`) and shows a newer answer after the run, so the run never waits for GitHub (it waited up to 3 s before). |
+
+---
+
+## Unreleased
+
+| Change | Why |
+|---|---|
+| A new icon | Drawn like keepbest's, picktag's and lyrembed's: a white film frame with a soft offset shadow and a landscape in it, the size it had before as a dashed outline behind it, and a purple badge with arrows pointing inward. The page, the tab and the notification show it. |
+| `--install-desktop-entry`, `--remove-desktop-entry` | Adds media-optimizer to the app menu (Linux and BSD desktops), as keepbest and lyrembed do: an entry and the icon in `~/.local/share`. It opens the browser page (`run --web`), and file managers offer it for folders. It starts the media-optimizer that wrote it (a pipx launcher, or the Python and `run.py` of a checkout). |

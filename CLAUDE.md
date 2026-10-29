@@ -53,6 +53,7 @@ results.py       --results FILE: the run's numbers at its end, for keepbest; Tal
 questions.py     the full run's questionnaire as data (terminal and page), the page's settings schema
 web.py           the browser page's server (--web): copied rules from cdimport/lyrembed
 static/          the page: app.js (Preact + htm, no build step), style.css, vendor/ with LICENSES.txt
+desktop.py       the app-menu entry (--install-desktop-entry), copied from keepbest and lyrembed
 notify.py        a desktop notification (notify-send with an "Open" button, else gdbus), copyable
 selfupdate.py    a newer release: git ls-remote tags (x.y or x.y.z), at every start in a thread (known: the last answer), pipx commands, restart (exec)
 ```

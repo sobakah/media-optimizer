@@ -83,6 +83,7 @@ media-optimizer video ~/Videos --encoder cpu --crf 20
 media-optimizer verify ~/Videos /mnt/archive --fix --run
 media-optimizer gpu-selftest ~/Videos/clip.mp4
 media-optimizer ~/Pictures --web                   # settings and progress in the browser
+media-optimizer --install-desktop-entry            # add it to the app menu (Linux)
 ```
 
 | Command | Does |
@@ -386,6 +387,15 @@ over (keepbest): `--no-browser` only prints the address
 `--return-url URL` (a page on this computer) and `--return-name NAME` turn
 the last button into "Back to NAME". `-n` and `--reset` preset the dry run
 and "Start over".
+
+**App menu:** `media-optimizer --install-desktop-entry` adds media-optimizer
+to the app menu of GNOME, KDE and other freedesktop.org desktops
+(`~/.local/share/applications/media-optimizer.desktop` and its icon under
+`~/.local/share/icons/`). It opens this page, and file managers offer
+*Open with media-optimizer* for folders. The entry starts the
+media-optimizer that wrote it — a pipx installation, or the Python and
+`run.py` of a checkout — so run the command again after installing it
+somewhere else. `--remove-desktop-entry` removes both files.
 
 ### Started from keepbest
 

@@ -101,6 +101,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog=NAME, description="Batch-convert images, GIFs and videos to more efficient formats.",
         epilog="Without a command, 'run' is assumed: media-optimizer ~/Pictures")
     parser.add_argument("--version", action="version", version=f"{NAME} {__version__}")
+    entry = parser.add_mutually_exclusive_group()
+    entry.add_argument("--install-desktop-entry", action="store_true",
+                       help="add media-optimizer to the app menu (Linux/BSD), opening the browser page, then exit")
+    entry.add_argument("--remove-desktop-entry", action="store_true", help="remove that entry, then exit")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     # --- run ---
@@ -550,6 +554,29 @@ def _command_first(argv: list[str], parser: argparse.ArgumentParser) -> list[str
     return ["run", *argv]
 
 
+_ENTRY_FLAGS = ("--install-desktop-entry", "--remove-desktop-entry")
+
+
+def _desktop_entry(install: bool) -> int:
+    """As keepbest's and lyrembed's: the entry and its icon, or both removed."""
+    from . import desktop
+
+    try:
+        if install:
+            entry, icon, command = desktop.install()
+            ui.say("OK", S.GREEN, f"Added {NAME} to the app menu: {entry}")
+            ui.out(f"It starts: {' '.join(command + desktop.PAGE_ARGUMENTS)}")
+            ui.out(f"Run this again after installing {NAME} elsewhere (pipx, another checkout).")
+        else:
+            removed = desktop.remove()
+            ui.say("OK", S.GREEN, "Removed: " + ", ".join(str(p) for p in removed) if removed
+                   else "There was no app-menu entry.")
+    except desktop.DesktopError as exc:
+        ui.say("ERROR", S.RED, str(exc), err=True)
+        return RC_CANNOT_START
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "avif" and not Path("avif").is_dir():
@@ -557,9 +584,11 @@ def main(argv: list[str] | None = None) -> int:
                "media-optimizer clips --help", err=True)
         return RC_BAD_SETTING
     parser = build_parser()
-    if not argv or (argv[0] not in COMMANDS and argv[0] not in ("-h", "--help", "--version")):
+    if not argv or (argv[0] not in COMMANDS and argv[0] not in ("-h", "--help", "--version", *_ENTRY_FLAGS)):
         argv = _command_first(argv, parser)
     args = parser.parse_args(argv)
+    if args.command is None:                # only the app-menu options stay without one
+        return _desktop_entry(install=args.install_desktop_entry)
     _check_options(parser, args)
     install_signal_handlers()
     proc.reset()
