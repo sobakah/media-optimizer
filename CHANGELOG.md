@@ -447,7 +447,7 @@ new version starts with the same command; otherwise it shows the command.
 
 ---
 
-## Unreleased – The run reads from top to bottom
+## 1.1.0 – The run reads from top to bottom
 
 The browser page showed a run as a list of files with the newest at the
 top and the summary below it, so after a long run the summary was a long
