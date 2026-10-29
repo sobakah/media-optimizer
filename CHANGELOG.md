@@ -463,7 +463,7 @@ top to bottom, and keepbest shows the run's numbers next to its own.
 
 ---
 
-## Unreleased
+## 1.1.1 – Updates show up right away
 
 | Change | Why |
 |---|---|
