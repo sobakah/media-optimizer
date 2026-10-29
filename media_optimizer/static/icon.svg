@@ -1,48 +1,33 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <defs>
-    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#62a0ea"/>
-      <stop offset="1" stop-color="#99c1f1"/>
-    </linearGradient>
-    <linearGradient id="badge" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#c061cb"/>
-      <stop offset="1" stop-color="#613583"/>
-    </linearGradient>
-    <clipPath id="frame">
-      <rect x="26" y="40" width="50" height="56" rx="3"/>
-    </clipPath>
+  <defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#62a0ea"/><stop offset="1" stop-color="#99c1f1"/></linearGradient>
+    <linearGradient id="faded" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#c0bfbc"/><stop offset="1" stop-color="#deddda"/></linearGradient>
+    <clipPath id="frame"><rect x="26" y="40" width="50" height="56" rx="3"/></clipPath>
   </defs>
   <!-- the size before -->
-  <rect x="30" y="8" width="90" height="80" rx="11" fill="none" stroke="#9a9996"
-        stroke-width="3" stroke-dasharray="7 6"/>
-  <!-- the film frame -->
-  <g transform="translate(10 104) scale(1.12) translate(-10 -104)">
-  <rect x="12" y="38" width="82" height="72" rx="11" fill="#613583" opacity="0.35"/>
-  <rect x="10" y="32" width="82" height="72" rx="11" fill="#ffffff"/>
-  <rect x="14" y="36" width="74" height="64" rx="7" fill="#3d3846"/>
-  <g fill="#ffffff">
-    <rect x="17" y="41" width="6" height="7" rx="1.5"/>
-    <rect x="17" y="54" width="6" height="7" rx="1.5"/>
-    <rect x="17" y="67" width="6" height="7" rx="1.5"/>
-    <rect x="17" y="80" width="6" height="7" rx="1.5"/>
-    <rect x="79" y="41" width="6" height="7" rx="1.5"/>
-    <rect x="79" y="54" width="6" height="7" rx="1.5"/>
-    <rect x="79" y="67" width="6" height="7" rx="1.5"/>
-    <rect x="79" y="80" width="6" height="7" rx="1.5"/>
+  <rect x="8" y="10" width="112" height="100" rx="14" fill="none" stroke="#9a9996" stroke-width="3" stroke-dasharray="7 6"/>
+  <!-- the film frame, squeezed -->
+  <g transform="translate(64 62) rotate(-5) scale(0.78 0.72) translate(-51 -68)">
+    <rect x="12" y="38" width="82" height="72" rx="11" fill="#613583" opacity="0.35"/>
+    <rect x="10" y="32" width="82" height="72" rx="11" fill="#ffffff"/>
+    <rect x="14" y="36" width="74" height="64" rx="7" fill="#3d3846"/>
+    <g fill="#ffffff">
+      <rect x="17" y="41" width="6" height="7" rx="1.5"/><rect x="17" y="54" width="6" height="7" rx="1.5"/>
+      <rect x="17" y="67" width="6" height="7" rx="1.5"/><rect x="17" y="80" width="6" height="7" rx="1.5"/>
+      <rect x="79" y="41" width="6" height="7" rx="1.5"/><rect x="79" y="54" width="6" height="7" rx="1.5"/>
+      <rect x="79" y="67" width="6" height="7" rx="1.5"/><rect x="79" y="80" width="6" height="7" rx="1.5"/>
+    </g>
+    <g clip-path="url(#frame)">
+      <rect x="26" y="40" width="50" height="56" fill="url(#sky)"/>
+      <circle cx="62" cy="54" r="7" fill="#f9f06b"/>
+      <path d="M26 84 L42 66 L54 77 L62 70 L76 82 L76 96 L26 96 Z" fill="#33d17a"/>
+      <path d="M26 96 L26 89 L38 80 L54 96 Z" fill="#26a269"/>
+    </g>
   </g>
-  <g clip-path="url(#frame)">
-    <rect x="26" y="40" width="50" height="56" fill="url(#sky)"/>
-    <circle cx="62" cy="54" r="7" fill="#f9f06b"/>
-    <path d="M26 84 L42 66 L54 77 L62 70 L76 82 L76 96 L26 96 Z" fill="#33d17a"/>
-    <path d="M26 96 L26 89 L38 80 L54 96 Z" fill="#26a269"/>
+  <!-- squish -->
+  <g fill="none" stroke="#9141ac" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 18 L30 34 M30 21 V34 H17"/>
+    <path d="M114 102 L98 86 M98 99 V86 H111"/>
   </g>
-  </g>
-  <!-- the badge -->
-  <circle cx="96" cy="99" r="22" fill="#613583" opacity="0.4"/>
-  <circle cx="94" cy="96" r="22" fill="#ffffff"/>
-  <circle cx="94" cy="96" r="18" fill="url(#badge)"/>
-  <g fill="none" stroke="#ffffff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M85 87 L92 94 M92 87.5 V94 H85.5"/>
-    <path d="M103 105 L96 98 M96 104.5 V98 H102.5"/>
-  </g>
+  <path d="M108 14 Q109.4 21.6 117 23 Q109.4 24.4 108 32 Q106.6 24.4 99 23 Q106.6 21.6 108 14 Z" fill="#f6d32d"/>
+  <path d="M20 96 Q21 101 26 102 Q21 103 20 108 Q19 103 14 102 Q19 101 20 96 Z" fill="#f6d32d"/>
 </svg>
