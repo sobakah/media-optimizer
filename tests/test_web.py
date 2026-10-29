@@ -417,6 +417,25 @@ def test_progress_folds_the_events():
     assert p.snapshot()["encodes"] == []
 
 
+def test_progress_keeps_the_newest_files_of_each_stage(monkeypatch):
+    """A long run: each stage sends only its newest files, and says how
+    many there were; the totals are the results file's."""
+    monkeypatch.setattr(web, "RECENT_FILES", 3)
+    p = web.Progress()
+    p.apply({"event": "stage_start", "stage": "images", "total": 10})
+    p.apply({"event": "file", "stage": "images", "status": "ERROR", "src": "/bad.png"})
+    for i in range(9):
+        p.apply({"event": "file", "stage": "images", "status": "OK", "src": f"/{i}.jpg", "dest": f"{i}.jxl",
+                 "before": 10, "after": 4})
+    p.apply({"event": "stage_start", "stage": "gifs", "total": 1})
+    p.apply({"event": "file", "stage": "gifs", "status": "OK", "src": "/a.gif", "before": 5, "after": 5})
+    images, gifs = p.snapshot()["stages"]
+    assert [f["src"] for f in images["files"]] == ["/6.jpg", "/7.jpg", "/8.jpg"] and images["listed"] == 10
+    assert [f["src"] for f in gifs["files"]] == ["/a.gif"] and gifs["listed"] == 1
+    assert p.snapshot()["totals"] == {"converted": 0, "failed": 0, "before": 95, "after": 41}
+    json.dumps(p.snapshot())
+
+
 # --- closing the tab, the background, the notification ----------------------------------
 _FAKE_RUN = """
 import json, signal, sys, time

@@ -19,7 +19,8 @@ Events (``v`` 1, ``event``, ``ts`` on every line):
 
 Like the journal: one write per line, thread safe, a write problem warns
 once and changes nothing else. Unlike the journal it is written in a dry
-run too: the page shows what a dry run would do.
+run too: the page shows what a dry run would do. A listener (--results,
+results.py) gets every event too, with or without a file.
 """
 
 from __future__ import annotations
@@ -46,11 +47,12 @@ class Events:
         self.path: Path | None = None
         self.running = False            # between run_start and run_end
         self.warned = False
+        self.listener = None            # called with every event (results.py)
         self._lock = threading.Lock()
 
     @property
     def active(self) -> bool:
-        return self.fd is not None
+        return self.fd is not None or self.listener is not None
 
     def open(self, path: Path) -> None:
         try:
@@ -75,14 +77,14 @@ class Events:
 
     # --- the run -----------------------------------------------------------------
     def run_start(self, command: str, source: Path, target: Path | None, dry_run: bool) -> None:
-        if self.fd is None or self.running:
+        if not self.active or self.running:
             return
         self.running = True
         self.emit("run_start", command=command, source=str(source),
                   target=str(target) if target is not None else None, dry_run=dry_run, pid=os.getpid())
 
     def run_end(self, code: int) -> None:
-        if self.fd is None or not self.running:
+        if not self.active or not self.running:
             return
         self.running = False
         self.emit("run_end", code=code)
@@ -107,11 +109,16 @@ class Events:
 
     # --- writing -------------------------------------------------------------------
     def emit(self, event: str, **fields) -> None:
-        fd = self.fd
-        if fd is None:
+        fd, listener = self.fd, self.listener
+        if fd is None and listener is None:
             return
         record = {"v": VERSION, "event": event,
                   "ts": datetime.now().astimezone().isoformat(timespec="milliseconds"), **fields}
+        if listener is not None:
+            with self._lock:
+                listener(record)
+        if fd is None:
+            return
         data = (json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n").encode("ascii")
         with self._lock:
             try:

@@ -444,3 +444,19 @@ once a day (setting `check_for_updates`; git asks GitHub, with the same
 access as pipx). A full run in the terminal offers to install it with pipx
 before it starts, the browser page has an *Update* button, and either way the
 new version starts with the same command; otherwise it shows the command.
+
+---
+
+## Unreleased – The run reads from top to bottom
+
+The browser page showed a run as a list of files with the newest at the
+top and the summary below it, so after a long run the summary was a long
+scroll away. It now reads like keepbest's page and like the terminal, from
+top to bottom, and keepbest shows the run's numbers next to its own.
+
+| Change | Why |
+|---|---|
+| A section per stage, in order | Each stage shows its progress, its video encodes, its own warnings and errors and its newest files (the running one its last six); the stages are steps in the top bar, as keepbest's, with *Progress*/*Log* and *Stop* next to them, so they stay in reach while the page scrolls. The page follows the newest part while the reader is at its end and stays put for one who scrolled up. |
+| Finished stages fold their files away | Each stage keeps its last 50 files (the page had 300 for the whole run, newest first) and says how many there were; the log has all of them. The errors stay in view as messages, with the reason, so even after many thousand files the summary is right after the stages. |
+| The summary in tiles | Converted, space saved (before → after), skipped, larger results kept, name conflicts, failed and the time, then the outcome and its buttons. A run that could not start shows no numbers. |
+| `--results FILE` | The run's numbers as JSON when it ends, also after a stop, for the program that started it: per stage its state, outcomes, sizes and time, and the sums. It comes from the same events as `--events` (one fold, `results.Tally`, which the page builds on too), so the page and keepbest count alike. The terminal output and the exit code are the same with and without it (tested). The page passes it on to its run. |

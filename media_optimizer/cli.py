@@ -26,6 +26,7 @@ from .config import (NAME, RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RULE
                      SettingsError, __version__, load_settings, parse_value, state_dir)
 from .events import events
 from .journal import journal
+from .results import results
 from .runlog import log
 from .stages.base import Context, apply_mode_defaults, prompt_delete_original, prompt_rescan, reset_notices
 from .ui import StyleUI as S
@@ -89,6 +90,8 @@ def _common(p: argparse.ArgumentParser, *, dirs: str = "optional", workers: bool
     if dirs != "none":
         g.add_argument("--events", type=Path, metavar="FILE",
                        help="write the run's progress as JSON lines to FILE (for programs that show it)")
+        g.add_argument("--results", type=Path, metavar="FILE",
+                       help="write the run's results as JSON to FILE when it ends (for the program that started it)")
     g.add_argument("--hold", dest="hold", action="store_const", const="1", help="keep the window open at the end")
     g.add_argument("--no-hold", dest="hold", action="store_const", const="0", help="never keep the window open")
 
@@ -479,7 +482,7 @@ def _run_web(args) -> int:
     session = web.Session(s, origins, Path(source).expanduser().absolute() if source else None,
                           Path(output).expanduser().absolute() if output else None,
                           (args.return_url, args.return_name) if args.return_url else None,
-                          dry_run=args.dry_run, reset=args.reset)
+                          dry_run=args.dry_run, reset=args.reset, results=args.results)
     return web.serve(session, open_browser=not args.no_browser, check_updates=_checks_for_updates(args, s))
 
 
@@ -547,6 +550,8 @@ def main(argv: list[str] | None = None) -> int:
     reset_notices()
     if getattr(args, "events", None) is not None:
         events.open(args.events)
+    if getattr(args, "results", None) is not None:
+        results.open(args.results)
 
     rc = 0
     try:
@@ -573,6 +578,7 @@ def main(argv: list[str] | None = None) -> int:
         journal.end(rc)             # Ctrl+C, SIGTERM, a closed terminal: best effort
         events.run_end(rc)
         events.close()
+        results.close()
     ui.hold_open(rc, getattr(args, "hold", None))
     return rc
 

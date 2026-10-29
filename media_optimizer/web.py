@@ -47,6 +47,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from . import folders, questions, selfupdate
+from .results import Tally
 from .config import NAME, PROJECT_URL, RC_OK, RULES, Settings, __version__, check_value, state_dir, to_env
 from .config import _describe as describe
 
@@ -138,66 +139,37 @@ class Log:
 
 
 # --- the events, folded into what the page draws ---------------------------------------
-STAGE_TITLES = {"images": "Images", "gifs": "GIFs", "clips": "Short clips", "video": "Videos",
-                "verify": "Final check"}
-RECENT_FILES = 300
+RECENT_FILES = 50                 # per stage; a problem's message stays in view anyway
 MAX_MESSAGES = 500
 
 
-class Progress:
+class Progress(Tally):
     """The events of a run (events.py), folded into a small state: per stage
-    its counts and sizes, the newest files, the messages, the running
-    encodes. A run over 100 000 files must not send 100 000 events each time."""
+    its counts and sizes (results.Tally, as the results file counts them)
+    and its newest files; the messages, the running encodes. A
+    run over 100 000 files must not send 100 000 events each time."""
 
     def __init__(self) -> None:
-        self.stages: dict[str, dict] = {}
-        self.order: list[str] = []
-        self.current: str | None = None
-        self.files: deque = deque(maxlen=RECENT_FILES)
+        super().__init__()
         self.messages: list[dict] = []
         self.encodes: dict[int, dict] = {}
-        self.dry_run = False
 
     def _stage(self, name: str) -> dict:
-        if name not in self.stages:
-            self.stages[name] = {"stage": name, "title": STAGE_TITLES.get(name, name), "total": None, "done": 0,
-                                 "outcomes": {}, "before": 0, "after": 0, "state": "waiting", "code": None,
-                                 "counters": None}
-            self.order.append(name)
-        return self.stages[name]
+        new = name not in self.stages
+        st = super()._stage(name)
+        if new:
+            st.update(files=deque(maxlen=RECENT_FILES), listed=0)
+        return st
 
     def apply(self, ev: dict) -> None:
+        super().apply(ev)
         kind = ev.get("event")
-        if kind == "run_start":
-            self.dry_run = bool(ev.get("dry_run"))
-        elif kind == "plan":
-            for entry in ev.get("stages", []):
-                st = self._stage(entry["stage"])
-                st["total"] = entry.get("total")
-                if entry.get("done"):
-                    st["state"] = "earlier"           # finished by the interrupted run
-        elif kind == "stage_start":
-            st = self._stage(ev["stage"])
-            st["state"] = "running"
-            if ev.get("total") is not None:
-                st["total"] = ev["total"]
-            self.current = ev["stage"]
-        elif kind == "stage_end":
-            st = self._stage(ev["stage"])
-            st["state"] = "done"
-            st["code"], st["counters"] = ev.get("code"), ev.get("counters")
+        if kind == "stage_end":
             self.encodes.clear()
-        elif kind == "done":
-            st = self._stage(ev["stage"])
-            st["done"] += 1
-            outcome = ev.get("outcome") or "finished"
-            st["outcomes"][outcome] = st["outcomes"].get(outcome, 0) + 1
         elif kind == "file":
             st = self._stage(ev["stage"])
-            if ev.get("status") in ("OK", "SALVAGED") and ev.get("before") and ev.get("after"):
-                st["before"] += ev["before"]
-                st["after"] += ev["after"]
-            self.files.append({k: ev.get(k) for k in ("stage", "status", "src", "dest", "before", "after")})
+            st["listed"] += 1
+            st["files"].append({k: ev.get(k) for k in ("status", "src", "dest", "before", "after")})
         elif kind == "message" and ev.get("level") in ("error", "warning") and len(self.messages) < MAX_MESSAGES:
             self.messages.append({"level": ev["level"], "tag": ev.get("tag"), "text": ev.get("text"),
                                   "stage": self.current})
@@ -213,9 +185,9 @@ class Progress:
                 del self.encodes[idx]
 
     def snapshot(self) -> dict:
-        return {"stages": [self.stages[n] for n in self.order], "current": self.current,
-                "files": list(self.files), "messages": self.messages, "encodes": list(self.encodes.values()),
-                "dryRun": self.dry_run}
+        return {"stages": [{**self.stages[n], "files": list(self.stages[n]["files"])} for n in self.order],
+                "current": self.current, "messages": self.messages, "encodes": list(self.encodes.values()),
+                "dryRun": self.dry_run, "totals": self.totals()}
 
 
 # --- what the page shows ---------------------------------------------------------
@@ -225,7 +197,8 @@ class Session:
     asks for the state whenever the revision it saw is old."""
 
     def __init__(self, settings: Settings, origins: dict[str, str], source: Path | None, target: Path | None,
-                 back: tuple[str, str] | None = None, *, dry_run: bool = False, reset: bool = False) -> None:
+                 back: tuple[str, str] | None = None, *, dry_run: bool = False, reset: bool = False,
+                 results: Path | None = None) -> None:
         self.settings = settings
         self.origins = origins
         self.source = source
@@ -233,6 +206,7 @@ class Session:
         self.back_url, self.back_name = back if back else ("", "")
         self.dry_run = dry_run            # presets of the form, from -n and --reset
         self.reset = reset
+        self.results = results            # --results: the run writes it for whoever started us
         self.phase = "setup"              # setup, running, finished
         self.code: int | None = None      # the exit code of the last run
         self.child: subprocess.Popen | None = None
@@ -465,6 +439,8 @@ class Session:
             cmd.append("--reset")
         if dry_run:
             cmd.append("-n")
+        if self.results is not None:
+            cmd += ["--results", str(self.results)]
         return cmd + ["--events", str(events_file)]
 
     def keep_in_background(self) -> None:

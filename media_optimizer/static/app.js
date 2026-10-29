@@ -312,19 +312,52 @@ function SetupView({ setup, onSetup, onError }) {
 }
 
 // --- the run ----------------------------------------------------------------------
+// As keepbest's page: the run reads from top to bottom like the terminal, one
+// section per stage, then the summary and what to do next. A finished stage
+// folds its files away and keeps only what needs a look in view, so the end
+// of a long run is near its summary.
 const OUTCOME_LABELS = { converted: 'converted', skipped: 'skipped', cached: 'known from earlier runs', failed: 'failed',
                          discarded: 'discarded (larger)', conflict: 'name conflict', dry: 'would be converted',
                          finished: 'finished' };
+const SHOWN_MESSAGES = 5;
+const RUNNING_FILES = 6;
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-function StageCard({ stage, encodes }) {
+function FileList({ files }) {
+  return html`<ul class="files">${files.map((f, i) => html`<li key=${i}
+    class=${f.status === 'OK' || f.status === 'SALVAGED' ? '' : 'other'}>
+    <span class="tag">${f.status}</span>
+    <span class="path">${baseName(f.src)}${f.dest ? html` → ${f.dest}` : ''}</span>
+    <span class="muted small">${saving(f.before, f.after)}</span></li>`)}</ul>`;
+}
+
+// The first few in view, the rest one click away.
+function Folded({ items, shown, more, render: draw }) {
+  if (items.length <= shown) return draw(items);
+  return html`${draw(items.slice(0, shown))}
+    <details><summary class="small muted">${more(items.length - shown)}</summary>${draw(items.slice(shown))}</details>`;
+}
+
+function Messages({ messages }) {
+  return html`<${Folded} items=${messages} shown=${SHOWN_MESSAGES} more=${(n) => `${plural(n, 'more message')}`}
+    render=${(list) => list.map((m) => html`<p class=${'msg ' + m.level}><span class="tag">${m.tag}</span> ${m.text}</p>`)} />`;
+}
+
+function StageCard({ stage, encodes, messages, current }) {
+  const running = stage.state === 'running';
   const pct = stage.total ? Math.min(100, Math.round(stage.done * 100 / stage.total)) : null;
   const state = { waiting: 'waiting', running: 'running', done: stage.code === 0 ? 'done' : `ended with code ${stage.code}`,
                   earlier: 'done in the interrupted run' }[stage.state];
-  return html`<section class=${'section stage ' + stage.state + (stage.code ? ' bad' : '')}>
-    <div class="row between"><h2>${stage.title}</h2><span class="muted small">${state}</span></div>
-    ${stage.total !== null && stage.state !== 'earlier' && html`<div class="bar" role="progressbar" aria-valuenow=${pct || 0}
+  const old = stage.state === 'done' && !current;
+  const files = stage.files || [];
+  return html`<section class=${'section stage ' + stage.state + (stage.code ? ' bad' : '') + (old ? ' old' : '')}>
+    <div class="row between"><h2>${stage.title}</h2><span class="muted small">${running
+      ? html`<span class="spinner" aria-hidden="true"></span> ` : ''}${state}</span></div>
+    ${running && stage.total !== null && html`<div class="bar" role="progressbar" aria-valuenow=${pct || 0}
       aria-valuemin="0" aria-valuemax="100"><div style=${`width:${pct || 0}%`}></div></div>
-      <p class="small muted">${stage.done} of ${stage.total} file${stage.total === 1 ? '' : 's'}</p>`}
+      <p class="small muted">${stage.done} of ${plural(stage.total, 'file')}</p>`}
+    ${stage.state === 'done' && stage.done > 0 && html`<p class="small muted">${plural(stage.done, 'file')}${stage.elapsed >= 1
+      ? ` in ${duration(Math.round(stage.elapsed))}` : ''}</p>`}
     ${Object.keys(stage.outcomes).length > 0 && html`<p class="small">${Object.entries(stage.outcomes)
       .map(([k, n]) => `${n} ${OUTCOME_LABELS[k] || k}`).join(' · ')}</p>`}
     ${stage.before > 0 && html`<p class="small">${saving(stage.before, stage.after)}</p>`}
@@ -334,6 +367,42 @@ function StageCard({ stage, encodes }) {
       <div class="bar thin"><div style=${`width:${e.percent || 0}%`}></div></div>
       <span class="small muted">${e.percent !== null ? Math.round(e.percent) + '%' : ''} ${e.speed || ''} ${e.eta !== null ? duration(e.eta) + ' left' : ''}</span>
     </div>`)}
+    ${messages.length > 0 && html`<${Messages} messages=${messages} />`}
+    ${running && files.length > 0 && html`<${FileList} files=${files.slice(-RUNNING_FILES)} />`}
+    ${!running && files.length > 0 && html`<details><summary class="small muted">${stage.listed > files.length
+      ? `Files: the last ${files.length} of ${stage.listed} (all are in the log)` : `Files (${files.length})`}</summary>
+      <${FileList} files=${files} /></details>`}
+  </section>`;
+}
+
+// Whether any stage got going: a run that could not start has no numbers.
+const ran = (progress) => !!progress && progress.stages.some((s) => s.state === 'running' || s.state === 'done');
+
+// The run's numbers in tiles, as keepbest's summary.
+function Summary({ progress, code }) {
+  const t = progress.totals;
+  const sum = (key) => progress.stages.reduce((n, s) => n + (s.outcomes[key] || 0), 0);
+  const elapsed = progress.stages.reduce((n, s) => n + (s.elapsed || 0), 0);
+  const dry = progress.dryRun;
+  const tiles = [[dry ? 'Would be converted' : 'Converted', dry ? sum('dry') : t.converted]];
+  if (t.before > 0) {
+    tiles.push([t.after <= t.before ? 'Space saved' : 'Space added', formatBytes(Math.abs(t.before - t.after)),
+                saving(t.before, t.after)]);
+  }
+  const skipped = sum('skipped') + sum('cached');
+  tiles.push(['Skipped', skipped]);
+  if (sum('discarded')) tiles.push(['Kept: result larger', sum('discarded')]);
+  if (sum('conflict')) tiles.push(['Name conflicts', sum('conflict')]);
+  tiles.push(['Failed', t.failed]);
+  if (elapsed >= 1) tiles.push(['Time', duration(Math.round(elapsed))]);
+  return html`<section class="section">
+    <h2>${dry ? 'Summary – preview' : code === 130 ? 'Summary – until it was stopped' : 'Summary'}</h2>
+    <dl class="tiles">${tiles.map(([label, value, sub]) => html`<div class="tile" key=${label}><dt>${label}</dt><dd>${value}</dd>
+      ${sub && html`<dd class="sub">${sub}</dd>`}</div>`)}</dl>
+    ${sum('cached') > 0 && html`<p class="small muted">${plural(sum('cached'), 'file')} of the skipped ${sum('cached') === 1
+      ? 'was' : 'were'} handled by earlier runs.</p>`}
+    ${t.failed > 0 && html`<p class="small muted">The originals of the failed files are kept; the log tab says why.</p>`}
+    ${dry && html`<p class="small muted">Nothing was written or deleted.</p>`}
   </section>`;
 }
 
@@ -356,38 +425,30 @@ function LogView({ lines, partial }) {
   </div>`;
 }
 
-function RunView({ state, log, onStop, onBackground }) {
-  const [tab, setTab] = useState('progress');
+function RunView({ state, log, tab }) {
   const p = state.progress;
   const running = state.phase === 'running';
-  const files = [...p.files].reverse().slice(0, 100);
+  const early = p.messages.filter((m) => !m.stage);
   return html`
     ${p.dryRun && html`<p class="note">Preview only: nothing is written or deleted.</p>`}
-    <div class="tabs" role="tablist">
-      <button role="tab" class=${tab === 'progress' ? 'on' : ''} onClick=${() => setTab('progress')}>Progress</button>
-      <button role="tab" class=${tab === 'log' ? 'on' : ''} onClick=${() => setTab('log')}>Log</button>
-      <span class="spacer"></span>
-      ${running && !state.background && html`<button class="btn btn-small" disabled=${state.stopping}
-        onClick=${onBackground}>Keep running in the background</button>`}
-      ${running && html`<button class="btn btn-small btn-danger" disabled=${state.stopping} onClick=${onStop}>
-        ${state.stopping ? 'Stopping…' : 'Stop'}</button>`}
-    </div>
     ${running && state.background && html`<p class="note">Keeps running when you close this tab. A desktop
       notification says when it is done; its "Open" button brings this page back.</p>`}
     ${tab === 'log' ? html`<${LogView} lines=${log.lines} partial=${log.partial} />` : html`
-      ${p.stages.map((s) => html`<${StageCard} key=${s.stage} stage=${s}
-        encodes=${s.stage === 'video' ? p.encodes : []} />`)}
-      ${p.messages.length > 0 && html`<section class="section">
-        <h2>Warnings and errors</h2>
-        ${p.messages.map((m) => html`<p class=${'msg ' + m.level}><span class="tag">${m.tag}</span> ${m.text}</p>`)}
-      </section>`}
-      ${files.length > 0 && html`<section class="section">
-        <h2>Files</h2>
-        <ul class="files">${files.map((f, i) => html`<li key=${i} class=${f.status === 'OK' || f.status === 'SALVAGED' ? '' : 'other'}>
-          <span class="tag">${f.status}</span>
-          <span class="path">${baseName(f.src)}${f.dest ? html` → ${f.dest}` : ''}</span>
-          <span class="muted small">${saving(f.before, f.after)}</span></li>`)}</ul>
-      </section>`}`}`;
+      ${early.length > 0 && html`<section class="section"><h2>Before the stages</h2><${Messages} messages=${early} /></section>`}
+      ${p.stages.map((s) => html`<${StageCard} key=${s.stage} stage=${s} current=${s.stage === p.current && running}
+        encodes=${s.stage === 'video' ? p.encodes : []} messages=${p.messages.filter((m) => m.stage === s.stage)} />`)}
+      ${state.phase === 'finished' && ran(p) && html`<${Summary} progress=${p} code=${state.code} />`}`}`;
+}
+
+// The stages as steps in the top bar, as keepbest's.
+function Steps({ state }) {
+  const p = state.progress;
+  const finished = state.phase === 'finished';
+  const steps = p.stages.map((s) => [s.stage, s.title,
+    s.state === 'running' && !finished ? 'now' : s.state === 'done' || s.state === 'earlier' ? 'done' : '']);
+  steps.push(['summary', 'Summary', finished ? 'now' : '']);
+  return html`<ol class="steps" aria-label="Progress">${steps.map(([id, name, cls]) => html`<li key=${id}
+    class=${'step ' + cls} aria-current=${cls === 'now' ? 'step' : undefined}>${name}</li>`)}</ol>`;
 }
 
 const ENDINGS = { 0: 'The run has finished.', 1: 'The run could not start.', 2: 'A setting was not valid.',
@@ -396,12 +457,9 @@ const ENDINGS = { 0: 'The run has finished.', 1: 'The run could not start.', 2: 
                   255: 'The run stopped: an encoder vanished.' };
 
 function Finished({ state, onAgain, onClose }) {
-  const stages = state.progress ? state.progress.stages : [];
-  let before = 0, after = 0, converted = 0;
-  for (const s of stages) { before += s.before; after += s.after; converted += s.outcomes.converted || 0; }
   return html`<section class="section finished">
     <h2>${ENDINGS[state.code] || `The run ended with code ${state.code}.`}</h2>
-    ${converted > 0 && html`<p>${converted} file${converted === 1 ? '' : 's'} converted${before ? ', ' + saving(before, after) : ''}.</p>`}
+    ${state.returnUrl && ran(state.progress) && html`<p class="muted">${state.returnName} shows these results next to its own.</p>`}
     <div class="row">
       ${!state.returnUrl && html`<button class="btn" onClick=${onAgain}>Process another folder</button>`}
       <button class="btn btn-primary" onClick=${onClose}>${state.returnUrl ? `Back to ${state.returnName}` : 'Close'}</button>
@@ -457,7 +515,12 @@ function App() {
   const [log, setLog] = useState({ lines: [], partial: '', next: 0, run: 0 });
   const [error, setError] = useState('');
   const [closed, setClosed] = useState(false);
+  const [tab, setTab] = useState('progress');
   const logRef = useRef(log);
+  const stick = useRef(true);
+  const lastHeight = useRef(0);
+  const ownScroll = useRef(false);
+  const phaseRef = useRef(null);
 
   useEffect(() => {
     let alive = true;
@@ -516,6 +579,32 @@ function App() {
     return () => removeEventListener('beforeunload', guard);
   }, [phase, background]);
 
+  // As keepbest's page: new content scrolls the page only for a reader who
+  // was at its end; one who scrolled up to read stays where they are.
+  const follow = () => {
+    if (phaseRef.current === 'setup') return;
+    const height = document.documentElement.scrollHeight;
+    if (height !== lastHeight.current && stick.current) {
+      ownScroll.current = true;
+      scrollTo(0, height);
+    }
+    lastHeight.current = height;
+  };
+  useEffect(() => {
+    const onScroll = () => {
+      if (ownScroll.current) { ownScroll.current = false; return; }
+      stick.current = scrollY + innerHeight >= document.documentElement.scrollHeight - 40;
+    };
+    addEventListener('scroll', onScroll, { passive: true });
+    const grows = new ResizeObserver(follow);
+    grows.observe(document.body);
+    return () => { removeEventListener('scroll', onScroll); grows.disconnect(); };
+  }, []);
+  // The form starts at its top; a run is followed from its start.
+  phaseRef.current = phase;
+  useEffect(() => { stick.current = phase !== 'setup'; if (phase === 'setup') setTab('progress'); }, [phase]);
+  useEffect(follow);
+
   const stop = async () => {
     if (!confirm('Stop the run? Its progress is saved; the next start offers to resume it.')) return;
     try { await api('/stop', {}); } catch (err) { setError(err.message); }
@@ -531,19 +620,28 @@ function App() {
   };
 
   if (!state) return html`<main><p class="muted">Connecting…</p></main>`;
+  const running = phase === 'running';
   return html`
     <div class="top"><header class="topbar">
       <span class="brand"><img src="/static/icon.svg" alt="" width="26" height="26" /> media-optimizer
         <span class="version">${state.version}</span></span>
+      ${phase !== 'setup' && state.progress && html`<${Steps} state=${state} />`}
       <span class="spacer"></span>
+      ${phase !== 'setup' && state.progress && html`<div class="segmented" role="tablist">
+        <button role="tab" aria-selected=${tab === 'progress'} class=${tab === 'progress' ? 'on' : ''} onClick=${() => setTab('progress')}>Progress</button>
+        <button role="tab" aria-selected=${tab === 'log'} class=${tab === 'log' ? 'on' : ''} onClick=${() => setTab('log')}>Log</button>
+      </div>`}
+      ${running && !state.background && html`<button class="btn btn-small" disabled=${state.stopping}
+        onClick=${keepRunning}>Keep running in the background</button>`}
+      ${running && html`<button class="btn btn-small btn-danger" disabled=${state.stopping} onClick=${stop}>
+        ${state.stopping ? 'Stopping…' : 'Stop'}</button>`}
       ${phase === 'setup' && html`<button class="btn btn-small" onClick=${close}>${state.returnUrl ? `Back to ${state.returnName}` : 'Close'}</button>`}
     </header>
     <${UpdateNotice} update=${state.update} onError=${setError} /></div>
     <main>
       ${phase === 'setup' && (setup ? html`<${SetupView} key=${setup.folder.source + '|' + setup.folder.target}
         setup=${setup} onSetup=${setSetup} onError=${setError} />` : html`<p class="muted">Looking at the folder…</p>`)}
-      ${phase !== 'setup' && state.progress && html`<${RunView} state=${state} log=${log} onStop=${stop}
-        onBackground=${keepRunning} />`}
+      ${phase !== 'setup' && state.progress && html`<${RunView} state=${state} log=${log} tab=${tab} />`}
       ${phase === 'finished' && html`<${Finished} state=${state} onAgain=${again} onClose=${close} />`}
     </main>
     ${error && !closed && html`<div class="toast" role="alert">${error}</div>`}

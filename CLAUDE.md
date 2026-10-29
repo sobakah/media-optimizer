@@ -49,6 +49,7 @@ ui.py            StyleUI, say/badge, boxes, prompts, progress line, hold-open
 runlog.py        the run log
 journal.py       the file journal for picktag (JSON Lines)
 events.py        --events FILE: the run's progress as JSON lines, for the browser page
+results.py       --results FILE: the run's numbers at its end, for keepbest; Tally, the fold both use
 questions.py     the full run's questionnaire as data (terminal and page), the page's settings schema
 web.py           the browser page's server (--web): copied rules from cdimport/lyrembed
 static/          the page: app.js (Preact + htm, no build step), style.css, vendor/ with LICENSES.txt
@@ -153,6 +154,13 @@ Breaking any of these has caused real data loss or silent corruption before.
   `VideoStage._decide`/`_process`). A new way for a file to end needs its
   `done`. The terminal output must stay byte-for-byte the same with and
   without `--events`.
+- **The results file is keepbest's contract** (`results.py`, `--results`):
+  written once at `run_end` from the same events (`events.listener`), so
+  the page's counts (`web.Progress` builds on `results.Tally`) and keepbest's
+  are the same. Changing the meaning of a field needs `"v": 2`; keepbest
+  checks `v` and shows nothing for a file it can't read. The page passes
+  `--results` on to its child run. Same rule as the events: stdout and the
+  exit code stay as they are, a write problem warns once.
 - **The browser page is a layer, not a second program** (`web.py`). Its
   security rules are copied from cdimport and lyrembed and each has a test
   (`tests/test_web.py`): 127.0.0.1 only, the token-to-cookie redirect with
@@ -161,6 +169,10 @@ Breaking any of these has caused real data loss or silent corruption before.
   The address line (`web.ADDRESS_LINE`) is read by keepbest with cdimport's
   `_HANDOFF` pattern: keep its wording. A new file under `static/` needs a
   pattern in `pyproject.toml`'s package-data (tested).
+  The run view reads top to bottom as keepbest's page (a section per
+  stage, the summary tiles, the end card) and follows the end while the
+  reader is there; a stage sends only its newest files (`RECENT_FILES`),
+  a finished one folds them away.
   The page never runs a stage itself: it starts `run -y … --events FILE`
   as a child on a pty, with every setting as `MO_*` (`config.to_env`; the
   environment beats the config file and inherited variables), reads the
@@ -205,7 +217,7 @@ changes. Tag, push and release only with the owner's go-ahead.
 ## Tests
 
 ```bash
-python3 -m pytest                  # all, about 355 tests, 4 minutes
+python3 -m pytest                  # all, about 365 tests, 4 minutes
 python3 -m pytest -m "not slow"    # without the signal tests
 python3 -m pytest tests/test_video.py -k cache
 ```

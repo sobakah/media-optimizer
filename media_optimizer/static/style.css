@@ -130,10 +130,26 @@ details.all summary h2 { display: inline; }
 .between { justify-content: space-between; }
 
 /* the run */
-.tabs { display: flex; gap: 4px; align-items: center; border-bottom: 1px solid var(--border); }
-.tabs [role=tab] { border: 0; background: none; padding: 8px 14px; cursor: pointer; color: var(--muted);
-                   border-bottom: 2px solid transparent; font-weight: 600; }
-.tabs [role=tab].on { color: var(--ink); border-bottom-color: var(--accent); }
+/* the stages as steps in the top bar, and the Progress/Log switch: as keepbest's */
+.steps { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.step { padding: 3px 10px; border-radius: 999px; color: var(--faint); border: 1px solid var(--border); }
+.step.done { color: var(--muted); }
+.step.now { color: var(--on-accent); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+.segmented { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
+.segmented button { border: 0; background: var(--surface); padding: 4px 12px; cursor: pointer; font-size: 13px; }
+.segmented button + button { border-left: 1px solid var(--border-strong); }
+.segmented button.on { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.spinner { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--border-strong);
+           border-top-color: var(--accent); animation: spin .9s linear infinite; vertical-align: -1px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin: 4px 0; }
+.tile { padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; }
+.tile dt { font-size: 13px; color: var(--muted); }
+.tile dd { margin: 0; font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tile dd.sub { font-size: 12.5px; font-weight: 400; color: var(--muted); }
+.section.old { opacity: .85; }
+.section details summary { cursor: pointer; }
 .stage.waiting { opacity: .65; }
 .stage.bad { border-color: var(--bad); }
 .bar { height: 8px; border-radius: 4px; background: var(--hover); overflow: hidden; }

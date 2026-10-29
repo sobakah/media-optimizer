@@ -119,6 +119,7 @@ Options that behave the same everywhere:
 | `--log <file>` / `--no-log` | log file / no log |
 | `--journal <file>` / `--no-journal` | file journal (see [Journal](#journal)) / no journal |
 | `--events <file>` | the run's progress as JSON lines (see [Progress for other programs](#progress-for-other-programs)) |
+| `--results <file>` | the run's numbers as JSON when it ends (see [Results for other programs](#results-for-other-programs)) |
 | `--hold` / `--no-hold` | keep the window open at the end |
 | `-y, --yes` | no questions, settings as given |
 | `-n, --dry-run` | preview only |
@@ -360,10 +361,15 @@ The page:
   config file, the environment or the command line is marked as such and
   checked by the same rules;
 * offers "Resume" or "Start over" when the folder has an interrupted run;
-* runs the real program and shows a card per stage with its progress and
-  the video encodes, the warnings and errors in one place, the newest files
-  with their sizes, and the raw output with its colours under "Log";
-* ends with the outcome, "Process another folder" and "Close".
+* runs the real program and shows it from top to bottom, like the terminal:
+  a section per stage with its progress, the video encodes, its warnings and
+  errors and its newest files; the stages are steps in the top bar, next to
+  *Stop* and the raw output with its colours under "Log". The page follows
+  the newest part while you are at its end. A finished stage folds its file
+  list away (the last 50; all of them are in the log), so even after many
+  thousand files the summary comes right after the stages;
+* ends with the summary in tiles (converted, space saved, skipped, failed,
+  time) and the outcome, with "Process another folder" and "Close".
 
 Closing the tab during a run stops it like Ctrl+C: it saves its state, and
 the next start offers to resume. "Keep running in the background" lets the
@@ -383,7 +389,7 @@ and "Start over".
 
 ### Started from keepbest
 
-[keepbest](https://github.com/sobakah/keepbest) removes duplicate pictures and videos. After a run, its end screen offers `m` to run media-optimizer on the same folder, in the same window. It sets `MO_CALLER=keepbest`: the run still asks whether to use the default settings (normally skipped when the folder is given on the command line), and the closing question reads *Process another directory? (No: back to keepbest)*. keepbest also sets `MO_HOLD=0`, since its window stays open anyway, and passes its folder choice as `MO_SUBFOLDERS` and `MO_EXCLUDE_FOLDERS` (a JSON list), so the run covers the same folders as keepbest's and does not ask about subfolders.
+[keepbest](https://github.com/sobakah/keepbest) removes duplicate pictures and videos. After a run, its end screen offers `m` to run media-optimizer on the same folder, in the same window. It sets `MO_CALLER=keepbest`: the run still asks whether to use the default settings (normally skipped when the folder is given on the command line), and the closing question reads *Process another directory? (No: back to keepbest)*. keepbest also sets `MO_HOLD=0`, since its window stays open anyway, and passes its folder choice as `MO_SUBFOLDERS` and `MO_EXCLUDE_FOLDERS` (a JSON list), so the run covers the same folders as keepbest's and does not ask about subfolders. With its own page in keepbest's tab, its last button leads back to keepbest; keepbest also passes `--results` and shows the run's numbers next to its own, with the space both freed together.
 
 ### Updates
 
@@ -454,6 +460,21 @@ else.
 | `done` | one per finished file: `stage`, `src`, `outcome` (`converted`, `skipped`, `cached`, `failed`, `discarded`, `conflict`, `dry`), `reason` |
 | `message` | `level` (`error`, `warning`, `info`), `tag`, `text` |
 | `run_end` | `code` (the exit code) |
+
+### Results for other programs
+
+`--results FILE` writes the run's numbers to FILE when it ends, for the
+program that started it (keepbest shows them next to its own). It is one
+JSON object, replaced in one step, also after a stop (exit code 130) or
+when some files failed; a run that never started writes nothing. The
+terminal output and the exit code are the same with and without it.
+
+| Field | |
+|---|---|
+| `v`, `program`, `version` | `1`, `"media-optimizer"`, the version |
+| `code`, `dry_run`, `source`, `target` | the exit code, a preview or not, the folders (`target` is `null` in place) |
+| `stages` | per stage: `stage`, `title`, `state` (`done`; `running`: stopped in it; `waiting`: not reached; `earlier`: finished by the interrupted run this one resumed), `code`, `total`, `done`, `outcomes` (files per outcome, as in the events), `before` and `after` (bytes of the converted files), `elapsed` (seconds) |
+| `converted`, `failed`, `before`, `after` | the sums over the stages |
 
 ## Troubleshooting
 
