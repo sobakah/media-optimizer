@@ -198,6 +198,17 @@ function FolderTree({ folder, excluded, setExcluded, cached, useCache }) {
   </section>`;
 }
 
+// Closed until the reader opens it, or a setting in it is refused: an error
+// is never left folded away.
+function FoldedSection({ sec, failed, children }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => { if (failed) setOpen(true); }, [failed]);
+  return html`<details class="section folded" open=${open} onToggle=${(e) => setOpen(e.target.open)}>
+    <summary><h2>${sec.title}</h2><span class="muted small">${sec.hint}</span></summary>
+    ${children}
+  </details>`;
+}
+
 function SetupView({ setup, onSetup, onError }) {
   const folder = setup.folder;
   const fields = {};
@@ -287,12 +298,13 @@ function SetupView({ setup, onSetup, onError }) {
     ${!folder.error && !resumeLocked && html`<${FolderTree} folder=${folder} excluded=${excluded} setExcluded=${setExcluded}
       cached=${cached} useCache=${values.use_cache} />`}
     <fieldset class="plain" disabled=${resumeLocked}>
-      ${setup.schema.questionnaire.map((sec) => html`<section class="section">
-        <h2>${sec.title}</h2>
-        ${sec.questions.filter((q) => shown(q.when, values, hasTarget)).map((q) => html`<${Question} key=${q.setting}
+      ${setup.schema.questionnaire.map((sec) => {
+        const questions = sec.questions.filter((q) => shown(q.when, values, hasTarget)).map((q) => html`<${Question} key=${q.setting}
           q=${q} field=${fields[q.setting]} values=${values} setValue=${setValue} hasTarget=${hasTarget}
-          error=${errors[q.setting]} />`)}
-      </section>`)}
+          error=${errors[q.setting]} />`);
+        if (sec.hint) return html`<${FoldedSection} sec=${sec} failed=${sec.questions.some((q) => errors[q.setting])}>${questions}<//>`;
+        return html`<section class="section"><h2>${sec.title}</h2>${questions}</section>`;
+      })}
       <details class="section all">
         <summary><h2>All settings</h2></summary>
         ${setup.schema.groups.map((g) => html`<div class="group">

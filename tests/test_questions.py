@@ -87,6 +87,11 @@ def test_conditions():
     assert questions.shown(q["enable_verify_output"], s, Path("/target"))
 
 
+def test_the_page_folds_the_image_and_video_questions():
+    sections = questions.schema(Settings())["questionnaire"]
+    assert [bool(sec["hint"]) for sec in sections] == [False, True, True]
+
+
 def test_schema_for_the_page(tmp_path, monkeypatch):
     config = tmp_path / "c.json"
     config.write_text('{"jxl_effort": 9}')

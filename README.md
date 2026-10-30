@@ -357,8 +357,9 @@ The page:
   their image and video counts; files a stage's cache already knows are
   marked "done before: skipped" (for the settings in the form), unless
   "Scan all files again" is chosen;
-* shows the same questions as the terminal, with the same conditions, and
-  every other setting folded away with its description; a value from the
+* shows the same questions as the terminal, with the same conditions, the
+  image and video ones behind *Show*, and every other setting folded away
+  with its description; a value from the
   config file, the environment or the command line is marked as such and
   checked by the same rules;
 * offers "Resume" or "Start over" when the folder has an interrupted run;

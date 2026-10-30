@@ -38,6 +38,7 @@ class Section:
     title: str                    # the terminal's heading
     label: str                    # the page's
     questions: tuple[Question, ...]
+    hint: str = ""                # a section with one starts folded on the page
 
 
 FULL_RUN = (
@@ -57,7 +58,7 @@ FULL_RUN = (
         Question("png_mode", "PNG mode (lossless or lossy)"),
         Question("png_quality", "JXL quality for PNG, higher is better (1-100)", ("png_mode", "lossy")),
         Question("gif_method", "WebP compression level for GIFs (0-6)"),
-    )),
+    ), hint="Format, quality and compression"),
     Section("VIDEO (H.265)", "Video (H.265)", (
         Question("encoder_mode", "Video encoder (auto, gpu or cpu)"),
         Question("bitrate_threshold_kbps", "Bitrate above which the GPU is used (kb/s)", ("encoder_mode", "auto")),
@@ -70,7 +71,7 @@ FULL_RUN = (
         Question("verify_visual", "Compare the picture against the source while converting?"),
         Question("visual_strict", "Discard a video when that comparison looks wrong?", ("verify_visual", True)),
         Question("enable_verify_output", "Re-check the finished target directory at the end?", ("target", True)),
-    )),
+    ), hint="Encoder, quality and checks"),
 )
 
 
@@ -125,7 +126,7 @@ def schema(s: Settings, origins: dict[str, str] | None = None, sections=FULL_RUN
     cli). JSON-serialisable."""
     origins = origins or {}
     return {
-        "questionnaire": [{"title": sec.label,
+        "questionnaire": [{"title": sec.label, "hint": sec.hint,
                            "questions": [{"setting": q.setting, "text": q.text, "when": list(q.when),
                                           "special": q.special or None} for q in sec.questions]}
                           for sec in sections],
