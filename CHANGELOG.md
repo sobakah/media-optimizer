@@ -471,7 +471,7 @@ top to bottom, and keepbest shows the run's numbers next to its own.
 
 ---
 
-## Unreleased
+## 1.1.2 – A new icon and an app-menu entry
 
 | Change | Why |
 |---|---|
