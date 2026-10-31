@@ -322,6 +322,16 @@ def test_stage_option_before_the_command(folder, main):
     assert out.rc == 0 and "IMAGE SUMMARY" in out and (d / "photo.jxl").exists(), out
 
 
+def test_a_folder_named_like_a_command_gets_a_hint(folder, main, monkeypatch):
+    """'-n images' means the images stage, so it stops without a source. A
+    folder called images is what was meant, and nothing here says how to ask for it."""
+    d = folder("hint", "images/photo.jpg=photo.jpg")
+    monkeypatch.chdir(d)
+    out = main("-n", "images")
+    assert out.rc == 1 and "media-optimizer run images" in out.text, out.text
+    assert "media-optimizer run" not in main("-n", "gifs").text
+
+
 def test_no_option_is_a_flag_in_one_command_and_takes_a_value_in_another():
     """_command_first cannot know the command yet: the meaning must be the same everywhere."""
     import argparse

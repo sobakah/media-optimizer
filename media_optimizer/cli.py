@@ -377,6 +377,8 @@ def _run_stage(args, s: Settings) -> int:
         return RC_BAD_SETTING
     if not source:
         ui.out("No source directory given.", err=True)
+        if Path(args.command).is_dir():       # "-n images" is the stage, not the folder
+            ui.out(f"For the folder called {args.command}: {NAME} run {args.command}", err=True)
         return RC_CANNOT_START
     src = Path(source).expanduser().absolute()
     if not src.is_dir():
