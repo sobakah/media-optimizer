@@ -231,6 +231,32 @@ def test_another_directory_does_not_inherit_the_folder_choice(folder, tmp_path, 
     assert (tmp_path / "rsb-out" / "sub" / "photo.jxl").exists(), out
 
 
+def test_a_preview_can_be_run_for_real_with_the_same_settings(folder, tmp_path, pty_run):
+    """No second questionnaire: "another directory" asked for everything again
+    and stayed a preview."""
+    d = folder("rr", "photo.jpg", "sub/photo.jpg=photo.jpg")
+    o = tmp_path / "rr-out"
+    # subfolders: exclude; for real? y; another? n
+    out = pty_run(["e", "y", "n"], "-n", d, o)
+    assert "Run this for real now, with the same settings? [y/N]" in out, out
+    assert (o / "photo.jxl").exists() and not (o / "sub").exists(), out
+    assert out.text.count("Process subfolders?") == 1, out
+    assert out.text.count("Process another directory?") == 1, out
+
+
+def test_a_preview_stays_a_preview_when_declined(folder, tmp_path, pty_run):
+    d = folder("rs", "photo.jpg")
+    o = tmp_path / "rs-out"
+    out = pty_run(["n", "n"], "-n", d, o)
+    assert "Run this for real now" in out and "Process another directory?" in out, out
+    assert not o.exists(), out
+
+
+def test_preview_with_y_asks_nothing(folder, tmp_path, run_cli):
+    out = run_cli("-y", "-n", folder("rt", "photo.jpg"), tmp_path / "rt-out")
+    assert "for real" not in out.text, out
+
+
 def test_called_from_keepbest(folder, tmp_path, pty_run):
     # keepbest passes the folder on, but the run is interactive: the defaults
     # question is asked, and the closing question says where No leads.

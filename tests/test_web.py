@@ -402,6 +402,56 @@ def test_a_preview_of_starting_over_ignores_the_saved_run(folder, tmp_path):
     assert _session(d).folder_info()["resume"] is not None, "the state stays for a real run"
 
 
+def test_a_preview_can_be_run_for_real_with_the_same_settings(folder, tmp_path):
+    """The form's values only exist in the run: going through the form again
+    lost them, and a "rerun" used other settings than the preview showed."""
+    d = folder("wr", "photo.jpg")
+    o = tmp_path / "wrout"
+    session = _session(d, o)
+    session.start({"dry_run": True, "settings": {"img_target": "webp"}})
+    _wait_finished(session)
+    assert session.code == 0 and not o.exists()
+    assert session.snapshot()["realRun"] == {"target": str(o), "deletes": False}
+    session.run_for_real()
+    _wait_finished(session)
+    assert session.code == 0 and (o / "photo.webp").exists() and not (o / "photo.jxl").exists()
+    assert session.run_number == 2 and session.snapshot()["realRun"] is None, "only after a preview"
+    with pytest.raises(web.ApiError) as exc:
+        session.run_for_real()
+    assert exc.value.status == 409
+
+
+def test_a_run_for_real_says_when_it_deletes(folder):
+    d = folder("wd", "photo.jpg")
+    session = _session(d)
+    session.start({"dry_run": True, "settings": {}})
+    _wait_finished(session)
+    assert session.snapshot()["realRun"] == {"target": "", "deletes": True}, "in place: originals go"
+
+
+def test_a_stopped_preview_offers_no_real_run(folder):
+    session = _session(folder("ws", "photo.jpg"))
+    session._last = {"settings": {}, "mode": "new", "dry_run": True}
+    session.phase, session.code = "finished", 130
+    assert session.snapshot()["realRun"] is None
+    with pytest.raises(web.ApiError):
+        session.run_for_real()
+
+
+def test_back_to_the_form_keeps_what_the_preview_ran_with(folder, tmp_path):
+    d = folder("wf", "photo.jpg", "sub/x.jpg=photo.jpg")
+    session = _session(d, tmp_path / "wfout")
+    session.start({"dry_run": True, "settings": {"img_target": "webp", "subfolders": "include",
+                                                 "exclude_folders": ["sub"]}})
+    _wait_finished(session)
+    session.back_to_form()
+    assert session.phase == "setup"
+    fields = {f["name"]: f for g in session.setup()["schema"]["groups"] for f in g["fields"]}
+    assert fields["img_target"]["value"] == "webp" and fields["exclude_folders"]["value"] == ["sub"]
+    assert fields["img_target"]["origin"] == "default", "chosen on the form, not from a config file"
+    assert session.setup()["folder"]["dryRun"] is True, "still a preview until that is switched off"
+
+
 def test_log_drops_old_lines_with_stable_indexes(monkeypatch):
     monkeypatch.setattr(web, "LOG_LINES", 3)
     log = web.Log()

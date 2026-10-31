@@ -155,6 +155,8 @@ class Request:
     assume_yes: bool = False
     reset: bool = False
     call: str = ""
+    same_settings: bool = False       # the preview's real run: everything is decided
+    then: "Request | None" = None     # set by run(): to run next, a preview for real
 
 
 def _settings_menu(s: Settings, output: Path | None) -> None:
@@ -236,7 +238,7 @@ def run(req: Request) -> tuple[int, bool]:
         done = state.done
         ui.out(f"  Source: {S.BOLD}{state.source}{S.RESET} | images: {_open(done, 'images')} | "
                f"GIFs: {_open(done, 'gifs')} | video: {_open(done, 'video')}\n")
-        if ui.interactive() and not req.assume_yes and \
+        if ui.interactive() and not req.assume_yes and not req.same_settings and \
                 not ui.prompt_bool("Resume the last run with its saved settings?", True, indent=""):
             # Removed once the new run turns out to be on the same folder:
             # a run on another folder must leave it (README).
@@ -281,7 +283,7 @@ def run(req: Request) -> tuple[int, bool]:
         # The settings menu is for interactive use: not when the source was
         # given on the command line, unless another program (keepbest) passed
         # it on for a run the user started by hand.
-        if ui.interactive() and not req.assume_yes and (not req.source or ui.caller()):
+        if ui.interactive() and not req.assume_yes and not req.same_settings and (not req.source or ui.caller()):
             ui.out()
             if not ui.prompt_bool("Use the default settings for all media types?", True, indent=""):
                 _settings_menu(s, output)
@@ -461,6 +463,11 @@ def run(req: Request) -> tuple[int, bool]:
     another = False
     if ui.interactive() and not req.assume_yes:
         ui.out()
+        if req.dry_run and ui.prompt_bool("Run this for real now, with the same settings?", False):
+            # A declined state stays for a real run on another folder, not for this one.
+            req.then = Request(settings=s, source=str(source), output=str(output) if output else "",
+                               reset=req.reset or declined is not None, call=req.call, same_settings=True)
+            return rc, False
         caller = ui.caller()
         question = f"Process another directory? (No: back to {caller})" if caller else "Process another directory?"
         another = ui.prompt_bool(question, False)

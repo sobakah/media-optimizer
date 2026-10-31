@@ -221,6 +221,7 @@ class Session:
         self.stopping = False
         self.background = False           # the run goes on when the page is gone
         self.run_number = 0               # the page's log belongs to one run
+        self._last: dict | None = None    # the last run: what the form sent, and where a real one goes
         self._starting = False            # a start between its check and its child
         self.boot = secrets.token_urlsafe(6)  # a new one after an update: the page loads itself again
         self.update: dict | None = None       # a newer media-optimizer (offer_update)
@@ -250,7 +251,7 @@ class Session:
                     "target": str(self.target) if self.target else "",
                     "returnUrl": self.back_url, "returnName": self.back_name or "the previous page",
                     "stopping": self.stopping, "background": self.background, "run": self.run_number,
-                    "boot": self.boot,
+                    "boot": self.boot, "realRun": self._real_run(),
                     "update": dict(self.update, ready=self._update_ready()) if self.update else None}
             if self.phase != "setup":
                 data["progress"] = self.progress.snapshot()
@@ -424,6 +425,9 @@ class Session:
         events_file = Path(self._tmp.name) / "events.jsonl"
         events_file.touch()
         cmd = self.command(mode, bool(body.get("dry_run")), events_file)
+        # A resumed run keeps its own target and settings, whatever the form says.
+        target = (state.output or "") if mode == "resume" and state is not None else str(self.target or "")
+        delete = state.settings.get("delete_original") if mode == "resume" and state is not None else s.delete_original
         env = {**os.environ, **to_env(s), "MO_HOLD": "0", "COLUMNS": str(LOG_COLUMNS)}
         master, slave = os.openpty()
         try:
@@ -442,6 +446,8 @@ class Session:
             self.child, self.phase, self.code, self.stopping, self.background = child, "running", None, False, False
             self.log, self.progress = Log(), Progress()
             self.run_number += 1
+            self._last = {"settings": body.get("settings") or {}, "mode": mode, "dry_run": bool(body.get("dry_run")),
+                          "real": {"target": target, "deletes": not target if delete is None else delete}}
         self.bump()
         reader = threading.Thread(target=self._read_output, args=(master,), name="mo-web-output", daemon=True)
         tail = threading.Thread(target=self._read_events, args=(events_file, child), name="mo-web-events",
@@ -462,6 +468,35 @@ class Session:
         if self.results is not None:
             cmd += ["--results", str(self.results)]
         return cmd + ["--events", str(events_file)]
+
+    def _real_run(self) -> dict | None:
+        """What a real run after this finished preview would do; None without one."""
+        last = self._last
+        if last is None or not last["dry_run"] or self.phase != "finished" or self.code not in (0, 3):
+            return None
+        return last["real"]
+
+    def run_for_real(self) -> None:
+        """The preview again as a real run: the form's values exist only in the run."""
+        with self._cond:
+            if self._real_run() is None:
+                raise ApiError(409, "There is no finished preview to run for real.")
+            last = self._last
+        self.start({"settings": last["settings"], "mode": last["mode"], "dry_run": False})
+
+    def back_to_form(self) -> None:
+        """Back to the form with the values the last run had."""
+        with self._cond:
+            last = self._last
+            if self.phase != "finished" or last is None:
+                raise ApiError(409, "The run has not finished.")
+            settings, _ = _settings_from(self.settings, last["settings"])
+            for name in last["settings"]:
+                if getattr(settings, name, None) != getattr(self.settings, name, None):
+                    self.origins.pop(name, None)      # chosen on the form now
+            self.settings, self.dry_run, self.reset = settings, last["dry_run"], last["mode"] == "reset"
+            self.phase = "setup"
+        self.bump()
 
     def keep_in_background(self) -> None:
         with self._cond:
@@ -777,6 +812,12 @@ class _Handler(BaseHTTPRequestHandler):
             return {"stopped": session.stop()}
         if method == "POST" and path == "/api/background":
             session.keep_in_background()
+            return {"ok": True}
+        if method == "POST" and path == "/api/real":
+            session.run_for_real()
+            return {"ok": True}
+        if method == "POST" and path == "/api/back":
+            session.back_to_form()
             return {"ok": True}
         if method == "POST" and path == "/api/again":
             session.again()

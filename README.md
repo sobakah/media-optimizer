@@ -74,7 +74,7 @@ python3 -m pip install --user send2trash Pillow   # once
 ## Usage
 
 ```bash
-media-optimizer -n ~/Pictures                      # preview, writes nothing
+media-optimizer -n ~/Pictures                      # preview, writes nothing; then offers the real run
 media-optimizer ~/Pictures                         # in place
 media-optimizer ~/Pictures /mnt/archive --delete   # target dir, trash originals
 
@@ -123,7 +123,7 @@ Options that behave the same everywhere:
 | `--results <file>` | the run's numbers as JSON when it ends (see [Results for other programs](#results-for-other-programs)) |
 | `--hold` / `--no-hold` | keep the window open at the end |
 | `-y, --yes` | no questions, settings as given |
-| `-n, --dry-run` | preview only |
+| `-n, --dry-run` | preview only; with questions allowed (no `-y`), it then offers the same run for real |
 
 ## The stages
 
@@ -388,6 +388,10 @@ over (keepbest): `--no-browser` only prints the address
 `--return-url URL` (a page on this computer) and `--return-name NAME` turn
 the last button into "Back to NAME". `-n` and `--reset` preset the dry run
 and "Start over".
+
+After a preview the page offers **Run it for real**, with the settings and
+folders the preview used, and **Change settings or folder**, which goes back
+to the form with those values.
 
 **App menu:** `media-optimizer --install-desktop-entry` adds media-optimizer
 to the app menu of GNOME, KDE and other freedesktop.org desktops

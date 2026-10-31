@@ -511,19 +511,23 @@ def _run_full(args) -> int:
     source, output = _dirs(args)
     first = True
     check = None
+    follow_up = None
     while True:
-        s = _settings(args, folder_choice=first)
-        s.validate()
-        if first and _checks_for_updates(args, s):
-            check = _UpdateCheck()
-            if check.offered is not None:
-                _offer_update(check.offered, args.yes)
-        req = orchestrator.Request(settings=s, source=source if first else None,
-                                   output=output if first else None,
-                                   dry_run=args.dry_run, assume_yes=args.yes, reset=args.reset and first,
-                                   call=f"{NAME} {shlex.join(sys.argv[1:])}")
+        req = follow_up
+        if req is None:
+            s = _settings(args, folder_choice=first)
+            s.validate()
+            if first and _checks_for_updates(args, s):
+                check = _UpdateCheck()
+                if check.offered is not None:
+                    _offer_update(check.offered, args.yes)
+            req = orchestrator.Request(settings=s, source=source if first else None,
+                                       output=output if first else None,
+                                       dry_run=args.dry_run, assume_yes=args.yes, reset=args.reset and first,
+                                       call=f"{NAME} {shlex.join(sys.argv[1:])}")
         rc, again = orchestrator.run(req)
-        if not again:
+        follow_up = req.then
+        if not again and follow_up is None:
             if check is not None:
                 check.report()
             return rc

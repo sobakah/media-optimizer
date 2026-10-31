@@ -490,3 +490,12 @@ top to bottom, and keepbest shows the run's numbers next to its own.
 | A stage without a source says how to reach a folder of that name | `media-optimizer -n images` next to a folder `images` means the images stage and stopped with "No source directory given" |
 | The page has a new look, shared with keepbest, lyrembed and cdimport | libadwaita's design language, as in picktag, so the programs that work together look related: a header with the steps in the middle (an icon for each), a purple accent a shade darker than libadwaita's for 6.4:1 with white, switches, softer buttons with icons, floating messages |
 | A small logo for the header and the browser tab | The full icon can't be read there; it stays in the app menu and appears when a run has finished |
+
+---
+
+## Unreleased
+
+| Change | Why |
+|---|---|
+| After a preview the page offers *Run it for real* with the same settings and folders, and *Change settings or folder*, which keeps them | Only *Process another folder* led on, and it went back to the form without what the preview had run with, so a real run could differ from the preview |
+| The terminal asks "Run this for real now, with the same settings?" after a preview | "Another directory" asked everything again and stayed a preview |

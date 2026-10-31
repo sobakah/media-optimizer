@@ -194,6 +194,10 @@ Breaking any of these has caused real data loss or silent corruption before.
   environment beats the config file and inherited variables), reads the
   saved state with `orchestrator._pick_state`, and folds the events into a
   small state (`web.Progress`) instead of sending every event to the page.
+  The form's values exist only in the run they started (`Session._last`):
+  a preview's real run (`run_for_real`) and the way back to the form
+  (`back_to_form`) take them from there. In the terminal `orchestrator.run`
+  leaves the real run in `Request.then` (`same_settings`: nothing asked again).
   A saved state needs an explicit choice (resume or `--reset`): with `-y`
   the child would resume on its own. When the page goes away during a run,
   the run gets Ctrl+C (130, state saved) unless "Keep running in the

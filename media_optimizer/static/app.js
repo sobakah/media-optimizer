@@ -486,14 +486,23 @@ const ENDINGS = { 0: 'The run has finished.', 1: 'The run could not start.', 2: 
                   130: 'The run was stopped. Its progress is saved: the next start offers to resume it.',
                   255: 'The run stopped: an encoder vanished.' };
 
-function Finished({ state, onAgain, onClose }) {
+// After a preview the next step is usually the same run for real, with what
+// the preview ran with; the form holds those values too, to change them first.
+function Finished({ state, onAgain, onClose, onReal, onBack }) {
+  const real = state.realRun;
+  const leave = state.returnUrl ? `Back to ${state.returnName}` : 'Close';
   return html`<section class="section finished status">
     <img class="status-icon" src="/static/icon.svg" alt="" />
-    <h1>${ENDINGS[state.code] || `The run ended with code ${state.code}.`}</h1>
-    ${state.returnUrl && ran(state.progress) && html`<p class="muted">${state.returnName} shows these results next to its own.</p>`}
+    <h1>${real ? 'The preview has finished.' : ENDINGS[state.code] || `The run ended with code ${state.code}.`}</h1>
+    ${real && html`<p class="muted">Nothing was changed. A real run uses the same settings and folders${
+      real.target ? `: the results go to ${real.target}` : ''}. ${real.deletes
+      ? 'Originals go to the trash once their result is verified.' : 'The originals are kept.'}</p>`}
+    ${!real && state.returnUrl && ran(state.progress) && html`<p class="muted">${state.returnName} shows these results next to its own.</p>`}
     <div class="row">
-      ${!state.returnUrl && html`<button class="btn" onClick=${onAgain}><${Icon} name="folder" /> Process another folder</button>`}
-      <button class="btn btn-primary" onClick=${onClose}><${Icon} name=${state.returnUrl ? 'left' : 'check'} /> ${state.returnUrl ? `Back to ${state.returnName}` : 'Close'}</button>
+      ${real && html`<button class="btn btn-primary" onClick=${onReal}><${Icon} name="check" /> Run it for real</button>
+        <button class="btn" onClick=${onBack}><${Icon} name="settings" /> Change settings or folder</button>`}
+      ${!real && !state.returnUrl && html`<button class="btn" onClick=${onAgain}><${Icon} name="folder" /> Process another folder</button>`}
+      <button class=${'btn' + (real ? '' : ' btn-primary')} onClick=${onClose}><${Icon} name=${state.returnUrl ? 'left' : 'check'} /> ${leave}</button>
     </div>
   </section>`;
 }
@@ -598,6 +607,7 @@ function App() {
   const phase = state && state.phase;
   useEffect(() => {
     if (phase === 'setup') api('/setup').then(setSetup).catch((err) => setError(err.message));
+    else setSetup(null);        // or the old form comes back: it reads its values once
   }, [phase]);
 
   // While a run goes on, the browser asks before the tab closes (closing it
@@ -643,7 +653,10 @@ function App() {
   const keepRunning = async () => {
     try { await api('/background', {}); } catch (err) { setError(err.message); }
   };
-  const again = async () => { try { await api('/again', {}); } catch (err) { setError(err.message); } };
+  const post = (path) => async () => { try { await api(path, {}); setError(''); } catch (err) { setError(err.message); } };
+  const again = post('/again');
+  const real = async () => { setTab('progress'); await post('/real')(); };
+  const back = post('/back');
   const close = async () => {
     try { await api('/quit', {}); } catch (err) { setError(err.message); return; }
     if (state.returnUrl) location.href = state.returnUrl;
@@ -678,7 +691,7 @@ function App() {
       ${phase === 'setup' && (setup ? html`<${SetupView} key=${setup.folder.source + '|' + setup.folder.target}
         setup=${setup} onSetup=${setSetup} onError=${setError} />` : html`<p class="muted">Looking at the folder…</p>`)}
       ${phase !== 'setup' && state.progress && html`<${RunView} state=${state} log=${log} tab=${tab} />`}
-      ${phase === 'finished' && html`<${Finished} state=${state} onAgain=${again} onClose=${close} />`}
+      ${phase === 'finished' && html`<${Finished} state=${state} onAgain=${again} onClose=${close} onReal=${real} onBack=${back} />`}
     </main>
     ${error && !closed && html`<div class="toasts"><div class="toast toast-error" role="alert"><span>${error}</span></div></div>`}
     <div class="overlay" hidden=${!closed}><div class="card status">
