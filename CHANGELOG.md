@@ -486,3 +486,4 @@ top to bottom, and keepbest shows the run's numbers next to its own.
 | Change | Why |
 |---|---|
 | On the page, another folder starts without the folder choice given with the first one | keepbest's choice (or `--exclude-folder`) stayed for a folder chosen with *Use these folders* or *Process another folder*, where `.` or a folder of the same name mean something else. The terminal's "another directory" already dropped it |
+| The journal writes no event for a file whose size and time can't be read | The format has integers there, and picktag matches files by them: `null` broke the format and the event couldn't be used anyway |

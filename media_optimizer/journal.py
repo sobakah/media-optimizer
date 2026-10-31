@@ -8,7 +8,8 @@ README lists the events and fields.
 
 RULES
   - An event is written only after its action succeeded on disk, never in
-    a dry run, and never for discarded results, skips or failures.
+    a dry run, and never for discarded results, skips or failures. A file
+    whose size and mtime can't be read gets none: readers match by them.
   - Append only, never truncated or rotated: readers remember a byte offset.
   - Each line is one os.write under flock: two runs (or keepbest) may write
     at the same time; the lock also keeps this process's threads apart.
@@ -82,15 +83,16 @@ class Journal:
                   *, salvaged: bool = False, suspect: bool = False) -> None:
         if self.path is None:
             return
-        src_size, src_mtime = before if before is not None else (None, None)
-        dest_size, dest_mtime = _stat(dest) or (None, None)
+        after = _stat(dest)
+        if before is None or after is None:
+            return
         extra = {}
         if salvaged:
             extra["salvaged"] = True
         if suspect:
             extra["suspect"] = True
-        self._write("converted", stage=stage, src=_path(src), src_size=src_size, src_mtime_ns=src_mtime,
-                    dest=_path(dest), dest_size=dest_size, dest_mtime_ns=dest_mtime, lossless=lossless,
+        self._write("converted", stage=stage, src=_path(src), src_size=before[0], src_mtime_ns=before[1],
+                    dest=_path(dest), dest_size=after[0], dest_mtime_ns=after[1], lossless=lossless,
                     **extra)
 
     def renamed(self, src: Path, dest: Path, reason: str) -> None:
@@ -99,21 +101,23 @@ class Journal:
         the file had before."""
         if self.path is None:
             return
-        size, mtime = _stat(dest) or (None, None)
-        self._write("renamed", src=_path(src), dest=_path(dest), size=size, mtime_ns=mtime, reason=reason)
+        state = _stat(dest)
+        if state is not None:
+            self._write("renamed", src=_path(src), dest=_path(dest), size=state[0], mtime_ns=state[1], reason=reason)
 
     def copied(self, src: Path, dest: Path, reason: str) -> None:
+        """Size and mtime are the source's: picktag finds the file by them."""
         if self.path is None:
             return
-        size, mtime = _stat(src) or (None, None)
-        self._write("copied", src=_path(src), dest=_path(dest), size=size, mtime_ns=mtime, reason=reason)
+        state = _stat(src)
+        if state is not None:
+            self._write("copied", src=_path(src), dest=_path(dest), size=state[0], mtime_ns=state[1], reason=reason)
 
     def removed(self, path: Path, before: Snapshot | None, *, how: str, reason: str,
                 kept: Path | None) -> None:
-        if self.path is None:
+        if self.path is None or before is None:
             return
-        size, mtime = before if before is not None else (None, None)
-        self._write("removed", path=_path(path), size=size, mtime_ns=mtime, how=how, reason=reason,
+        self._write("removed", path=_path(path), size=before[0], mtime_ns=before[1], how=how, reason=reason,
                     kept=_path(kept) if kept is not None else None)
 
     # --- writing ---------------------------------------------------------------------

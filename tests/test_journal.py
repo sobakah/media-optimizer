@@ -20,6 +20,7 @@ import pytest
 
 from conftest import PYDIR, check_journal, wait_running
 from media_optimizer import cache, media, safety, ui
+from media_optimizer import journal as journal_mod
 from media_optimizer.stages.images import ImageStage
 
 FAST = ["--encoder", "cpu", "--min-size", "0", "--no-probe", "--preset", "ultrafast"]
@@ -138,6 +139,23 @@ def test_take_over_copies_in_target_mode(folder, main, tmp_path):
     assert (copied["size"], copied["mtime_ns"]) == _snap(d / "isgif.png") and copied["reason"] == "take_over"
     assert not [r for r in recs if r["event"] in ("renamed", "removed")]
     assert recs[0]["target"] == _c(o)
+
+
+def test_a_file_that_cannot_be_read_gets_no_event(tmp_path):
+    """Sizes and times are integers in the contract, and picktag matches by
+    them: an event without them (a stat that failed) can't be used anyway."""
+    log = tmp_path / "journal.jsonl"
+    there, gone = tmp_path / "there.png", tmp_path / "gone.png"
+    there.write_bytes(b"x")
+    j = journal_mod.Journal()
+    j.start(str(log), dry_run=False, source=tmp_path, target=None)
+    j.converted("img", there, None, there, True)
+    j.converted("img", there, (1, 2), gone, True)
+    j.renamed(there, gone, "extension")
+    j.copied(gone, there, "take_over")
+    j.removed(there, None, how="trash", reason="converted", kept=there)
+    j.end(0)
+    assert [r["event"] for r in check_journal(log)] == ["run_start", "run_end"]
 
 
 def test_preflight_rename_comes_before_the_conversion(folder, run_cli, tmp_path):
