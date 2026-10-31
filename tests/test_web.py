@@ -254,6 +254,34 @@ def test_start_checks_the_values_and_the_resume_choice(folder, tmp_path):
     assert session.phase == "setup" and session.child is None
 
 
+def _form(setup: dict) -> dict:
+    """The folder choice as the form gets it: (value, where it came from)."""
+    fields = {f["name"]: f for g in setup["schema"]["groups"] for f in g["fields"]}
+    return {n: (fields[n]["value"], fields[n].get("origin")) for n in ("subfolders", "exclude_folders")}
+
+
+def test_the_folder_choice_stays_with_its_folder(folder, tmp_path, monkeypatch):
+    """keepbest passes its choice in the environment. "Use these folders" on
+    the form silently kept it for the next folder, where "skipme" or "." mean
+    something else; the terminal's "another directory" drops it."""
+    from media_optimizer import cli
+    a, b = folder("fa", "photo.jpg"), folder("fb", "photo.jpg")
+    monkeypatch.setenv("MO_SUBFOLDERS", "include")
+    monkeypatch.setenv("MO_EXCLUDE_FOLDERS", '[".", "skipme"]')
+    config = tmp_path / "config.json"
+    config.write_text('{"subfolders": "exclude"}')             # the config stays, as in the terminal
+    sessions = []
+    monkeypatch.setattr(web, "serve", lambda session, **kw: sessions.append(session) or 0)
+    cli._run_web(cli.build_parser().parse_args(
+        ["run", str(a), "--web", "--no-browser", "--exclude-folder", "cli", "--config", str(config)]))
+    session = sessions[0]
+    given = _form(session.setup())
+    assert given["exclude_folders"] == (["cli"], "cli") and given["subfolders"][0] == "include"
+    assert _form(session.set_folder(str(b), ""))["exclude_folders"][0] == []
+    assert _form(session.setup())["subfolders"][0] == "exclude"
+    assert _form(session.set_folder(str(a), "")) == given       # back: it is that folder's again
+
+
 def test_a_run_from_the_page(folder, tmp_path):
     """The form's values reach the child through MO_*, the folder choice
     included; the progress and the colourless log come back."""

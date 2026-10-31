@@ -36,6 +36,10 @@ CPU_PRESETS = ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium",
                "slow", "slower", "veryslow", "placebo")
 
 
+# The folder choice belongs to the directory it was made for (keepbest passes
+# its own in the environment); another directory starts without it.
+FOLDER_CHOICE = ("subfolders", "exclude_folders")
+
 # Renamed settings: the short-clip stage was once called "avif" although
 # it can write WebP. Old names give a clear message instead of "unknown key",
 # and a saved resume state with old names still loads.

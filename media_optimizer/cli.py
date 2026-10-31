@@ -22,7 +22,7 @@ import threading
 from pathlib import Path
 
 from . import files, folders, gpu, proc, selfupdate, ui
-from .config import (NAME, RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RULES, Settings,
+from .config import (FOLDER_CHOICE, NAME, RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RULES, Settings,
                      SettingsError, __version__, load_settings, parse_value, state_dir)
 from .events import events
 from .journal import journal
@@ -265,11 +265,6 @@ def install_signal_handlers() -> None:
         signal.signal(signal.SIGHUP, interrupt)
 
 
-# The folder choice belongs to the directory it was made for (keepbest passes
-# its own in the environment); "process another directory" starts without it.
-FOLDER_CHOICE = ("subfolders", "exclude_folders")
-
-
 def _settings(args, *, folder_choice: bool = True, origins: dict[str, str] | None = None) -> Settings:
     """origins, when given, receives where each value came from (config,
     env, cli), for the browser page's presets."""
@@ -496,10 +491,13 @@ def _run_web(args) -> int:
     source, output = _dirs(args)
     # Without a folder: the current one, by the rule of the terminal's question.
     source = source or files.suggested_source() or None
+    other_origins: dict[str, str] = {}
+    other, _, _ = load_settings(args.config, ignore_env=FOLDER_CHOICE, origins=other_origins)
     session = web.Session(s, origins, Path(source).expanduser().absolute() if source else None,
                           Path(output).expanduser().absolute() if output else None,
                           (args.return_url, args.return_name) if args.return_url else None,
-                          dry_run=args.dry_run, reset=args.reset, results=args.results)
+                          dry_run=args.dry_run, reset=args.reset, results=args.results,
+                          elsewhere=(other, other_origins))
     return web.serve(session, open_browser=not args.no_browser, check_updates=_checks_for_updates(args, s))
 
 

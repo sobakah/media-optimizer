@@ -48,7 +48,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import folders, questions, selfupdate
 from .results import Tally
-from .config import NAME, PROJECT_URL, RC_OK, RULES, Settings, __version__, check_value, state_dir, to_env
+from .config import (FOLDER_CHOICE, NAME, PROJECT_URL, RC_OK, RULES, Settings, __version__, check_value, state_dir,
+                     to_env)
 from .config import _describe as describe
 
 log = logging.getLogger(__name__)
@@ -198,7 +199,7 @@ class Session:
 
     def __init__(self, settings: Settings, origins: dict[str, str], source: Path | None, target: Path | None,
                  back: tuple[str, str] | None = None, *, dry_run: bool = False, reset: bool = False,
-                 results: Path | None = None) -> None:
+                 results: Path | None = None, elsewhere: tuple[Settings, dict[str, str]] | None = None) -> None:
         self.settings = settings
         self.origins = origins
         self.source = source
@@ -207,6 +208,11 @@ class Session:
         self.dry_run = dry_run            # presets of the form, from -n and --reset
         self.reset = reset
         self.results = results            # --results: the run writes it for whoever started us
+        # The folder choice given with the first folder, and the one for any other (_folder_choice).
+        self._first_source = source
+        self._choices = None if elsewhere is None else {
+            True: {n: (getattr(settings, n), origins.get(n)) for n in FOLDER_CHOICE},
+            False: {n: (getattr(elsewhere[0], n), elsewhere[1].get(n)) for n in FOLDER_CHOICE}}
         self.phase = "setup"              # setup, running, finished
         self.code: int | None = None      # the exit code of the last run
         self.child: subprocess.Popen | None = None
@@ -371,8 +377,22 @@ class Session:
                 raise ApiError(409, "A run is going on.")
         self.source = Path(source).expanduser().absolute() if source.strip() else None
         self.target = Path(target).expanduser().absolute() if target.strip() else None
+        self._folder_choice()
         self.bump()
         return self.setup()
+
+    def _folder_choice(self) -> None:
+        """The folder choice belongs to the folder it was given with (keepbest's,
+        the command line's); another one starts without it, as the terminal's
+        "process another directory" does. The config file's stays for all."""
+        if self._choices is None or self._first_source is None:
+            return
+        for name, (value, origin) in self._choices[self.source == self._first_source].items():
+            setattr(self.settings, name, value)
+            if origin is None:
+                self.origins.pop(name, None)
+            else:
+                self.origins[name] = origin
 
     # running
     def start(self, body: dict) -> None:
