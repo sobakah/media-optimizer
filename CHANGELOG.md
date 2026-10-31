@@ -481,7 +481,7 @@ top to bottom, and keepbest shows the run's numbers next to its own.
 
 ---
 
-## Unreleased
+## 1.2.0 – A new look
 
 | Change | Why |
 |---|---|
