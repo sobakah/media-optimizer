@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- icon.svg for small places (the header, the browser tab): its film frame being squeezed, alone -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9141ac"/><stop offset="1" stop-color="#6e3589"/></linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="url(#tile)"/>
+  <rect x="9.5" y="9.5" width="13" height="13" rx="2.2" fill="#ffffff"/>
+  <g fill="#7b3a96">
+    <rect x="11" y="11.5" width="1.8" height="2" rx=".4"/><rect x="11" y="15" width="1.8" height="2" rx=".4"/><rect x="11" y="18.5" width="1.8" height="2" rx=".4"/>
+    <rect x="19.2" y="11.5" width="1.8" height="2" rx=".4"/><rect x="19.2" y="15" width="1.8" height="2" rx=".4"/><rect x="19.2" y="18.5" width="1.8" height="2" rx=".4"/>
+  </g>
+  <g fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.8 3.8 L7.6 7.6 M7.6 3.9 V7.6 H3.9"/>
+    <path d="M28.2 28.2 L24.4 24.4 M24.4 28.1 V24.4 H28.1"/>
+  </g>
+</svg>

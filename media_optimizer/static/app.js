@@ -2,6 +2,7 @@
 // /api/setup for the form, /api/state for the run. The run itself is the real
 // program (run -y); the page only starts it, shows it and can stop it.
 import { html, render, useState, useEffect, useRef } from '/static/vendor/preact-htm.js';
+import { Icon } from '/static/icons.js';
 
 async function api(path, body) {
   const options = {};
@@ -23,6 +24,15 @@ async function api(path, body) {
     throw error;
   }
   return data;
+}
+
+// An icon of the shared set, or the film strip, which only the two media programs need.
+function StepIcon({ name, size = 14 }) {
+  if (name !== 'film') return html`<${Icon} name=${name} size=${size} />`;
+  return html`<svg width=${size} height=${size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect>
+    <path d="M7 3v18"></path><path d="M17 3v18"></path><path d="M3 12h18"></path><path d="M3 7.5h4"></path>
+    <path d="M3 16.5h4"></path><path d="M17 7.5h4"></path><path d="M17 16.5h4"></path></svg>`;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -91,8 +101,8 @@ function Field({ field, value, onChange, label, error }) {
   let input;
   if (field.kind === 'bool') {
     return html`<div class=${'field check' + (error ? ' invalid' : '')}>
-      <label><input type="checkbox" id=${id} checked=${!!value} onChange=${(e) => onChange(e.target.checked)} />
-        <span>${title}</span></label>${origin}
+      <label><span>${title}</span>
+        <input class="switch" type="checkbox" id=${id} checked=${!!value} onChange=${(e) => onChange(e.target.checked)} /></label>${origin}
       ${!label && html`<p class="doc">${field.doc}</p>`}${error && html`<p class="error">${error}</p>`}
     </div>`;
   }
@@ -178,10 +188,10 @@ function FolderTree({ folder, excluded, setExcluded, cached, useCache }) {
     <h2>Folders</h2>
     <p class="muted small">A folder's checkbox covers its own files. Switching a folder switches the folders below it too.</p>
     ${total > 0 && (useCache
-      ? html`<p class="note">${total} file${total === 1 ? ' was' : 's were'} handled by earlier runs and ${total === 1 ? 'is' : 'are'} skipped
+      ? html`<p class="note note-info">${total} file${total === 1 ? ' was' : 's were'} handled by earlier runs and ${total === 1 ? 'is' : 'are'} skipped
           (marked below): the caches keep their result while a file and the settings that decided it stay the same.
           To check them again, choose <i>Scan all files again</i> below.</p>`
-      : html`<p class="note">The caches are ignored for this run: the ${total} file${total === 1 ? '' : 's'} earlier runs handled ${total === 1 ? 'is' : 'are'} checked again.</p>`)}
+      : html`<p class="note note-info">The caches are ignored for this run: the ${total} file${total === 1 ? '' : 's'} earlier runs handled ${total === 1 ? 'is' : 'are'} checked again.</p>`)}
     <ul class="tree">
       <li class=${allDone('.', ri, rv) ? 'done-before' : ''}><label><input type="checkbox" checked=${!excluded.has('.')} onChange=${() => toggle('.', false)} />
         <span class="mono">${baseName(folder.source)}</span> <span class="muted">(directly in it${ri || rv ? ': ' : ''}</span>${ri || rv ? amount('.', ri, rv) : ''}<span class="muted">)</span></label></li>
@@ -191,7 +201,7 @@ function FolderTree({ folder, excluded, setExcluded, cached, useCache }) {
         return html`<li class=${allDone(e.rel, e.images, e.videos) ? 'done-before' : ''} style=${`padding-left:${depth * 20}px`}>
           <label><input type="checkbox" checked=${!excluded.has(e.rel)} onChange=${() => toggle(e.rel, true)} />
             <span class="mono">${e.rel.split('/').pop()}</span> ${amount(e.rel, e.images, e.videos)}</label>
-          ${kids > 0 && html` <button class="link" onClick=${() => toggle(e.rel, false)}>only this folder</button>`}
+          ${kids > 0 && html` <button class="btn-link" onClick=${() => toggle(e.rel, false)}>only this folder</button>`}
         </li>`;
       })}
     </ul>
@@ -274,7 +284,7 @@ function SetupView({ setup, onSetup, onError }) {
         <input type="text" id="target" class="mono" placeholder="the same folder (in place)" value=${target}
           onInput=${(e) => setTarget(e.target.value)} /></div>
       <div class="row">
-        <button class="btn" disabled=${busy || (source === folder.source && target === folder.target)} onClick=${useFolder}>Use these folders</button>
+        <button class="btn" disabled=${busy || (source === folder.source && target === folder.target)} onClick=${useFolder}><${Icon} name="folder" /> Use these folders</button>
       </div>
       ${folder.error && html`<p class="error">${folder.error}</p>`}
       ${folder.busy && html`<p class="error">${folder.busy}</p>`}
@@ -282,7 +292,7 @@ function SetupView({ setup, onSetup, onError }) {
         ? 'With a target folder the source is never changed.'
         : deleting ? 'In place: originals go to the trash once their result is verified.'
                    : 'In place: results are written next to the originals, which are kept.'}</p>`}
-      ${folder.notes.map((n) => html`<p class="note">${n}</p>`)}
+      ${folder.notes.map((n) => html`<p class="note note-warn">${n}</p>`)}
     </section>
     ${folder.resume && html`<section class="section resume">
       <h2>An interrupted run of this folder</h2>
@@ -315,11 +325,11 @@ function SetupView({ setup, onSetup, onError }) {
       </details>
     </fieldset>
     <section class="section start">
-      <label class="check"><input type="checkbox" checked=${dryRun} onChange=${(e) => setDryRun(e.target.checked)} />
-        Preview only (dry run): show what would happen, change nothing</label>
-      ${folder.resume && mode === '' && html`<p class="note">Choose above whether to resume or start over.</p>`}
+      <label class="check"><span>Preview only (dry run): show what would happen, change nothing</span>
+        <input class="switch" type="checkbox" checked=${dryRun} onChange=${(e) => setDryRun(e.target.checked)} /></label>
+      ${folder.resume && mode === '' && html`<p class="note note-warn">Choose above whether to resume or start over.</p>`}
       <div class="row"><button class="btn btn-primary" disabled=${busy || !ready} onClick=${start}>
-        ${dryRun ? 'Start the preview' : mode === 'resume' ? 'Resume the run' : 'Start'}</button></div>
+        <${Icon} name=${dryRun ? 'search' : 'check'} /> ${dryRun ? 'Start the preview' : mode === 'resume' ? 'Resume the run' : 'Start'}</button></div>
     </section>`;
 }
 
@@ -328,6 +338,7 @@ function SetupView({ setup, onSetup, onError }) {
 // section per stage, then the summary and what to do next. A finished stage
 // folds its files away and keeps only what needs a look in view, so the end
 // of a long run is near its summary.
+const STAGE_ICONS = { images: 'image', gifs: 'layers', clips: 'film', video: 'film', verify: 'check' };
 const OUTCOME_LABELS = { converted: 'converted', skipped: 'skipped', cached: 'known from earlier runs', failed: 'failed',
                          discarded: 'discarded (larger)', conflict: 'name conflict', dry: 'would be converted',
                          finished: 'finished' };
@@ -363,7 +374,8 @@ function StageCard({ stage, encodes, messages, current }) {
   const old = stage.state === 'done' && !current;
   const files = stage.files || [];
   return html`<section class=${'section stage ' + stage.state + (stage.code ? ' bad' : '') + (old ? ' old' : '')}>
-    <div class="row between"><h2>${stage.title}</h2><span class="muted small">${running
+    <div class="spread"><h2><span class="dot"><${StepIcon} name=${STAGE_ICONS[stage.stage] || 'right'} /></span>${stage.title}</h2>
+      <span class="muted small row">${running
       ? html`<span class="spinner" aria-hidden="true"></span> ` : ''}${state}</span></div>
     ${running && stage.total !== null && html`<div class="bar" role="progressbar" aria-valuenow=${pct || 0}
       aria-valuemin="0" aria-valuemax="100"><div style=${`width:${pct || 0}%`}></div></div>
@@ -408,7 +420,7 @@ function Summary({ progress, code }) {
   tiles.push(['Failed', t.failed]);
   if (elapsed >= 1) tiles.push(['Time', duration(Math.round(elapsed))]);
   return html`<section class="section">
-    <h2>${dry ? 'Summary – preview' : code === 130 ? 'Summary – until it was stopped' : 'Summary'}</h2>
+    <h2><span class="dot"><${Icon} name="flag" size=${14} /></span>${dry ? 'Summary – preview' : code === 130 ? 'Summary – until it was stopped' : 'Summary'}</h2>
     <dl class="tiles">${tiles.map(([label, value, sub]) => html`<div class="tile" key=${label}><dt>${label}</dt><dd>${value}</dd>
       ${sub && html`<dd class="sub">${sub}</dd>`}</div>`)}</dl>
     ${sum('cached') > 0 && html`<p class="small muted">${plural(sum('cached'), 'file')} of the skipped ${sum('cached') === 1
@@ -442,8 +454,8 @@ function RunView({ state, log, tab }) {
   const running = state.phase === 'running';
   const early = p.messages.filter((m) => !m.stage);
   return html`
-    ${p.dryRun && html`<p class="note">Preview only: nothing is written or deleted.</p>`}
-    ${running && state.background && html`<p class="note">Keeps running when you close this tab. A desktop
+    ${p.dryRun && html`<p class="note note-info">Preview only: nothing is written or deleted.</p>`}
+    ${running && state.background && html`<p class="note note-info">Keeps running when you close this tab. A desktop
       notification says when it is done; its "Open" button brings this page back.</p>`}
     ${tab === 'log' ? html`<${LogView} lines=${log.lines} partial=${log.partial} />` : html`
       ${early.length > 0 && html`<section class="section"><h2>Before the stages</h2><${Messages} messages=${early} /></section>`}
@@ -452,15 +464,21 @@ function RunView({ state, log, tab }) {
       ${state.phase === 'finished' && ran(p) && html`<${Summary} progress=${p} code=${state.code} />`}`}`;
 }
 
-// The stages as steps in the top bar, as keepbest's.
+// The workflow in the top bar: the settings, the stages, the summary, as
+// keepbest's. The form doesn't know the run's stages yet: all of them.
+const STAGES = [['images', 'Images'], ['gifs', 'GIFs'], ['clips', 'Short clips'], ['video', 'Videos']];
+
 function Steps({ state }) {
   const p = state.progress;
   const finished = state.phase === 'finished';
-  const steps = p.stages.map((s) => [s.stage, s.title,
-    s.state === 'running' && !finished ? 'now' : s.state === 'done' || s.state === 'earlier' ? 'done' : '']);
-  steps.push(['summary', 'Summary', finished ? 'now' : '']);
-  return html`<ol class="steps" aria-label="Progress">${steps.map(([id, name, cls]) => html`<li key=${id}
-    class=${'step ' + cls} aria-current=${cls === 'now' ? 'step' : undefined}>${name}</li>`)}</ol>`;
+  const setup = state.phase === 'setup' || !p;
+  const stages = setup ? STAGES.map(([id, title]) => [id, title, ''])
+    : p.stages.map((s) => [s.stage, s.title, s.state === 'running' && !finished ? 'now' : s.state === 'done' || s.state === 'earlier' ? 'done' : '']);
+  const steps = [['settings', 'Settings', setup ? 'now' : 'done'], ...stages, ['summary', 'Summary', finished ? 'now' : '']];
+  return html`<ol class="steps" aria-label="Workflow">${steps.map(([id, name, cls]) => html`<li key=${id}
+    class=${'step ' + cls} aria-current=${cls === 'now' ? 'step' : undefined}><span class="step-go">
+    <span class="dot"><${StepIcon} name=${cls === 'done' ? 'check' : id === 'settings' ? 'settings' : id === 'summary' ? 'flag' : STAGE_ICONS[id] || 'right'} /></span>
+    <span class="step-name">${name}</span></span></li>`)}</ol>`;
 }
 
 const ENDINGS = { 0: 'The run has finished.', 1: 'The run could not start.', 2: 'A setting was not valid.',
@@ -469,12 +487,13 @@ const ENDINGS = { 0: 'The run has finished.', 1: 'The run could not start.', 2: 
                   255: 'The run stopped: an encoder vanished.' };
 
 function Finished({ state, onAgain, onClose }) {
-  return html`<section class="section finished">
-    <h2>${ENDINGS[state.code] || `The run ended with code ${state.code}.`}</h2>
+  return html`<section class="section finished status">
+    <img class="status-icon" src="/static/icon.svg" alt="" />
+    <h1>${ENDINGS[state.code] || `The run ended with code ${state.code}.`}</h1>
     ${state.returnUrl && ran(state.progress) && html`<p class="muted">${state.returnName} shows these results next to its own.</p>`}
     <div class="row">
-      ${!state.returnUrl && html`<button class="btn" onClick=${onAgain}>Process another folder</button>`}
-      <button class="btn btn-primary" onClick=${onClose}>${state.returnUrl ? `Back to ${state.returnName}` : 'Close'}</button>
+      ${!state.returnUrl && html`<button class="btn" onClick=${onAgain}><${Icon} name="folder" /> Process another folder</button>`}
+      <button class="btn btn-primary" onClick=${onClose}><${Icon} name=${state.returnUrl ? 'left' : 'check'} /> ${state.returnUrl ? `Back to ${state.returnName}` : 'Close'}</button>
     </div>
   </section>`;
 }
@@ -507,16 +526,16 @@ function UpdateNotice({ update, onError }) {
         : html`<span><b>media-optimizer ${version} is available</b> <span class="muted">(this is ${update.current})</span></span>`}
       ${update.installable && html`<button class="btn btn-small" disabled=${!update.ready || sending}
         title=${update.ready ? 'Install it with pipx, then media-optimizer starts again here' : where}
-        onClick=${install}>${failed ? 'Try again' : 'Update'}</button>`}
-      <a class="small" href=${update.notes} target="_blank" rel="noopener noreferrer">What's new</a>
+        onClick=${install}><${Icon} name="down" size=${14} /> ${failed ? 'Try again' : 'Update'}</button>`}
+      <a class="small" href=${update.notes} target="_blank" rel="noopener noreferrer">What's new <${Icon} name="link" size=${13} /></a>
       ${!failed && html`<button class="btn btn-small" onClick=${() => setHidden(true)}>Not now</button>`}
       ${update.installable && !update.ready && html`<span class="small muted">Update: when the run has finished</span>`}
     </div>
-    ${failed && html`<pre class="update-command">${update.output}</pre>
+    ${failed && html`<pre class="update-command mono">${update.output}</pre>
       <p class="small muted">All of pipx's output is in update.log in the state folder.</p>`}
     <details class="small" open=${failed}>
       <summary>${update.installable ? 'The command, to run it in a terminal' : 'How to update'}</summary>
-      <pre class="update-command">${update.command}</pre>
+      <pre class="update-command mono">${update.command}</pre>
     </details>
   </div>`;
 }
@@ -635,30 +654,38 @@ function App() {
   const running = phase === 'running';
   return html`
     <div class="top"><header class="topbar">
-      <span class="brand"><img src="/static/icon.svg" alt="" width="26" height="26" /> media-optimizer
-        <span class="version">${state.version}</span></span>
-      ${phase !== 'setup' && state.progress && html`<${Steps} state=${state} />`}
-      <span class="spacer"></span>
-      ${phase !== 'setup' && state.progress && html`<div class="segmented" role="tablist">
-        <button role="tab" aria-selected=${tab === 'progress'} class=${tab === 'progress' ? 'on' : ''} onClick=${() => setTab('progress')}>Progress</button>
-        <button role="tab" aria-selected=${tab === 'log'} class=${tab === 'log' ? 'on' : ''} onClick=${() => setTab('log')}>Log</button>
-      </div>`}
-      ${running && !state.background && html`<button class="btn btn-small" disabled=${state.stopping}
-        onClick=${keepRunning}>Keep running in the background</button>`}
-      ${running && html`<button class="btn btn-small btn-danger" disabled=${state.stopping} onClick=${stop}>
-        ${state.stopping ? 'Stopping…' : 'Stop'}</button>`}
-      ${phase === 'setup' && html`<button class="btn btn-small" onClick=${close}>${state.returnUrl ? `Back to ${state.returnName}` : 'Close'}</button>`}
+      <div><span class="brand"><img src="/static/logo.svg" alt="" width="28" height="28" />
+        <span class="brand-text"><span><span class="brand-name">media-optimizer</span> <span class="version">${state.version}</span></span>
+          ${state.source && html`<span class="brand-sub" title=${state.source}>${state.source}</span>`}</span></span></div>
+      <${Steps} state=${state} />
+      <div class="topbar-end">
+        ${phase !== 'setup' && state.progress && html`<div class="segmented" role="tablist">
+          <button role="tab" aria-selected=${tab === 'progress'} class=${tab === 'progress' ? 'on' : ''} title="Progress" aria-label="Progress"
+            onClick=${() => setTab('progress')}><${Icon} name="layers" /></button>
+          <button role="tab" aria-selected=${tab === 'log'} class=${tab === 'log' ? 'on' : ''} title="Log" aria-label="Log"
+            onClick=${() => setTab('log')}><${Icon} name="list" /></button>
+        </div>`}
+        ${running && !state.background && html`<button class="btn" disabled=${state.stopping} title="Keep running in the background"
+          onClick=${keepRunning}><${Icon} name="down" /><span class="btn-text">In the background</span></button>`}
+        ${running && html`<button class="btn btn-danger" disabled=${state.stopping} title="Stop the run" onClick=${stop}>
+          <${Icon} name="stop" /><span class="btn-text">${state.stopping ? 'Stopping…' : 'Stop'}</span></button>`}
+        ${phase === 'setup' && html`<button class="btn" title=${state.returnUrl ? `Back to ${state.returnName}` : 'Close media-optimizer'} onClick=${close}>
+          <${Icon} name=${state.returnUrl ? 'left' : 'power'} /><span class="btn-text">${state.returnUrl ? `Back to ${state.returnName}` : 'Close'}</span></button>`}
+      </div>
     </header>
     <${UpdateNotice} update=${state.update} onError=${setError} /></div>
-    <main>
+    <main class=${phase === 'setup' ? 'narrow' : ''}>
       ${phase === 'setup' && (setup ? html`<${SetupView} key=${setup.folder.source + '|' + setup.folder.target}
         setup=${setup} onSetup=${setSetup} onError=${setError} />` : html`<p class="muted">Looking at the folder…</p>`)}
       ${phase !== 'setup' && state.progress && html`<${RunView} state=${state} log=${log} tab=${tab} />`}
       ${phase === 'finished' && html`<${Finished} state=${state} onAgain=${again} onClose=${close} />`}
     </main>
-    ${error && !closed && html`<div class="toast" role="alert">${error}</div>`}
-    ${closed && html`<div class="overlay"><div class="section"><h2>media-optimizer has ended</h2>
-      <p class="muted">You can close this tab.</p></div></div>`}
+    ${error && !closed && html`<div class="toasts"><div class="toast toast-error" role="alert"><span>${error}</span></div></div>`}
+    <div class="overlay" hidden=${!closed}><div class="card status">
+      <img class="status-icon" src="/static/icon.svg" alt="" />
+      <h1>media-optimizer has ended</h1>
+      <p class="muted">You can close this tab.</p>
+    </div></div>
   `;
 }
 

@@ -60,7 +60,7 @@ _CONTENT_TYPES = {
     ".js": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".txt": "text/plain; charset=utf-8",
-    ".svg": "image/svg+xml",              # media-optimizer's own icon only
+    ".svg": "image/svg+xml",              # media-optimizer's own icon and logo only
 }
 _CSP = ("default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; "
         "frame-ancestors 'none'; form-action 'none'")

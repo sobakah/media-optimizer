@@ -52,7 +52,8 @@ events.py        --events FILE: the run's progress as JSON lines, for the browse
 results.py       --results FILE: the run's numbers at its end, for keepbest; Tally, the fold both use
 questions.py     the full run's questionnaire as data (terminal and page), the page's settings schema
 web.py           the browser page's server (--web): copied rules from cdimport/lyrembed
-static/          the page: app.js (Preact + htm, no build step), style.css, vendor/ with LICENSES.txt
+static/          the page: app.js (Preact + htm, no build step), style.css, base.css and icons.js
+                 (lyrembed's, see below), logo.svg, vendor/ with LICENSES.txt
 desktop.py       the app-menu entry (--install-desktop-entry), copied from keepbest and lyrembed
 notify.py        a desktop notification (notify-send with an "Open" button, else gdbus), copyable
 selfupdate.py    a newer release: git ls-remote tags (x.y or x.y.z), at every start in a thread (known: the last answer), pipx commands, restart (exec)
@@ -169,6 +170,18 @@ Breaking any of these has caused real data loss or silent corruption before.
   (`tests/test_web.py`): 127.0.0.1 only, the token-to-cookie redirect with
   the port in the cookie name, the Host and Origin checks, JSON-only POSTs,
   the CSP, static files only from `static/` with a fixed list of suffixes.
+  The look is lyrembed's, cdimport's and keepbest's, libadwaita's, which also
+  fits picktag: `static/base.css` and `static/icons.js` are copies of
+  lyrembed's, unchanged, like `vendor/` (compare with `diff`, change them
+  there and copy them back); only the purple accent and what only this page
+  has live in `style.css`. The header bar is program (the folder under it),
+  steps in the middle (icons, no numbers; the form shows all stages, a run
+  its own), actions. `logo.svg` is for the header and the browser tab, the
+  full `icon.svg` only at 112 px on status pages. What shows after the server
+  stopped is in the page from the start (`hidden`), or its icon is asked of a
+  server that is gone. Clicking through is a manual check: Playwright in a
+  venv outside the repo, `chromium.launch(channel="chrome")`, both
+  `color_scheme`s, 390 px wide with `scrollWidth` against `innerWidth`.
   The address line (`web.ADDRESS_LINE`) is read by keepbest with cdimport's
   `_HANDOFF` pattern: keep its wording. A new file under `static/` needs a
   pattern in `pyproject.toml`'s package-data (tested).
