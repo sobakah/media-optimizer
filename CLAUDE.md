@@ -123,7 +123,9 @@ Breaking any of these has caused real data loss or silent corruption before.
   `files.find_files`, which the target-side scans (verify, state files) use.
 - **The folder choice** (`subfolders`, `exclude_folders`) is settled by
   `folders.resolve` before the run state is saved, so a resumed run keeps it.
-  An excluded folder loses only its own files, never its subfolders.
+  An excluded folder loses only its own files, never its subfolders. It
+  belongs to the folder it was given with: another directory starts from the
+  config file alone (`config.FOLDER_CHOICE`; the page: `Session._folder_choice`).
 - **Caches** (`cache.py`): a stage remembers an outcome by returning
   `FileResult(..., cache="<outcome>")`; `BatchStage._guarded` looks entries up
   before `handle` and records them after it. Only outcomes that leave no
