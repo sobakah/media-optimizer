@@ -219,7 +219,12 @@ class ImageStage(BatchStage):
                 return self._unsupported(src, f"CMYK JPEG, {cmd[0]} cannot convert it")
             if info is not None and info.arithmetic and cmd[0] == "cjxl":
                 return self._unsupported(src, "arithmetic-coded JPEG, cjxl cannot convert it")
-            raise safety.Failed("JPEG could not be decoded (damaged or an unsupported variant)")
+            # A sound JPEG can still be refused: cjxl's lossless mode turned down
+            # progressive files that send DC in three steps, which read fine elsewhere.
+            if files.decodes(src):
+                raise safety.Failed(f"{cmd[0]} cannot convert this JPEG, but the file reads fine: "
+                                    "an unusual variant, not damage")
+            raise safety.Failed("JPEG is damaged, it could not be read to its end")
 
         # A PNG cjxl cannot handle: lossless WebP including metadata.
         if s.img_target == "jxl":

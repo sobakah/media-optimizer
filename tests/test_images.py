@@ -75,6 +75,15 @@ def test_jpeg_metadata_bit_exact(folder, tmp_path, run_cli):
     assert "Max" in _exif(d / "out" / "e.jxl", "-Artist"), "metadata readable without Brotli support"
 
 
+def test_a_sound_jpeg_the_encoder_refuses_is_not_called_damaged(folder, run_cli, stub):
+    d = folder("r4b", "a.jpg=photo.jpg", "t.jpg=truncated.jpg")
+    path = stub("cjxl", "exit 1\n")
+    out = run_cli("images", d, "--delete", "--force-delete", path=path)
+    assert out.rc == 3 and (d / "a.jpg").exists() and (d / "t.jpg").exists(), out
+    assert "cjxl cannot convert this JPEG, but the file reads fine: an unusual variant, not damage: 'a.jpg'" in out
+    assert "JPEG is damaged, it could not be read to its end: 't.jpg'" in out
+
+
 def test_cmyk_unsupported_truncated_failed(folder, run_cli):
     d = folder("r4", "c.jpg=cmyk.jpg", "t.jpg=truncated.jpg")
     out = run_cli("images", d, "--delete", "--force-delete")

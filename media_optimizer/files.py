@@ -285,6 +285,18 @@ class JpegInfo:
 _SOF = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
 
 
+def decodes(path: Path) -> bool:
+    """Pillow reads the whole picture: a truncated file does not pass."""
+    from PIL import Image
+
+    try:
+        with Image.open(path) as im:
+            im.load()
+    except (OSError, ValueError, SyntaxError):
+        return False
+    return True
+
+
 def jpeg_info(path: Path) -> JpegInfo | None:
     """Reads the frame header of a JPEG. None when there is none, e.g. a file
     that ends before it. Replaces ``file``'s "components 4" for CMYK."""
