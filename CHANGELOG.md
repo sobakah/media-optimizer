@@ -514,14 +514,14 @@ top to bottom, and keepbest shows the run's numbers next to its own.
 | The error for a JPEG that can't be converted says whether the file is damaged | "Could not be decoded (damaged or an unsupported variant)" also appeared for sound JPEGs that only cjxl's lossless mode refuses. Which of the two it is now gets checked, by reading the file with Pillow |
 | A preview on the page lists the files it would convert | It only gave their number. Each stage and the summary have a list to open, with every file, not only a stage's newest 50 |
 | *All settings* shows a switch not chosen yet as the mode decides | `delete_original` and `rename_inplace` read off there while the question above them read on |
-| Each stage on the page says why files were left as they are, with a count per reason and the files behind it | "746 skipped" didn't say whether they were too long, had sound or had failed the size check. The events now carry the reason for every stage, and the clip stage's real one instead of "not selected" |
 
 ---
 
-## Unreleased
+## 1.4.0 – Only the page asks, a folder picker, and AV1 that fits in memory
 
 | Change | Why |
 |---|---|
+| Each stage on the page says why files were left as they are, with a count per reason and the files behind it | "746 skipped" didn't say whether they were too long, had sound or had failed the size check. The events now carry the reason for every stage, and the clip stage's real one instead of "not selected" |
 | The page has a folder picker: *Browse* beside the source and the target, as in keepbest, and it opens by itself when no folder was given | Paths had to be typed or pasted, because a browser can't hand them out. The server lists the folders; the home folder, those above it and system folders can't be chosen as the source |
 | Changing the folder on the page keeps the settings changed on the form | The form was rebuilt from the saved values, and with a picker that happens far more often |
 | A clip's AVIF larger than the source is discarded at once: `avif_crf_retry` is now 0, and 0 no longer encodes the file a second time | The second try at CRF 34 cost 1.6 VMAF (up to 3.7) on the clips it applied to, about a tenth of them, to save 0.45 MB each, while the original would have stayed without any new loss. Measured on 48 real clips |
