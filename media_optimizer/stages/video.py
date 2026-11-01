@@ -226,7 +226,8 @@ class VideoStage:
             if rc is not None:
                 return rc
             self.cache = cache.StageCache(cache_file, enabled=self.use_cache, dry_run=ctx.dry_run,
-                                          fingerprint=cache.fingerprint(s, CACHE_SETTINGS, CACHE_SETTINGS_OPTIONAL))
+                                          fingerprint=cache.fingerprint(s, CACHE_SETTINGS, CACHE_SETTINGS_OPTIONAL),
+                                          record=s.cache_write)
             return self._run_locked()
         finally:
             lock.release()

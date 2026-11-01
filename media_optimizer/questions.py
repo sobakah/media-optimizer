@@ -47,9 +47,10 @@ FULL_RUN = (
         Question("delete_original", DELETE_TEXT, special="delete"),
         Question("verify_deep", "Fully decode image outputs to verify them (slower)?"),
         Question("clip_stage", "Also convert short silent videos to animations?"),
-        Question("clip_format", "Format for them (avif, or webp to animate in GNOME's viewer)", ("clip_stage", True)),
+        Question("clip_format", "Format for them (avif, or webp for viewers that show AVIF as a still)", ("clip_stage", True)),
         Question("max_workers", "Parallel workers for images/GIFs (empty = all cores)"),
         Question("use_cache", RESCAN_TEXT, special="rescan"),
+        Question("cache_write", "Remember this run's results, so the next run can skip them?", ("use_cache", True)),
     )),
     Section("IMAGES & GIFS", "Images & GIFs", (
         Question("img_target", "Image target format (jxl or webp)"),

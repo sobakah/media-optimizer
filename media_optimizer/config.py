@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -190,6 +191,9 @@ class Settings:
         "Remember files that need no work next time: finished videos, and results without an output "
         "(discarded as larger, unsupported, not selected). Each stage has its own cache file; entries "
         "store size, modification time and the settings they depend on. false = check everything again.")
+    cache_write: bool = _setting(True, ("bool",),
+        "Add this run's results to the caches. false = the caches are still read, so files they know are "
+        "skipped, but nothing new is remembered: the next run looks at this run's files again.")
     check_for_updates: bool = _setting(True, ("bool",),
         "Look for a newer media-optimizer at every start, in the background (git asks GitHub, with the "
         "same access as pipx). A full run in the terminal offers what the last check found before it "
@@ -443,6 +447,40 @@ def config_search_paths() -> list[Path]:
         paths.append(project / "config.json")
     paths.append(config_home() / NAME / "config.json")
     return paths
+
+
+def config_file(explicit: Path | None = None) -> Path:
+    """The file load_settings reads, or where a first one belongs."""
+    paths = [explicit] if explicit else config_search_paths()
+    return next((p for p in paths if p.is_file()), paths[-1])
+
+
+def save_config(changes: dict[str, Any], explicit: Path | None = None) -> Path:
+    """Write changed settings to the config file. Its other keys, comments
+    and order stay; a setting back at its default leaves the file, which
+    keeps "only what differs". A symlink stays one (dotfiles), the old file
+    is kept as .bak. Raises ValueError for a file that can't be read as a
+    config: it is not replaced."""
+    path = config_file(explicit).resolve()
+    data: dict[str, Any] = {}
+    if path.is_file():
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"{path} must contain a JSON object.")
+    defaults = Settings()
+    for name, value in changes.items():
+        if value == getattr(defaults, name):
+            data.pop(name, None)
+        else:
+            data[name] = int(value) if isinstance(value, float) and value.is_integer() else value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if path.is_file():
+        shutil.copymode(path, tmp)
+        shutil.copy2(path, path.with_name(path.name + ".bak"))
+    os.replace(tmp, path)
+    return path
 
 
 # --- loading -------------------------------------------------------------------

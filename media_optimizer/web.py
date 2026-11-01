@@ -48,8 +48,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import folders, questions, selfupdate
 from .results import Tally
-from .config import (FOLDER_CHOICE, NAME, PROJECT_URL, RC_OK, RULES, Settings, __version__, check_value, state_dir,
-                     to_env)
+from .config import (FOLDER_CHOICE, NAME, PROJECT_URL, RC_OK, RULES, Settings, SettingsError, __version__,
+                     check_value, config_file, load_settings, save_config, state_dir, to_env)
 from .config import _describe as describe
 
 log = logging.getLogger(__name__)
@@ -199,7 +199,8 @@ class Session:
 
     def __init__(self, settings: Settings, origins: dict[str, str], source: Path | None, target: Path | None,
                  back: tuple[str, str] | None = None, *, dry_run: bool = False, reset: bool = False,
-                 results: Path | None = None, elsewhere: tuple[Settings, dict[str, str]] | None = None) -> None:
+                 results: Path | None = None, elsewhere: tuple[Settings, dict[str, str]] | None = None,
+                 config: Path | None = None) -> None:
         self.settings = settings
         self.origins = origins
         self.source = source
@@ -208,6 +209,7 @@ class Session:
         self.dry_run = dry_run            # presets of the form, from -n and --reset
         self.reset = reset
         self.results = results            # --results: the run writes it for whoever started us
+        self.config = config              # --config: the file the defaults are saved to
         # The folder choice given with the first folder, and the one for any other (_folder_choice).
         self._first_source = source
         self._choices = None if elsewhere is None else {
@@ -394,6 +396,51 @@ class Session:
                 self.origins.pop(name, None)
             else:
                 self.origins[name] = origin
+
+    # the defaults: what the config file says, without this start's environment and options
+    def _saved_settings(self) -> tuple[Settings, dict[str, str]]:
+        origins: dict[str, str] = {}
+        try:
+            settings, _, _ = load_settings(self.config, ignore_env=tuple(RULES), origins=origins)
+        except SettingsError as exc:
+            raise ApiError(409, " ".join(exc.messages)) from exc
+        return settings, origins
+
+    def defaults(self) -> dict:
+        settings, origins = self._saved_settings()
+        return {"path": str(config_file(self.config)), "schema": questions.schema(settings, origins),
+                "overridden": sorted(n for n, origin in self.origins.items()
+                                     if origin in ("env", "cli") and n not in FOLDER_CHOICE)}
+
+    def save_defaults(self, values: dict) -> dict:
+        """Into the config file, and into the form: this start's environment
+        and options keep their place above it, and the folder choice stays
+        with its folder."""
+        with self._cond:
+            if self.phase != "setup":
+                raise ApiError(409, "A run is going on.")
+        values = {k: v for k, v in values.items() if k not in FOLDER_CHOICE}
+        saved, _ = self._saved_settings()
+        settings, errors = _settings_from(saved, values)
+        if errors:
+            raise ApiError(400, "Some settings are not valid.", {"fields": errors})
+        changed = {n: getattr(settings, n) for n in values if getattr(settings, n) != getattr(saved, n)}
+        try:
+            path = save_config(changed, self.config)
+        except (OSError, ValueError) as exc:
+            raise ApiError(500, f"Could not save the settings: {exc}") from exc
+        defaults = Settings()
+        with self._cond:
+            for name, value in changed.items():
+                if self.origins.get(name) in ("env", "cli"):
+                    continue
+                setattr(self.settings, name, value)
+                if value == getattr(defaults, name):
+                    self.origins.pop(name, None)
+                else:
+                    self.origins[name] = "config"
+        self.bump()
+        return {"path": str(path), "changed": sorted(changed)}
 
     # running
     def start(self, body: dict) -> None:
@@ -805,6 +852,11 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/cached":
             values = body.get("settings")
             return session.cached_for(values if isinstance(values, dict) else {})
+        if method == "GET" and path == "/api/defaults":
+            return session.defaults()
+        if method == "POST" and path == "/api/defaults":
+            values = body.get("settings")
+            return session.save_defaults(values if isinstance(values, dict) else {})
         if method == "POST" and path == "/api/start":
             session.start(body)
             return {"ok": True}

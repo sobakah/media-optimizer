@@ -52,6 +52,7 @@ events.py        --events FILE: the run's progress as JSON lines, for the browse
 results.py       --results FILE: the run's numbers at its end, for keepbest; Tally, the fold both use
 questions.py     the full run's questionnaire as data (terminal and page), the page's settings schema
 web.py           the browser page's server (--web): copied rules from cdimport/lyrembed
+animated_webp.py media-optimizer-webp, its own command: animated WebPs from GIFs -> AVIF (a BatchStage)
 static/          the page: app.js (Preact + htm, no build step), style.css, base.css and icons.js
                  (lyrembed's, see below), logo.svg, vendor/ with LICENSES.txt
 desktop.py       the app-menu entry (--install-desktop-entry), copied from keepbest and lyrembed
@@ -119,6 +120,11 @@ Breaking any of these has caused real data loss or silent corruption before.
   evaluate it too. CLI flags set settings through `_value`/`_flag` in
   `cli.py`, so they are validated by the same rule. A renamed setting goes
   into `config.RENAMED`.
+- **The page's *Defaults* edit the config file** (`config.save_config`,
+  `Session.save_defaults`): what the file says, read without this start's
+  environment and options (`load_settings(ignore_env=...)`), and those stay
+  above it on the form. Comments and unknown keys are kept, a value back at
+  its default leaves the file, the folder choice is never saved.
 - **Scans of the source only through `files.source_files`** (same skip rules
   and the same folder choice everywhere: stages, counts, preflight). It wraps
   `files.find_files`, which the target-side scans (verify, state files) use.
@@ -127,6 +133,8 @@ Breaking any of these has caused real data loss or silent corruption before.
   An excluded folder loses only its own files, never its subfolders. It
   belongs to the folder it was given with: another directory starts from the
   config file alone (`config.FOLDER_CHOICE`; the page: `Session._folder_choice`).
+- **`cache_write` false** keeps a run's outcomes in memory only
+  (`StageCache(record=False)`): read as usual, nothing added to the file.
 - **Caches** (`cache.py`): a stage remembers an outcome by returning
   `FileResult(..., cache="<outcome>")`; `BatchStage._guarded` looks entries up
   before `handle` and records them after it. Only outcomes that leave no
@@ -280,7 +288,7 @@ Commit messages and release notes are drafted outside the checkout, in
 ## Tests
 
 ```bash
-python3 -m pytest                  # all, about 370 tests, 4 minutes
+python3 -m pytest                  # all, about 420 tests, 5 minutes
 python3 -m pytest -m "not slow"    # without the signal tests
 python3 -m pytest tests/test_video.py -k cache
 ```
@@ -324,9 +332,17 @@ behaviour still applies):
 - An animated AVIF has two video streams: a still first, the animation second.
   `[0:v]` is the still; seeking past 0 s in it yields no frame.
 - ffmpeg 8.1 cannot decode animated WebP (skips ANIM/ANMF). Pillow can, but a
-  frame's duration is only known after `load()`.
+  frame's duration is only known after `load()`. ffmpeg 9.0 can (composited
+  frames identical to Pillow's), but reports no runtime, so `verify_visual`
+  with one as its source would pass without measuring: `verify_from_webp`.
+- Seeking by time in a WebP-to-AVIF pair can land one frame off: 16 dB on a
+  sound encode of a noisy GIF. By frame number the same pair passes.
+- `-pix_fmt yuv420p` flattens a transparent GIF to white, with no error: the
+  gif stage with `gif_target avif` loses transparency (measured with ffmpeg
+  9.0.2). A second stream with `alphaextract`, gray and libaom encodes alpha,
+  but nothing here reads it back to check it.
 - glycin 2.1.5 (Fedora 44, GNOME's image viewer) animates WebP, GIF and APNG,
-  but shows animated AVIF and JPEG XL as stills.
+  but shows animated AVIF and JPEG XL as stills. 2.2.2 (Fedora 45) plays AVIF.
 - libsvtav1 (SVT-AV1 3.1.2) hangs forever on frames narrower than about 31 px
   (8, 16, 24 hung; 31, 32, 64 worked; the height does not matter), and only
   SIGKILL ends it — `timeout` without `-k` waits forever too. libaom-av1
@@ -391,6 +407,9 @@ media-optimizer gpu-selftest /path/to/video.mp4      # which GPU options work
 3. **The video and clip stages keep container tags (`-map_metadata 0`),
    but not an XMP box.** Matters only if picktag ever writes its tags into
    the files instead of its database.
+
+4. **The gif stage's AVIF path flattens transparency** (see Verification
+   practice) and deletes the GIF. `media-optimizer-webp` refuses such files.
 
 ## Things deliberately not done
 

@@ -19,6 +19,8 @@
 a { word-break: break-all; }
 h3 { margin: 0; font-size: 13px; font-weight: 700; color: var(--muted); }
 main { display: flex; flex-direction: column; gap: 16px; }
+.form { display: flex; flex-direction: column; gap: 16px; }
+.form[hidden] { display: none; }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .path { overflow-wrap: anywhere; }
 .overlay[hidden] { display: none; }

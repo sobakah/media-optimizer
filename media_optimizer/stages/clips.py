@@ -8,7 +8,8 @@ sound; clip_require_silent false converts anyway and drops the audio).
 
 Which format, measured on Fedora 44 (glycin 2.1.5, the loader behind GNOME's
 image viewer and the file manager's thumbnails): animated WebP, GIF and APNG
-play; animated AVIF and animated JPEG XL show their first frame only.
+play; animated AVIF and animated JPEG XL show their first frame only. Fedora
+45's glycin 2.2.2 plays AVIF too.
 Browsers play both. Sizes against an H.264 source of the same clip: AVIF
 CRF 32 12-106 %, WebP quality 50 32-144 % (smaller only for noisy,
 high-bitrate sources such as phone footage). So with discard_if_larger many

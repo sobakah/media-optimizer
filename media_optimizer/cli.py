@@ -120,6 +120,8 @@ def build_parser() -> argparse.ArgumentParser:
           help="discard suspicious video outputs instead of warning")
     _flag(g, "--no-cache", setting="use_cache", value=False, help="ignore the caches for this run")
     _flag(g, "--cache", setting="use_cache", value=True, help="use the caches (default)")
+    _flag(g, "--no-cache-write", setting="cache_write", value=False,
+          help="read the caches, but remember nothing of this run")
     _flag(g, "--verify-output", setting="enable_verify_output", value=True,
           help="re-check the finished target directory afterwards")
     _flag(g, "--no-verify-output", setting="enable_verify_output", value=False, help="skip that check (default)")
@@ -154,6 +156,8 @@ def build_parser() -> argparse.ArgumentParser:
     _flag(g, "--verify-deep", setting="verify_deep", value=True, help="fully decode the output")
     _flag(g, "--no-cache", setting="use_cache", value=False, help="ignore the cache for this run")
     _flag(g, "--cache", setting="use_cache", value=True, help="use the cache (default)")
+    _flag(g, "--no-cache-write", setting="cache_write", value=False,
+          help="read the caches, but remember nothing of this run")
 
     # --- gifs ---
     p = sub.add_parser("gifs", help="GIF -> animated WebP or AVIF")
@@ -166,6 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
     _flag(g, "--verify-deep", setting="verify_deep", value=True, help="check the output with webpinfo")
     _flag(g, "--no-cache", setting="use_cache", value=False, help="ignore the cache for this run")
     _flag(g, "--cache", setting="use_cache", value=True, help="use the cache (default)")
+    _flag(g, "--no-cache-write", setting="cache_write", value=False,
+          help="read the caches, but remember nothing of this run")
 
     # --- avif ---
     p = sub.add_parser("clips", help="short, silent videos -> looping animation (AVIF or WebP)")
@@ -186,6 +192,8 @@ def build_parser() -> argparse.ArgumentParser:
     _flag(g, "--no-verify", setting="verify_visual", value=False, help="no picture comparison")
     _flag(g, "--no-cache", setting="use_cache", value=False, help="ignore the cache for this run")
     _flag(g, "--cache", setting="use_cache", value=True, help="use the cache (default)")
+    _flag(g, "--no-cache-write", setting="cache_write", value=False,
+          help="read the caches, but remember nothing of this run")
 
     # --- video ---
     p = sub.add_parser("video", help="video -> HEVC on the GPU or CPU")
@@ -224,6 +232,8 @@ def build_parser() -> argparse.ArgumentParser:
           help="drop the _h265 suffix once the original is gone (in place only)")
     _flag(g, "--no-cache", setting="use_cache", value=False, help="ignore the cache for this run")
     _flag(g, "--cache", setting="use_cache", value=True, help="use the cache (default)")
+    _flag(g, "--no-cache-write", setting="cache_write", value=False,
+          help="read the caches, but remember nothing of this run")
     g.add_argument("--from-list", metavar="FILE|auto",
                    help='only the source files listed there; "auto" = .broken_videos.txt of the target')
 
@@ -499,7 +509,7 @@ def _run_web(args) -> int:
                           Path(output).expanduser().absolute() if output else None,
                           (args.return_url, args.return_name) if args.return_url else None,
                           dry_run=args.dry_run, reset=args.reset, results=args.results,
-                          elsewhere=(other, other_origins))
+                          elsewhere=(other, other_origins), config=args.config)
     return web.serve(session, open_browser=not args.no_browser, check_updates=_checks_for_updates(args, s))
 
 

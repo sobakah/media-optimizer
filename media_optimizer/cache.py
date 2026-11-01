@@ -198,12 +198,15 @@ class Entry:
 
 class StageCache:
     """read_only: only looked at (the browser page's folder picker): never
-    compacted or written, no messages."""
+    compacted or written, no messages. record False (cache_write): read as
+    usual, but this run's outcomes stay in memory, for this run only."""
 
-    def __init__(self, path: Path, *, enabled: bool, dry_run: bool, fingerprint: str, read_only: bool = False):
+    def __init__(self, path: Path, *, enabled: bool, dry_run: bool, fingerprint: str, read_only: bool = False,
+                 record: bool = True):
         self.path = path
         self.enabled = enabled
         self.read_only = read_only
+        self.record = record
         self.dry_run = dry_run or read_only
         self.fp = fingerprint
         self.entries: dict[str, Entry] = {}
@@ -344,12 +347,18 @@ class StageCache:
                 if key in self.legacy:
                     return
                 self.legacy.add(key)
-                self._append(key)
+                if self.record:
+                    self._append(key)
             return
         st = _stat(key)
         if st is None:
             return
-        self._store(key, Entry(st[0], st[1], ANY if any_settings else self.fp, outcome))
+        entry = Entry(st[0], st[1], ANY if any_settings else self.fp, outcome)
+        if self.record:
+            self._store(key, entry)
+        else:
+            with self._lock:
+                self.entries[key] = entry
 
     def _store(self, key: str, entry: Entry) -> None:
         with self._lock:

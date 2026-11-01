@@ -86,6 +86,7 @@ function AnsiLine({ text }) {
 
 // --- the form ------------------------------------------------------------------------
 const ORIGINS = { config: 'from the config file', env: 'from the environment', cli: 'from the command line' };
+const FOLDER_FIELDS = ['subfolders', 'exclude_folders'];     // the Folders section's, for one folder
 
 function shown(when, values, hasTarget) {
   if (!when || !when.length) return true;
@@ -94,8 +95,8 @@ function shown(when, values, hasTarget) {
   return allowed.includes(value);
 }
 
-function Field({ field, value, onChange, label, error }) {
-  const id = 'f-' + field.name;
+function Field({ field, value, onChange, label, error, prefix = 'f-' }) {
+  const id = prefix + field.name;
   const title = label || field.name;
   const origin = field.origin !== 'default' ? html`<span class="origin">${ORIGINS[field.origin] || field.origin}</span>` : '';
   let input;
@@ -319,7 +320,7 @@ function SetupView({ setup, onSetup, onError }) {
         <summary><h2>All settings</h2></summary>
         ${setup.schema.groups.map((g) => html`<div class="group">
           <h3>${g.title}</h3>
-          ${g.fields.filter((f) => !['subfolders', 'exclude_folders'].includes(f.name)).map((f) => html`<${Field}
+          ${g.fields.filter((f) => !FOLDER_FIELDS.includes(f.name)).map((f) => html`<${Field}
             key=${f.name} field=${f} value=${values[f.name]} onChange=${(v) => setValue(f.name, v)} error=${errors[f.name]} />`)}
         </div>`)}
       </details>
@@ -331,6 +332,59 @@ function SetupView({ setup, onSetup, onError }) {
       <div class="row"><button class="btn btn-primary" disabled=${busy || !ready} onClick=${start}>
         <${Icon} name=${dryRun ? 'search' : 'check'} /> ${dryRun ? 'Start the preview' : mode === 'resume' ? 'Resume the run' : 'Start'}</button></div>
     </section>`;
+}
+
+// What every run starts from: the config file, not this start's options, as
+// the form shows them. Saved values reach the form; a run's own changes never
+// reach the file.
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+function DefaultsView({ onSaved, onClose, onError }) {
+  const [data, setData] = useState(null);
+  const [values, setValues] = useState({});
+  const [errors, setErrors] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState('');
+  const load = (fresh) => {
+    setData(fresh);
+    setValues(Object.fromEntries(fresh.schema.groups.flatMap((g) => g.fields).map((f) => [f.name, f.value])));
+  };
+  useEffect(() => { api('/defaults').then(load).catch((err) => onError(err.message)); }, []);
+  if (!data) return html`<p class="muted">Reading the config file…</p>`;
+  const fields = data.schema.groups.flatMap((g) => g.fields);
+  const dirty = fields.some((f) => !same(values[f.name], f.value));
+  const setValue = (name, value) => { setValues((v) => ({ ...v, [name]: value })); setSaved(''); };
+  const save = async () => {
+    setBusy(true);
+    setErrors({});
+    try {
+      const done = await api('/defaults', { settings: Object.fromEntries(fields.filter((f) => !FOLDER_FIELDS.includes(f.name)).map((f) => [f.name, values[f.name]])) });
+      load(await api('/defaults'));
+      setSaved(`Saved ${plural(done.changed.length, 'setting')}.`);
+      onSaved();
+      onError('');
+    } catch (err) {
+      if (err.fields) setErrors(err.fields);
+      onError(err.message);
+    }
+    setBusy(false);
+  };
+  return html`<section class="section">
+    <h2>Default settings</h2>
+    <p class="muted">Every run starts from these, on this page and in the terminal. Saved in <span class="mono">${data.path}</span>; only what differs from the built-in defaults is written there.</p>
+    ${data.overridden.length > 0 && html`<p class="note note-info">This start overrides ${data.overridden.join(', ')} from the command line or the environment, so those stay as they are until it ends.</p>`}
+    ${data.schema.groups.map((g) => html`<div class="group">
+      <h3>${g.title}</h3>
+      ${g.fields.filter((f) => !FOLDER_FIELDS.includes(f.name)).map((f) => html`<${Field} key=${f.name} prefix="d-"
+        field=${f} value=${values[f.name]} onChange=${(v) => setValue(f.name, v)} error=${errors[f.name]} />
+        ${!same(values[f.name], f.default) && html`<button class="btn-link small" onClick=${() => setValue(f.name, f.default)}>Back to the built-in default</button>`}`)}
+    </div>`)}
+    <div class="row">
+      <button class="btn btn-primary" disabled=${busy || !dirty} onClick=${save}><${Icon} name="check" /> Save as defaults</button>
+      <button class="btn" onClick=${onClose}><${Icon} name="left" /> Back</button>
+      ${saved && !dirty && html`<span class="muted small" role="status">${saved}</span>`}
+    </div>
+  </section>`;
 }
 
 // --- the run ----------------------------------------------------------------------
@@ -556,6 +610,8 @@ function App() {
   const [error, setError] = useState('');
   const [closed, setClosed] = useState(false);
   const [tab, setTab] = useState('progress');
+  const [editing, setEditing] = useState(false);     // the defaults, over the form
+  const [formRun, setFormRun] = useState(0);
   const logRef = useRef(log);
   const stick = useRef(true);
   const lastHeight = useRef(0);
@@ -605,9 +661,10 @@ function App() {
 
   // The form, fresh whenever the page is back at the start.
   const phase = state && state.phase;
+  const loadSetup = () => api('/setup').then(setSetup).catch((err) => setError(err.message));
   useEffect(() => {
-    if (phase === 'setup') api('/setup').then(setSetup).catch((err) => setError(err.message));
-    else setSetup(null);        // or the old form comes back: it reads its values once
+    if (phase === 'setup') loadSetup();
+    else { setSetup(null); setEditing(false); }   // or the old form comes back: it reads its values once
   }, [phase]);
 
   // While a run goes on, the browser asks before the tab closes (closing it
@@ -682,14 +739,18 @@ function App() {
           onClick=${keepRunning}><${Icon} name="down" /><span class="btn-text">In the background</span></button>`}
         ${running && html`<button class="btn btn-danger" disabled=${state.stopping} title="Stop the run" onClick=${stop}>
           <${Icon} name="stop" /><span class="btn-text">${state.stopping ? 'Stopping…' : 'Stop'}</span></button>`}
+        ${phase === 'setup' && !editing && html`<button class="btn" title="Change what every run starts from" onClick=${() => setEditing(true)}>
+          <${Icon} name="settings" /><span class="btn-text">Defaults</span></button>`}
         ${phase === 'setup' && html`<button class="btn" title=${state.returnUrl ? `Back to ${state.returnName}` : 'Close media-optimizer'} onClick=${close}>
           <${Icon} name=${state.returnUrl ? 'left' : 'power'} /><span class="btn-text">${state.returnUrl ? `Back to ${state.returnName}` : 'Close'}</span></button>`}
       </div>
     </header>
     <${UpdateNotice} update=${state.update} onError=${setError} /></div>
     <main class=${phase === 'setup' ? 'narrow' : ''}>
-      ${phase === 'setup' && (setup ? html`<${SetupView} key=${setup.folder.source + '|' + setup.folder.target}
-        setup=${setup} onSetup=${setSetup} onError=${setError} />` : html`<p class="muted">Looking at the folder…</p>`)}
+      ${phase === 'setup' && editing && html`<${DefaultsView} onClose=${() => setEditing(false)} onError=${setError}
+        onSaved=${() => loadSetup().then(() => setFormRun((n) => n + 1))} />`}
+      ${phase === 'setup' && (setup ? html`<div class="form" hidden=${editing}><${SetupView} key=${setup.folder.source + '|' + setup.folder.target + '|' + formRun}
+        setup=${setup} onSetup=${setSetup} onError=${setError} /></div>` : html`<p class="muted" hidden=${editing}>Looking at the folder…</p>`)}
       ${phase !== 'setup' && state.progress && html`<${RunView} state=${state} log=${log} tab=${tab} />`}
       ${phase === 'finished' && html`<${Finished} state=${state} onAgain=${again} onClose=${close} onReal=${real} onBack=${back} />`}
     </main>

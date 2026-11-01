@@ -167,10 +167,38 @@ the file manager's thumbnails:
 | animated JPEG XL | first frame only | – |
 | GIF / APNG | plays, loops | 10–20× larger |
 
+Fedora 45's glycin 2.2.2 plays animated AVIF too.
+
 Browsers play both. WebP is only smaller than the source for noisy,
 high-bitrate footage such as phone clips; otherwise it is retried once at a
 lower quality and then discarded, unless `--keep-larger` keeps it. In a full
 run, clips are converted before the video stage, which then skips them.
+
+### Animated WebPs from GIFs: `media-optimizer-webp`
+
+A separate command for WebPs that already exist. It finds animated WebPs that
+came from GIFs and lists WebPs labelled animated that aren't (no frame, one
+frame, or every frame the same picture). On its own it changes nothing:
+
+```bash
+media-optimizer-webp ~/Pictures                  # the report
+media-optimizer-webp ~/Pictures -v               # every file, not the first 30
+media-optimizer-webp ~/Pictures --convert        # to AVIF; the WebPs go to the trash
+```
+
+A WebP counts as from a GIF when the journal says so, or when it looks like
+gif2webp's work: every frame lossless, timing in hundredths of a second, at most
+256 colours per frame, no partial transparency. One that only has a GIF's timing
+is a "maybe" (a lossy conversion of a GIF and a 25 fps video look the same);
+`--include-maybe` converts those too, `--only-journal` limits it to the certain
+ones. `--keep-webp` keeps the WebPs, `--crf` sets the quality (default
+`gif_avif_crf`, 20).
+
+AVIF is lossy here, so a result needs every frame, the right runtime and a
+picture close to the WebP's, or the WebP stays. WebPs with transparency or
+metadata stay WebP (the encode keeps neither), a result that isn't smaller is
+discarded, and an existing `.avif` is never overwritten. It needs ffmpeg 9 or
+newer, which decodes animated WebP.
 
 ### Video
 
@@ -259,7 +287,8 @@ chips that downclock for it (Skylake-X, Ice Lake server) and on Zen 4.
   cached. An entry only counts while the file's size and modification time
   are unchanged and the settings it depends on are the same, so a replaced
   file or a changed quality setting is handled again. Caches in subfolders
-  from earlier runs on a subfolder are taken over. `--no-cache`, or "Scan all
+  from earlier runs on a subfolder are taken over. `--no-cache-write` still
+  skips what the caches know but adds nothing of this run. `--no-cache`, or "Scan all
   files again" in the settings menu, checks everything again; deleting a cache
   only costs time.
 * **Old video caches** from the Bash version (paths only) are detected at the start
@@ -347,6 +376,10 @@ shell (also behind `sudo`, `env` or `uv run`; a shell running a command with
 closes by itself.
 
 ### Browser page
+
+*Defaults* in its header bar shows every setting and saves it to the config
+file, so a change lasts for every later run; the form's own changes last for
+one run. The file keeps its comments, and the old one stays as `.bak`.
 
 `media-optimizer DIR --web` asks for the settings in the browser and shows
 the run there; without `--web` everything stays in the terminal, unchanged.

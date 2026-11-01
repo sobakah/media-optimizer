@@ -366,11 +366,14 @@ class BatchStage:
         previous = self.counters.elapsed
         s = self.s
         self.cache = cache.StageCache(ctx.work_dir / self.cache_name, enabled=s.use_cache,
-                                      dry_run=ctx.dry_run, fingerprint=cache.fingerprint(s, self.cache_settings))
+                                      dry_run=ctx.dry_run, fingerprint=cache.fingerprint(s, self.cache_settings),
+                                      record=s.cache_write)
         self.cache.load()
         self.cache.merge_subfolders(ctx.work_dir, ctx.source, s.include_hidden)
         if not s.use_cache:
             ui.say("CACHE", S.CYAN, "Ignored for this run: every file is checked again.")
+        elif not s.cache_write:
+            ui.say("CACHE", S.CYAN, "This run's results are not remembered.")
 
         interrupted = False
         fatal: str | None = None

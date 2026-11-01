@@ -721,3 +721,104 @@ def test_the_page_asks_for_the_cached_counts(server):
     assert status == 200 and json.loads(raw) == {"root": [0, 0], "tree": {}}
     status, _, _ = _http(server, "POST", "/api/cached", {"settings": {}}, headers={"Origin": "http://evil"})
     assert status == 403
+
+
+# --- the defaults ----------------------------------------------------------------------
+def _config(tmp_path, data=None) -> tuple[Path, "web.Session"]:
+    path = tmp_path / "config.json"
+    if data is not None:
+        path.write_text(json.dumps(data))
+    session = web.Session(Settings(), {}, tmp_path, None, config=path if data is not None else None)
+    return path, session
+
+
+def test_saved_defaults_keep_the_file_and_only_what_differs(tmp_path):
+    path, session = _config(tmp_path, {"_about": "mine", "_png_mode": "why", "png_mode": "lossy", "mystery": 1,
+                                       "cpu_crf": 21})
+    done = session.save_defaults({"gif_target": "avif", "png_mode": "lossless", "cpu_crf": 21, "gpu_qp": 26})
+    data = json.loads(path.read_text())
+    assert data["gif_target"] == "avif" and sorted(done["changed"]) == ["gif_target", "png_mode"]
+    assert "png_mode" not in data, "back at its default"
+    assert data["_about"] == "mine" and data["mystery"] == 1 and data["cpu_crf"] == 21 and "gpu_qp" not in data
+    assert json.loads(path.with_name("config.json.bak").read_text())["png_mode"] == "lossy"
+    assert session.settings.gif_target == "avif" and session.origins["gif_target"] == "config"
+
+
+def test_saved_defaults_reach_the_next_start(tmp_path, monkeypatch):
+    from media_optimizer.config import load_settings
+    path, session = _config(tmp_path, {})
+    session.save_defaults({"gif_target": "avif", "visual_psnr_min": 20.0})
+    s, _, _ = load_settings(path)
+    assert s.gif_target == "avif" and s.visual_psnr_min == 20
+
+
+def test_a_first_config_file_is_created_where_it_is_read(tmp_path, monkeypatch):
+    from media_optimizer.config import config_file, load_settings
+    monkeypatch.delenv("MO_CONFIG", raising=False)
+    _, session = _config(tmp_path)
+    path = config_file()
+    assert not path.exists()
+    assert session.save_defaults({"gif_target": "avif"})["path"] == str(path.resolve())
+    assert load_settings()[0].gif_target == "avif"
+    assert not path.with_name("config.json.bak").exists()
+
+
+def test_a_symlinked_config_stays_a_symlink(tmp_path):
+    real = tmp_path / "dotfiles" / "mo.json"
+    real.parent.mkdir()
+    real.write_text("{}")
+    link = tmp_path / "config.json"
+    link.symlink_to(real)
+    web.Session(Settings(), {}, tmp_path, None, config=link).save_defaults({"gif_target": "avif"})
+    assert link.is_symlink() and json.loads(real.read_text()) == {"gif_target": "avif"}
+
+
+def test_the_defaults_are_the_files_not_this_starts(tmp_path, monkeypatch):
+    monkeypatch.setenv("MO_GIF_TARGET", "avif")
+    path, session = _config(tmp_path, {"png_mode": "lossy"})
+    session.settings.gif_target = "avif"
+    session.origins.update(gif_target="env")
+    data = session.defaults()
+    fields = {f["name"]: f for g in data["schema"]["groups"] for f in g["fields"]}
+    assert fields["gif_target"]["value"] == "webp" and fields["png_mode"]["origin"] == "config"
+    assert data["overridden"] == ["gif_target"] and data["path"] == str(path)
+    session.save_defaults({"gif_method": 4})
+    assert "gif_target" not in json.loads(path.read_text()), "what the environment says is not saved"
+
+
+def test_what_this_start_overrides_stays_on_the_form(tmp_path):
+    path, session = _config(tmp_path, {})
+    session.settings.cpu_crf = 19
+    session.origins["cpu_crf"] = "cli"
+    session.save_defaults({"cpu_crf": 23})
+    assert json.loads(path.read_text())["cpu_crf"] == 23
+    assert session.settings.cpu_crf == 19 and session.origins["cpu_crf"] == "cli"
+
+
+def test_a_bad_value_or_a_broken_file_saves_nothing(tmp_path):
+    path, session = _config(tmp_path, {"png_mode": "lossy"})
+    with pytest.raises(web.ApiError) as bad:
+        session.save_defaults({"gpu_qp": 999, "gif_target": "avif"})
+    assert bad.value.status == 400 and "gpu_qp" in bad.value.extra["fields"]
+    assert json.loads(path.read_text()) == {"png_mode": "lossy"}
+    path.write_text("{ not json")
+    with pytest.raises(web.ApiError):
+        session.save_defaults({"gif_target": "avif"})
+    assert path.read_text() == "{ not json"
+
+
+def test_the_folder_choice_is_not_saved(tmp_path):
+    path, session = _config(tmp_path, {})
+    session.save_defaults({"exclude_folders": ["x"], "subfolders": "exclude"})
+    assert json.loads(path.read_text()) == {}
+
+
+def test_defaults_are_refused_during_a_run_and_need_the_page(server, tmp_path):
+    server.session.phase = "running"
+    origin = {"Origin": f"http://127.0.0.1:{server.port}", "Content-Type": "application/json"}
+    assert _http(server, "POST", "/api/defaults", {"settings": {"gif_target": "avif"}}, origin)[0] == 409
+    server.session.phase = "setup"
+    evil = {"Origin": "http://evil.example"}
+    assert _http(server, "POST", "/api/defaults", {"settings": {}}, evil)[0] == 403
+    assert _http(server, "POST", "/api/defaults", {"settings": {}}, cookie=False)[0] == 403
+    assert _http(server, "GET", "/api/defaults")[0] == 200

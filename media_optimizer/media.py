@@ -209,8 +209,10 @@ def verify_visual(src: Path, dst: Path, min_psnr: float, samples: int,
 
 
 # --- animated WebP --------------------------------------------------------------------------
-# ffmpeg (8.1) cannot decode animated WebP: it skips the ANIM/ANMF chunks and
-# finds no picture. Pillow decodes it through libwebp, including the blending
+# ffmpeg 8.1 could not decode animated WebP (it skipped the ANIM/ANMF chunks and
+# found no picture); 9.0 can, but reports no runtime, so verify_visual would not
+# measure anything with one as its source: see verify_from_webp.
+# Pillow decodes it through libwebp, including the blending
 # of partial frames. The comparison runs in YCbCr with the planes weighted
 # 4:1:1 like ffmpeg's 4:2:0 "average", so the same threshold applies.
 # Measured with this method: correct WebPs 25-44 dB (quality 25-75, 640x360),
@@ -275,6 +277,44 @@ def _verify_webp(src: Path, dst: Path, duration: float, min_psnr: float, samples
                     shutil.copyfile(still, keep_dir / f"{dst.stem}_{t}s_source.png")
                 except OSError:
                     pass
+    if best is None:
+        return Visual(False, None, "no sample could be compared")
+    return Visual(best >= min_psnr, best, ", ".join(parts))
+
+
+def _webp_frame(path: Path, index: int):
+    from PIL import Image
+
+    with Image.open(path) as im:
+        im.seek(index)
+        return im.convert("RGB")
+
+
+def verify_from_webp(src: Path, dst: Path, frames: int, min_psnr: float, samples: int) -> Visual:
+    """_verify_webp the other way round: *src* is the animated WebP, *dst* has
+    its *frames*. By frame number, not by time: a seek that lands one frame
+    off compares two pictures of a noisy GIF (16 dB for a sound encode). The
+    best sample decides, and nothing compared does not pass."""
+    import tempfile
+
+    from PIL import Image
+
+    best = None
+    parts = []
+    stream = probe(dst).main_video
+    with tempfile.TemporaryDirectory(prefix="mo_webp_") as tmp:
+        for n in sorted({frames * i // (samples + 1) for i in range(1, samples + 1)}):
+            still = Path(tmp) / f"dst_{n}.png"
+            proc.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(dst), "-map", f"0:v:{stream}",
+                      "-vf", f"select=eq(n\\,{n})", "-fps_mode", "passthrough", "-frames:v", "1", str(still)])
+            try:
+                frame = _webp_frame(src, n)
+                with Image.open(still) as out:
+                    value = _psnr_ycbcr(frame, out.convert("RGB").resize(frame.size))
+            except (OSError, ValueError, EOFError):
+                continue
+            parts.append(f"frame {n}={'inf' if value == float('inf') else int(value)} dB")
+            best = value if best is None or value > best else best
     if best is None:
         return Visual(False, None, "no sample could be compared")
     return Visual(best >= min_psnr, best, ", ".join(parts))

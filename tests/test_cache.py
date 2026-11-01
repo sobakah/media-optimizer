@@ -343,3 +343,47 @@ def test_a_subfolder_cache_with_a_file_twice_gives_the_later_line(folder):
     root.load()
     root.merge_subfolders(d, d, False)
     assert root.lookup(d / "sub" / "photo.jpg") == "larger"
+
+
+# --- cache_write ---------------------------------------------------------------------
+def test_cache_write_off_reads_but_remembers_nothing(tmp_path, monkeypatch):
+    path = tmp_path / ".gif_cache.txt"
+    known, new = tmp_path / "known.gif", tmp_path / "new.gif"
+    known.write_bytes(b"a")
+    new.write_bytes(b"b")
+    first = cache.StageCache(path, enabled=True, dry_run=False, fingerprint="f")
+    first.add(known, "discarded")
+    written = path.read_bytes()
+
+    second = cache.StageCache(path, enabled=True, dry_run=False, fingerprint="f", record=False)
+    second.load()
+    assert second.lookup(known) == "discarded", "the caches are still read"
+    second.add(new, "discarded")
+    assert second.lookup(new) == "discarded", "this run still knows it"
+    assert path.read_bytes() == written, "nothing written"
+
+    third = cache.StageCache(path, enabled=True, dry_run=False, fingerprint="f")
+    third.load()
+    assert third.lookup(new) is None
+
+
+def test_cache_write_off_also_leaves_an_old_format_cache_alone(tmp_path):
+    path = tmp_path / cache.VIDEO_CACHE
+    known, new = tmp_path / "known.mp4", tmp_path / "new.mp4"
+    known.write_bytes(b"a")
+    new.write_bytes(b"b")
+    path.write_text(f"{known}\n")
+    stage = cache.StageCache(path, enabled=True, dry_run=False, fingerprint="f", record=False)
+    stage.load()
+    stage.add(new, "done")
+    assert stage.lookup(new) == "done" and path.read_text() == f"{known}\n"
+
+
+def test_a_run_with_no_cache_write_adds_nothing(folder, run_cli):
+    """A photo named .gif is remembered as not-a-gif, when a run may remember."""
+    d = folder("cw", "p.gif=photo.jpg")
+    out = run_cli("gifs", d, "--no-cache-write")
+    assert out.rc == 0 and "not remembered" in out, out
+    assert not (d / ".gif_cache.txt").exists()
+    assert run_cli("gifs", d).rc == 0 and (d / ".gif_cache.txt").is_file()
+    assert "[UNSUPPORTED]" not in run_cli("gifs", d, "--no-cache-write"), "still read"

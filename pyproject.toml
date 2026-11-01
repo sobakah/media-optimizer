@@ -28,6 +28,7 @@ dev = ["pytest>=7", "pyflakes>=3"]
 
 [project.scripts]
 media-optimizer = "media_optimizer.cli:main"
+media-optimizer-webp = "media_optimizer.animated_webp:main"
 
 [project.urls]
 Homepage = "https://github.com/sobakah/media-optimizer"
