@@ -135,6 +135,16 @@ Breaking any of these has caused real data loss or silent corruption before.
   config file alone (`config.FOLDER_CHOICE`; the page: `Session._folder_choice`).
 - **`cache_write` false** keeps a run's outcomes in memory only
   (`StageCache(record=False)`): read as usual, nothing added to the file.
+- **An output name that is taken** (`BatchStage.output_name`): a stage never
+  asks `nonempty(dest)` itself. `media.same_picture` says whether the file there
+  is src's output (same modification time, no decoding) or shows the same;
+  else the next `stem_N.ext` is tried. Wrong either way loses nothing, since
+  nothing is overwritten, but a new way of writing outputs must keep the time
+  (`safety.commit`), or a kept original gets a new number on every run. The
+  video stage doesn't do this. Workers with one stem run one at a time
+  (`_one_per_name`).
+- **AV1 encodes go through `media.run_av1`**: it waits for a slot
+  (`_AV1Slots`), so the workers can stay many for the probes and comparisons.
 - **Caches** (`cache.py`): a stage remembers an outcome by returning
   `FileResult(..., cache="<outcome>")`; `BatchStage._guarded` looks entries up
   before `handle` and records them after it. Only outcomes that leave no
@@ -385,6 +395,13 @@ behaviour still applies):
   every frame and duration (compared frame by frame with Pillow). The
   journal's `lossless` follows these measurements.
 
+- `avif_crf_retry` 6 on 48 real clips: 10 were larger than the source at CRF 28.
+  At 34 they saved 4.5 of 16.7 MB, VMAF -1.6 (worst -3.7); at 31 1.2 MB, -0.7; at
+  30 0.7 MB, -0.4, and three stayed too large. The alternative is the original,
+  without new loss. Hence no second attempt by default.
+- libsvtav1, 11 1080p clips on 16 threads: 8 at once 27 s, 13.4 GB; 4 at once 26 s,
+  6.7 GB; 2 at once 16 s, 3.7 GB; 4 with `lp=4` 16 s, 5.6 GB; 4 with `lp=2` 39 s,
+  3.6 GB. `lp` doesn't change the output. 40 clips through `clips`: 43 s, 5.0 GB.
 - `avif_crf` on eight real clips (five H.265, three H.264; libsvtav1 preset 6;
   size against the source, median; VMAF average, median; clips larger than the
   source): 32: 46 %, 92.6, 0; 28: 62 %, 93.6, 0; 24: 84 %, 94.7, 3; 20: 106 %,

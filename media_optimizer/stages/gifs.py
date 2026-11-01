@@ -17,8 +17,7 @@ from .. import files, media, proc, safety, ui
 from ..journal import journal
 from ..runlog import log
 from ..ui import StyleUI as S
-from .base import BatchStage, FileResult, Kind, verify_image
-from .images import nonempty
+from .base import BatchStage, FileResult, Kind, verify_image, nonempty
 
 
 class GifStage(BatchStage):
@@ -62,11 +61,12 @@ class GifStage(BatchStage):
     def _encode(self, src: Path, tmp: Path) -> bool:
         s = self.s
         if s.gif_target == "avif":
-            encoder, speed = media.av1_encoder(files.gif_width(src))
+            width, height = files.gif_size(src) or (None, 0)
+            encoder, speed = media.av1_encoder(width)
             cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(src), "-c:v", encoder,
                    "-crf", str(s.gif_avif_crf), *speed, "-pix_fmt", "yuv420p",
                    "-an", "-f", "avif", "-loop", "0", str(tmp)]
-            return proc.run(cmd, timeout=media.AV1_TIMEOUT).ok
+            return media.run_av1(cmd, (width or 0) * height).ok
         cmd = ["gif2webp", "-m", str(s.gif_method), "-kmin", str(s.gif_kmin), "-metadata", "all",
                "-quiet", str(src), "-o", str(tmp)]
         return proc.run(cmd).ok
@@ -76,9 +76,9 @@ class GifStage(BatchStage):
         stem = files.stem(src.name)
         ext = "avif" if s.gif_target == "avif" else "webp"
         folder = ctx.target_folder(src)
-        dest = folder / f"{stem}.{ext}"
 
-        if nonempty(dest):
+        dest = self.output_name(src, folder, stem, ext)
+        if dest is None:
             return FileResult(Kind.SKIP, why="existing")
         if ctx.dry_run:
             ui.say("DRY-RUN", S.CYAN, f"'{src.name}' -> '{dest.name}'")

@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import re
 import shutil
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -102,16 +105,91 @@ SVT_MIN_WIDTH = 32
 # Safety net for the short-content AV1 encodes (GIFs, clips): a hang that is
 # not known yet must not block a worker forever.
 AV1_TIMEOUT = 600
+# Sixteen encoders at once, one per worker, froze a session on 30 GB: each one
+# starts a thread per core and holds frames for them. Fewer are faster as well
+# (11 1080p clips, 16 threads: 8 at once 27 s, 13.4 GB; 4 at once with lp=4
+# 16 s, 5.6 GB; the same total size, lp doesn't change the result).
+AV1_THREADS = 4
+AV1_MEMORY_SHARE = 0.7        # of what is free when the first encode starts
 
 
 def av1_encoder(width: int | None = None) -> tuple[str, list[str]] | None:
     """(encoder, speed arguments). libsvtav1 is considerably faster than
     libaom, but hangs on very narrow frames."""
     if has_encoder("libsvtav1") and (width is None or width >= SVT_MIN_WIDTH):
-        return "libsvtav1", ["-preset", "6"]
+        return "libsvtav1", ["-preset", "6", "-svtav1-params", f"lp={AV1_THREADS}"]
     if has_encoder("libaom-av1"):
         return "libaom-av1", ["-cpu-used", "6"]
     return None
+
+
+def available_memory() -> int | None:
+    """Bytes free for new work, None where the system doesn't say."""
+    try:
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def av1_memory(pixels: int) -> int:
+    """What an encode of frames this large needs, in bytes. Measured with
+    libsvtav1 on all cores, which is more than lp=4 takes: 480p 0.5 GB,
+    1080p 1.6 GB, 2160p 5.2 GB."""
+    return int((0.4 + 0.58 * pixels / 1_000_000) * 2 ** 30)
+
+
+class _AV1Slots:
+    """Who may encode now: at most one encoder per AV1_THREADS cores, and
+    their estimates within a share of the free memory. One always may, so a
+    frame too large for the budget still gets its turn alone."""
+
+    def __init__(self) -> None:
+        self._changed = threading.Condition()
+        self.running = 0
+        self.reserved = 0
+        self.budget: float | None = None
+
+    def _fits(self, need: int) -> bool:
+        free = available_memory()
+        if not self.running:
+            self.budget = None if free is None else free * AV1_MEMORY_SHARE
+            return True
+        cores = getattr(os, "process_cpu_count", os.cpu_count)() or 4
+        if self.running >= max(1, cores // AV1_THREADS):
+            return False
+        # The live value too: something else may have filled the memory meanwhile.
+        return self.budget is None or (self.reserved + need <= self.budget and need <= (free or 0))
+
+    @contextmanager
+    def slot(self, pixels: int):
+        need = av1_memory(pixels)
+        with self._changed:
+            while not self._fits(need):
+                if proc.stopping.is_set():
+                    raise proc.Stopped
+                self._changed.wait(0.5)
+            self.running += 1
+            self.reserved += need
+        try:
+            yield
+        finally:
+            with self._changed:
+                self.running -= 1
+                self.reserved -= need
+                self._changed.notify_all()
+
+
+av1_slots = _AV1Slots()
+
+
+def run_av1(cmd: list[str], pixels: int) -> proc.Result:
+    """An AV1 encode, once it may start. Waiting for that isn't its runtime."""
+    with av1_slots.slot(pixels):
+        return proc.run(cmd, timeout=AV1_TIMEOUT)
 
 
 # --- runtime check -----------------------------------------------------------------
@@ -206,6 +284,39 @@ def verify_visual(src: Path, dst: Path, min_psnr: float, samples: int,
     if best is None:
         return Visual(False, None, "no sample could be compared")
     return Visual(best >= min_psnr, best, ", ".join(parts))
+
+
+# --- whether two files show the same thing ----------------------------------------------
+# For an output name that is already taken. On the owner's folders: 9 pairs of
+# really different pictures 7-11 dB, 11 of the same picture 25-48 dB, 5 of them
+# at different sizes (a 1000 px JPEG beside a 1748 px JXL), so the sizes don't
+# decide. Wrong either way loses nothing: nothing is ever overwritten here.
+def same_time(a: Path, b: Path) -> bool:
+    """An output takes its source's modification time (safety.commit)."""
+    try:
+        return a.stat().st_mtime_ns == b.stat().st_mtime_ns
+    except OSError:
+        return False
+
+
+def same_picture(src: Path, other: Path, min_psnr: float) -> bool:
+    """Whether *other* is *src*'s output, or shows the same in another format
+    or size: the average over the first frames, scaled to one size. What
+    can't be compared counts as the same, so the file stays as it is."""
+    if same_time(src, other):
+        return True
+    a, b = probe(src), probe(other)
+    lavfi = (f"[0:v:{a.main_video}]setpts=PTS-STARTPTS[x];[1:v:{b.main_video}]setpts=PTS-STARTPTS[y];"
+             "[x][y]scale2ref=flags=bilinear[p][q];[p][q]psnr")
+    res = proc.run(["ffmpeg", "-nostdin", "-hide_banner", "-i", str(src), "-i", str(other), "-lavfi", lavfi,
+                    "-frames:v", "300", "-f", "null", "-"])
+    match = _PSNR.search(res.stderr)
+    if match is None:
+        return True
+    # A still comes as 0.04 s, an animated WebP without a runtime.
+    if a.duration and b.duration and max(a.duration, b.duration) > 1.5 * min(a.duration, b.duration):
+        return False
+    return float(match.group(1)) >= min_psnr
 
 
 # --- animated WebP --------------------------------------------------------------------------

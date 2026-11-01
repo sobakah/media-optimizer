@@ -178,6 +178,14 @@ high-bitrate footage such as phone clips; otherwise it is retried once at a
 lower quality and then discarded, unless `--keep-larger` keeps it. In a full
 run, clips are converted before the video stage, which then skips them.
 
+AV1 encodes run one per four cores with four threads each, fewer when the
+free memory calls for it (a 4K clip takes about 5 GB): more at once were slower
+too, and could use up the memory.
+
+A clip's AVIF that comes out larger than the source is discarded and the source
+stays. `avif_crf_retry` adds a second attempt at a higher CRF; it is off, because
+on real clips it lost 1.6 VMAF to save about 0.45 MB per clip.
+
 ### Animated WebPs from GIFs: `media-optimizer-webp`
 
 A separate command for WebPs that already exist. It finds animated WebPs that
@@ -269,6 +277,13 @@ chips that downclock for it (Skylake-X, Ice Lake server) and on Zen 4.
 `cjxl_threads` stays at 1, otherwise N workers start N threads each.
 
 ## Things to know
+
+**A name that is already taken.** If `foo.jxl` exists when `foo.png` is converted,
+the two are compared. `foo.png`'s own output from an earlier run is recognised
+by its modification time; otherwise the pictures are compared, at any size. The
+same picture: `foo.png` stays as it is. A different one: the result becomes
+`foo_1.jxl`. This holds for images, GIFs and clips; of two videos with one output
+name only the first is converted.
 
 * **Atomic writes.** Output goes to a `.part` file with a unique name first
   and is moved into place only after its check, never over an existing file.

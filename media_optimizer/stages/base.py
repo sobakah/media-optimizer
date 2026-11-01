@@ -15,13 +15,14 @@ from __future__ import annotations
 import enum
 import json
 import os
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterator
 
-from .. import cache, proc, safety, ui
+from .. import cache, files, media, proc, safety, ui
 from ..questions import DELETE_TEXT, RESCAN_TEXT
 from ..config import RC_FATAL, RC_INTERRUPTED, RC_OK, RC_PARTIAL, Settings
 from ..events import events
@@ -244,6 +245,13 @@ def convert_legacy_caches(ctx: Context) -> None:
     ctx.legacy_cache = "done"
 
 
+def nonempty(path: Path) -> bool:
+    try:
+        return path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 # --- the parallel batch stage ----------------------------------------------------------
 class BatchStage:
     """Base for the image, GIF and clip stages. Subclasses set the class
@@ -268,6 +276,8 @@ class BatchStage:
         self.trash = safety.Trash(None if ctx.dry_run else ctx.work_dir / self.pending_name,
                                   force=self.s.force_delete)
         self.started = time.monotonic()
+        self.names: dict[tuple[Path, str], threading.Lock] = {}
+        self.names_lock = threading.Lock()
 
     # subclass hooks
     def prepare(self) -> int | None:
@@ -297,6 +307,27 @@ class BatchStage:
         return rows
 
     # shared helpers for workers
+    def _one_per_name(self, src: Path) -> threading.Lock:
+        """photo.jpg and photo.png are after the same output name: one at a
+        time, so the second sees what the first wrote."""
+        with self.names_lock:
+            return self.names.setdefault((src.parent, files.stem(src.name)), threading.Lock())
+
+    def output_name(self, src: Path, folder: Path, stem: str, ext: str) -> Path | None:
+        """Where src's output goes: its own name, or the next numbered one
+        when a different picture has that name. None when one of them is src's
+        output already or shows the same, so src stays as it is."""
+        first = dest = folder / f"{stem}.{ext}"
+        number = 0
+        while nonempty(dest):
+            if media.same_picture(src, dest, self.s.visual_psnr_min):
+                return None
+            number += 1
+            dest = folder / f"{stem}_{number}.{ext}"
+        if number:
+            ui.say("NAME", S.CYAN, f"'{first.name}' is a different picture: '{src.name}' -> '{dest.name}'")
+        return dest
+
     def fail(self, src: Path, reason: str) -> FileResult:
         log.file(self.tag, "ERROR", src)
         ui.say("ERROR", S.RED, f"{reason}: '{src.name}' (original kept)", err=True)
@@ -324,7 +355,8 @@ class BatchStage:
             known = self.cache.lookup(src)
             if known is not None:
                 return FileResult(Kind.CACHED, why=known), None
-            result = self.handle(src)
+            with self._one_per_name(src):
+                result = self.handle(src)
             if result.cache and result.kind is not Kind.FAIL:
                 self.cache.add(src, result.cache)
             return result, None

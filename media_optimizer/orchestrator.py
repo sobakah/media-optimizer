@@ -208,7 +208,7 @@ def _collision_warning(source: Path, s: Settings) -> None:
         return
     ui.out()
     ui.say("WARNING", S.YELLOW, "Files would get the same output name.")
-    ui.out("          Only the first is converted, the others are left untouched:")
+    ui.out("          Different pictures and clips get a numbered name; of videos only the first is converted:")
     for name in clashes[:10]:
         ui.out(f"            {name}  ({', '.join(groups[name])})")
     if len(clashes) > 10:

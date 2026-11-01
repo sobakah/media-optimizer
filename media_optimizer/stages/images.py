@@ -30,17 +30,10 @@ from .. import files, proc, safety, ui
 from ..journal import journal
 from ..runlog import log
 from ..ui import StyleUI as S
-from .base import BatchStage, FileResult, Kind, verify_image
+from .base import BatchStage, FileResult, Kind, verify_image, nonempty
 
 WEBP_METHOD = 6
 TAKE_OVER = ("webp", "jxl", "gif")      # already efficient, only misnamed
-
-
-def nonempty(path: Path) -> bool:
-    try:
-        return path.stat().st_size > 0
-    except OSError:
-        return False
 
 
 class ImageStage(BatchStage):
@@ -86,12 +79,12 @@ class ImageStage(BatchStage):
         stem = files.stem(src.name)
         ext = files.extension(src)
         folder = ctx.target_folder(src)
-        dest = folder / f"{stem}.{s.img_target}"
 
-        # Cheap check without the lock, for resumed runs. Only the configured
-        # target format counts: an unrelated foo.webp must not stop foo.png
-        # from becoming foo.jxl.
-        if nonempty(dest):
+        # Without the lock, for resumed runs. Only the configured target
+        # format counts: an unrelated foo.webp must not stop foo.png from
+        # becoming foo.jxl.
+        dest = self.output_name(src, folder, stem, s.img_target)
+        if dest is None:
             return FileResult(Kind.SKIP, why="existing")
         if ctx.dry_run:
             ui.say("DRY-RUN", S.CYAN, f"'{src.name}' -> '{dest.name}'")

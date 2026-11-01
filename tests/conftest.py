@@ -352,8 +352,9 @@ def media(tmp_path_factory):
 
     def video(name, *args):
         _sh("ffmpeg", "-v", "error", "-y", *args, str(d / name))
+    # At x264's default rate its AVIF is larger than it, and those are discarded.
     video("clip.mp4", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25", "-t", "3",
-          "-c:v", "libx264", "-pix_fmt", "yuv420p")
+          "-c:v", "libx264", "-b:v", "2M", "-pix_fmt", "yuv420p")
     video("withaudio.mp4", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25", "-f", "lavfi",
           "-i", "sine=f=440", "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest")
     video("long.mp4", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25", "-t", "8",

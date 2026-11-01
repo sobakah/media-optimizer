@@ -49,8 +49,7 @@ from ..journal import journal
 from ..runlog import log
 from ..ui import StyleUI as S
 from . import clips
-from .base import Context, convert_legacy_caches
-from .images import nonempty
+from .base import Context, convert_legacy_caches, nonempty
 
 PROBE_MIN_DURATION = 60
 CACHE_NAME = cache.VIDEO_CACHE

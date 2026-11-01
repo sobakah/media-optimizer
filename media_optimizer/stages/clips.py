@@ -16,9 +16,9 @@ high-bitrate sources such as phone footage). So with discard_if_larger many
 WebP results are discarded; --keep-larger keeps them for compatibility.
 
 INVARIANTS
-  - A result larger than the original gets exactly one more attempt (AVIF:
-    CRF + avif_crf_retry, WebP: quality - clip_webp_quality_retry) before it
-    is discarded.
+  - A result larger than the original gets at most one more attempt (AVIF:
+    CRF + avif_crf_retry, off by default, WebP: quality - clip_webp_quality_retry)
+    before it is discarded.
   - The picture is compared with the source before the original is touched.
     A suspicious result is kept, but its original is never deleted.
 """
@@ -33,8 +33,7 @@ from .. import files, media, proc, safety, ui
 from ..journal import journal
 from ..runlog import log
 from ..ui import StyleUI as S
-from .base import BatchStage, FileResult, Kind
-from .images import nonempty
+from .base import BatchStage, FileResult, Kind, nonempty
 
 
 def selected(info: media.MediaInfo, s) -> bool:
@@ -115,7 +114,7 @@ class ClipStage(BatchStage):
             rows.insert(3, ("Discarded (larger):", f"{self.counters.discarded} file(s)"))
         return rows
 
-    def _encode(self, src: Path, tmp: Path, level: int, width: int) -> bool:
+    def _encode(self, src: Path, tmp: Path, level: int, info: media.MediaInfo) -> bool:
         """level: CRF for AVIF, quality for WebP."""
         if self.ext == "webp":
             cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(src), "-c:v", "libwebp_anim",
@@ -124,16 +123,17 @@ class ClipStage(BatchStage):
         else:
             # -map_metadata 0 carries creation_time, title and location over;
             # without it the AVIF would lose every container tag.
-            encoder, speed = media.av1_encoder(width)
+            encoder, speed = media.av1_encoder(info.width)
             if encoder == "libsvtav1":
-                speed = ["-preset", str(self.s.avif_preset)]
+                speed = ["-preset", str(self.s.avif_preset), *speed[2:]]
             cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(src), "-c:v", encoder,
                    "-crf", str(level), *speed, "-pix_fmt", self.s.avif_pix_fmt, "-an",
                    "-map_metadata", "0", "-f", "avif", "-loop", "0", str(tmp)]
-            return proc.run(cmd, timeout=media.AV1_TIMEOUT).ok and nonempty(tmp)
+            return media.run_av1(cmd, info.pixels).ok and nonempty(tmp)
         return proc.run(cmd).ok and nonempty(tmp)
 
     def _retry_level(self, level: int) -> int:
+        """The next attempt's level; the same one when there is none to make."""
         if self.ext == "webp":
             return max(1, level - self.s.clip_webp_quality_retry)
         return min(63, level + self.s.avif_crf_retry)
@@ -144,13 +144,16 @@ class ClipStage(BatchStage):
         stem = files.stem(src.name)
         folder = ctx.target_folder(src)
         dest = folder / f"{stem}.{self.ext}"
-        if nonempty(dest):
+        if nonempty(dest) and media.same_time(src, dest):
             return FileResult(Kind.SKIP, why="existing")
 
         # Not selected: remembered, so long videos are not probed on every run.
         info = media.probe(src)
         if not selected(info, s):
             return FileResult(Kind.SKIP, cache="not-selected", why=why_not(info, s))
+        dest = self.output_name(src, folder, stem, self.ext)
+        if dest is None:
+            return FileResult(Kind.SKIP, why="existing")
         if ctx.dry_run:
             ui.say("DRY-RUN", S.CYAN, f"'{src.name}' ({int(info.duration)}s, {info.video_codec}) -> '{dest.name}'")
             return FileResult(Kind.DRY)
@@ -163,16 +166,17 @@ class ClipStage(BatchStage):
         with safety.Claim(folder, stem, dest) as claim:
             tmp = claim.temp()
             level = s.clip_webp_quality if self.ext == "webp" else s.avif_crf
-            if not self._encode(src, tmp, level, info.width):
+            if not self._encode(src, tmp, level, info):
                 raise safety.Failed("conversion failed")
             new = tmp.stat().st_size
-            if s.discard_if_larger and new >= orig:
+            retry = self._retry_level(level)
+            if s.discard_if_larger and new >= orig and retry != level:
                 # Too large: one more attempt at a lower quality before discarding.
-                level = self._retry_level(level)
+                level = retry
                 what = f"quality {level}" if self.ext == "webp" else f"CRF {level}"
                 ui.say("RETRY", S.YELLOW, f"'{src.name}': {ui.format_bytes(new)} too large, retrying with {what}")
                 tmp.unlink(missing_ok=True)
-                if not self._encode(src, tmp, level, info.width):
+                if not self._encode(src, tmp, level, info):
                     raise safety.Failed("conversion failed")
                 new = tmp.stat().st_size
             if s.discard_if_larger and new >= orig:

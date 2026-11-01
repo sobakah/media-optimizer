@@ -53,8 +53,7 @@ from .config import (NAME, RC_BAD_SETTING, RC_CANNOT_START, Settings, SettingsEr
                      default_journal_file, load_settings)
 from .journal import journal
 from .runlog import log
-from .stages.base import BatchStage, Context, FileResult, Kind
-from .stages.images import nonempty
+from .stages.base import BatchStage, Context, FileResult, Kind, nonempty
 from .ui import StyleUI as S
 
 ANIMATION_FLAG = 0x02            # in the VP8X chunk's flags
@@ -266,20 +265,20 @@ class AnimatedWebpStage(BatchStage):
         if info.metadata:
             self.kept.append((src, "has EXIF or XMP"))
             return FileResult(Kind.SKIP)
-        dest = src.with_name(f"{files.stem(src.name)}.avif")
-        if dest.exists() or dest.is_symlink():
-            self.kept.append((src, f"{dest.name} exists"))
+        dest = self.output_name(src, src.parent, files.stem(src.name), "avif")
+        if dest is None:
+            self.kept.append((src, f"{files.stem(src.name)}.avif exists"))
             return FileResult(Kind.SKIP)
         if self.ctx.dry_run:
             return FileResult(Kind.DRY)
         return self._convert(src, dest, info)
 
-    def _encode(self, src: Path, tmp: Path, width: int) -> bool:
-        encoder, speed = media.av1_encoder(width)
+    def _encode(self, src: Path, tmp: Path, size: tuple[int, int]) -> bool:
+        encoder, speed = media.av1_encoder(size[0])
         # vfr: a GIF's frames rarely all last the same; the default fills them up to a fixed rate.
-        return proc.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(src), "-fps_mode", "vfr",
-                         "-c:v", encoder, "-crf", str(self.s.gif_avif_crf), *speed, "-pix_fmt", "yuv420p",
-                         "-an", "-f", "avif", "-loop", "0", str(tmp)], timeout=media.AV1_TIMEOUT).ok
+        return media.run_av1(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(src), "-fps_mode", "vfr",
+                              "-c:v", encoder, "-crf", str(self.s.gif_avif_crf), *speed, "-pix_fmt", "yuv420p",
+                              "-an", "-f", "avif", "-loop", "0", str(tmp)], size[0] * size[1]).ok
 
     def _check(self, src: Path, tmp: Path, info: Container) -> tuple[str, str]:
         """(what is wrong, the picture's dB). The frames and the runtime first:
@@ -301,13 +300,13 @@ class AnimatedWebpStage(BatchStage):
     def _convert(self, src: Path, dest: Path, info: Container) -> FileResult:
         s = self.s
         orig = src.stat().st_size
-        width = _canvas_width(src)
-        if media.av1_encoder(width) is None:
+        size = _canvas(src)
+        if media.av1_encoder(size[0]) is None:
             self.kept.append((src, f"narrower than {media.SVT_MIN_WIDTH} px, and no libaom-av1"))
             return FileResult(Kind.SKIP, cache="unsupported")
         with safety.Claim(src.parent, files.stem(src.name), dest) as claim:
             tmp = claim.temp()
-            if not (self._encode(src, tmp, width) and nonempty(tmp)):
+            if not (self._encode(src, tmp, size) and nonempty(tmp)):
                 raise safety.Failed("conversion failed")
             new = tmp.stat().st_size
             if s.discard_if_larger and new >= orig:
@@ -359,11 +358,11 @@ class AnimatedWebpStage(BatchStage):
         ui.out(f"{self.other} other animated WebP(s) don't have a GIF's timing and were left alone.")
 
 
-def _canvas_width(path: Path) -> int | None:
+def _canvas(path: Path) -> tuple[int, int]:
     from PIL import Image
 
     with Image.open(path) as im:
-        return im.width
+        return im.size
 
 
 # --- the command line ------------------------------------------------------------------

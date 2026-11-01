@@ -485,7 +485,7 @@ function Folded({ items, shown, more, render: draw }) {
 // at a time on the page: what a preview would convert, what a run left alone
 // and why. A stage still running is fetched again at its end.
 const GROUP_STEP = 500;
-const WHY = { existing: 'the result already exists', small: 'smaller than the minimum size (min_size_mb)',
+const WHY = { existing: 'a file with the same picture is already there', small: 'smaller than the minimum size (min_size_mb)',
               codec: 'already in an efficient format (source_codecs)', probe: 'a test encode predicted too little saving',
               discarded: 'the result would be larger than the original', 'not-a-gif': 'not really a GIF',
               unsupported: 'a variant the encoder can\'t read', 'taken-over': 'already in the right format',

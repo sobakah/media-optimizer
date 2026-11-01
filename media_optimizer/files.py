@@ -249,16 +249,21 @@ def png_bit_depth(path: Path) -> int | None:
     return head[24]
 
 
-def gif_width(path: Path) -> int | None:
-    """The logical screen width from the GIF header, without decoding."""
+def gif_size(path: Path) -> tuple[int, int] | None:
+    """The logical screen from the GIF header, without decoding."""
     try:
         with open(path, "rb") as fh:
-            head = fh.read(8)
+            head = fh.read(10)
     except OSError:
         return None
     if head[:6] not in (b"GIF87a", b"GIF89a"):
         return None
-    return int.from_bytes(head[6:8], "little")
+    return int.from_bytes(head[6:8], "little"), int.from_bytes(head[8:10], "little")
+
+
+def gif_width(path: Path) -> int | None:
+    size = gif_size(path)
+    return size[0] if size else None
 
 
 def describe(path: Path) -> str:
