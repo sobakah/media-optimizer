@@ -723,6 +723,38 @@ def test_the_page_asks_for_the_cached_counts(server):
     assert status == 403
 
 
+# --- a preview's files -----------------------------------------------------------------
+def test_a_preview_lists_every_file_it_would_convert(folder, tmp_path):
+    d = folder("pv", "a.jpg=photo.jpg", "sub/b.jpg=photo.jpg", "sub/deep/c.jpg=photo.jpg")
+    session = _session(d)
+    session.start({"settings": {}, "dry_run": True})
+    _wait_finished(session)
+    assert session.planned("images") == {"files": ["a.jpg", "sub/b.jpg", "sub/deep/c.jpg"]}
+    assert session.planned("gifs") == {"files": []} and session.planned("nonsense") == {"files": []}
+    assert "planned" not in json.dumps(session.snapshot()), "not in what the page polls"
+
+
+def test_the_preview_list_holds_more_than_a_stage_card_shows():
+    progress = web.Progress()
+    for i in range(web.RECENT_FILES * 3):
+        progress.apply({"event": "done", "stage": "images", "src": f"/s/{i}.png", "outcome": "dry"})
+    progress.apply({"event": "done", "stage": "images", "src": "/s/skipped.png", "outcome": "skipped"})
+    assert len(progress.planned["images"]) == web.RECENT_FILES * 3
+
+
+def test_a_real_run_lists_nothing_as_planned(folder):
+    d = folder("pr", "a.jpg=photo.jpg")
+    session = _session(d)
+    session.start({"settings": {"delete_original": False}, "dry_run": False})
+    _wait_finished(session)
+    assert session.planned("images") == {"files": []}
+
+
+def test_the_preview_list_needs_the_page(server):
+    assert _http(server, "GET", "/api/planned?stage=images")[0] == 200
+    assert _http(server, "GET", "/api/planned?stage=images", cookie=False)[0] == 403
+
+
 # --- the defaults ----------------------------------------------------------------------
 def _config(tmp_path, data=None) -> tuple[Path, "web.Session"]:
     path = tmp_path / "config.json"

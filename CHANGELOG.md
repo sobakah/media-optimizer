@@ -511,4 +511,5 @@ top to bottom, and keepbest shows the run's numbers next to its own.
 | Change | Why |
 |---|---|
 | The page's *Defaults* show the same form as a run, with the same states | They drew the raw list, so the same value looked different: an unset *Move originals to the trash* read off where the form reads on, and `use_cache` on where the form's *Scan all files again* reads off. Both now draw one form |
+| A preview on the page lists the files it would convert | It only gave their number. Each stage and the summary have a list to open, with every file, not only a stage's newest 50 |
 | *All settings* shows a switch not chosen yet as the mode decides | `delete_original` and `rename_inplace` read off there while the question above them read on |

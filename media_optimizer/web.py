@@ -154,6 +154,7 @@ class Progress(Tally):
         super().__init__()
         self.messages: list[dict] = []
         self.encodes: dict[int, dict] = {}
+        self.planned: dict[str, list[str]] = {}   # a preview's files, per stage: asked for on their own
 
     def _stage(self, name: str) -> dict:
         new = name not in self.stages
@@ -167,6 +168,8 @@ class Progress(Tally):
         kind = ev.get("event")
         if kind == "stage_end":
             self.encodes.clear()
+        elif kind == "done" and ev.get("outcome") == "dry":
+            self.planned.setdefault(ev["stage"], []).append(ev["src"])
         elif kind == "file":
             st = self._stage(ev["stage"])
             st["listed"] += 1
@@ -545,6 +548,15 @@ class Session:
             self.phase = "setup"
         self.bump()
 
+    def planned(self, stage: str) -> dict:
+        """The files a preview would convert in a stage, all of them, by their
+        path in the source folder. Not in the state the page polls: a preview
+        can have 100 000 of them."""
+        with self._cond:
+            files = list(self.progress.planned.get(stage, ()))
+        source = str(self.source) if self.source else ""
+        return {"files": sorted(os.path.relpath(f, source) if source else f for f in files)}
+
     def keep_in_background(self) -> None:
         with self._cond:
             if self.phase != "running":
@@ -852,6 +864,8 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/cached":
             values = body.get("settings")
             return session.cached_for(values if isinstance(values, dict) else {})
+        if method == "GET" and path == "/api/planned":
+            return session.planned((query.get("stage") or [""])[0])
         if method == "GET" and path == "/api/defaults":
             return session.defaults()
         if method == "POST" and path == "/api/defaults":

@@ -425,6 +425,33 @@ function Folded({ items, shown, more, render: draw }) {
     <details><summary class="small muted">${more(items.length - shown)}</summary>${draw(items.slice(shown))}</details>`;
 }
 
+// What a preview would convert: every file, fetched when the list is opened,
+// a part at a time on the page. A stage still running is fetched again at its end.
+const PLANNED_STEP = 500;
+
+function PlannedFiles({ stage, label }) {
+  const [open, setOpen] = useState(false);
+  const [files, setFiles] = useState(null);
+  const [limit, setLimit] = useState(PLANNED_STEP);
+  const [failed, setFailed] = useState('');
+  useEffect(() => {
+    if (!open) return undefined;
+    let alive = true;
+    api(`/planned?stage=${encodeURIComponent(stage.stage)}`)
+      .then((data) => { if (alive) { setFiles(data.files); setFailed(''); } })
+      .catch((err) => { if (alive) setFailed(err.message); });
+    return () => { alive = false; };
+  }, [open, stage.state]);
+  const count = stage.outcomes.dry;
+  return html`<details class="planned" onToggle=${(e) => setOpen(e.target.open)}>
+    <summary class="small">${label || 'Show'} ${plural(count, 'file')} that would be converted</summary>
+    ${failed && html`<p class="error">${failed}</p>`}
+    ${!failed && !files && html`<p class="small muted">Loading the list…</p>`}
+    ${files && html`<ul class="files">${files.slice(0, limit).map((f) => html`<li key=${f}><span class="path" title=${f}>${f}</span></li>`)}</ul>
+      ${files.length > limit && html`<button class="btn-link small" onClick=${() => setLimit(limit + PLANNED_STEP)}>Show ${Math.min(PLANNED_STEP, files.length - limit)} more of the ${files.length - limit} left</button>`}`}
+  </details>`;
+}
+
 function Messages({ messages }) {
   return html`<${Folded} items=${messages} shown=${SHOWN_MESSAGES} more=${(n) => `${plural(n, 'more message')}`}
     render=${(list) => list.map((m) => html`<p class=${'msg ' + m.level}><span class="tag">${m.tag}</span> ${m.text}</p>`)} />`;
@@ -456,6 +483,7 @@ function StageCard({ stage, encodes, messages, current }) {
       <span class="small muted">${e.percent !== null ? Math.round(e.percent) + '%' : ''} ${e.speed || ''} ${e.eta !== null ? duration(e.eta) + ' left' : ''}</span>
     </div>`)}
     ${messages.length > 0 && html`<${Messages} messages=${messages} />`}
+    ${stage.outcomes.dry > 0 && html`<${PlannedFiles} stage=${stage} />`}
     ${running && files.length > 0 && html`<${FileList} files=${files.slice(-RUNNING_FILES)} />`}
     ${!running && files.length > 0 && html`<details><summary class="small muted">${stage.listed > files.length
       ? `Files: the last ${files.length} of ${stage.listed} (all are in the log)` : `Files (${files.length})`}</summary>
@@ -491,6 +519,7 @@ function Summary({ progress, code }) {
       ? 'was' : 'were'} handled by earlier runs.</p>`}
     ${t.failed > 0 && html`<p class="small muted">The originals of the failed files are kept; the log tab says why.</p>`}
     ${dry && html`<p class="small muted">Nothing was written or deleted.</p>`}
+    ${dry && progress.stages.filter((s) => s.outcomes.dry > 0).map((s) => html`<${PlannedFiles} key=${s.stage} stage=${s} label=${s.title + ':'} />`)}
   </section>`;
 }
 
