@@ -252,7 +252,7 @@ class Settings:
     clip_webp_quality: int = _setting(50, ("int", 1, 100), "Quality for clip_format webp.")
     clip_webp_quality_retry: int = _setting(25, ("int", 0, 99),
         "Subtracted from the WebP quality for one more attempt when the result is too large.")
-    avif_crf: int = _setting(32, ("int", 0, 63), "AV1 quality for clip_format avif, lower is better.")
+    avif_crf: int = _setting(28, ("int", 0, 63), "AV1 quality for clip_format avif, lower is better.")
     avif_crf_retry: int = _setting(6, ("int", 0, 63),
         "Added to the CRF for one more attempt when the result is too large.")
     avif_preset: int = _setting(6, ("int", 0, 13), "SVT-AV1 preset, lower is slower.")

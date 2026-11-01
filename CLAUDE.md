@@ -379,6 +379,11 @@ behaviour still applies):
   every frame and duration (compared frame by frame with Pillow). The
   journal's `lossless` follows these measurements.
 
+- `avif_crf` on eight real clips (five H.265, three H.264; libsvtav1 preset 6;
+  size against the source, median; VMAF average, median; clips larger than the
+  source): 32: 46 %, 92.6, 0; 28: 62 %, 93.6, 0; 24: 84 %, 94.7, 3; 20: 106 %,
+  95.4, 5; 16: 134 %, 96.2, 7. Hence the default of 28.
+
 Picture comparison: one ffmpeg call per sample compares both files in memory;
 the best of several samples counts. Measured separation (YUV average): sound
 re-encodes 31–38 dB, CRF 51 still 24 dB, broken colour formats 9–12 dB,

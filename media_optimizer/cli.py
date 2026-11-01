@@ -182,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     _value(g, "--webp-quality", setting="clip_webp_quality", metavar="Q", help="quality with --format webp (default: 50)")
     _value(g, "--max-seconds", setting="clip_max_seconds", metavar="S", help="only videos shorter than S (default: 10)")
     _value(g, "--extensions", setting="video_extensions", metavar="LIST", help="source extensions, space separated")
-    _value(g, "--crf", setting="avif_crf", metavar="N", help="AV1 quality 0-63 (default: 32)")
+    _value(g, "--crf", setting="avif_crf", metavar="N", help="AV1 quality 0-63 (default: 28)")
     _value(g, "--crf-retry", setting="avif_crf_retry", metavar="N", help="penalty for the second attempt (default: 6)")
     _value(g, "--preset", setting="avif_preset", metavar="N", help="SVT-AV1 preset 0-13 (default: 6)")
     _value(g, "--pix-fmt", setting="avif_pix_fmt", metavar="P", help="yuv420p | yuv444p")

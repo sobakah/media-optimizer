@@ -86,7 +86,7 @@
   "_clip_webp_quality_retry": "Subtracted from the WebP quality for one more attempt when the result is too large.",
   "clip_webp_quality_retry": 25,
   "_avif_crf": "AV1 quality for clip_format avif, lower is better.",
-  "avif_crf": 32,
+  "avif_crf": 28,
   "_avif_crf_retry": "Added to the CRF for one more attempt when the result is too large.",
   "avif_crf_retry": 6,
   "_avif_preset": "SVT-AV1 preset, lower is slower.",

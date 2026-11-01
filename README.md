@@ -169,6 +169,10 @@ the file manager's thumbnails:
 
 Fedora 45's glycin 2.2.2 plays animated AVIF too.
 
+The default is `avif_crf` 28. On eight real clips it gave 62 % of the source's
+size and VMAF 93.6 (CRF 32: 46 %, 92.6), with none larger than its source. CRF 24
+gave 84 %, and three of the eight came out larger.
+
 Browsers play both. WebP is only smaller than the source for noisy,
 high-bitrate footage such as phone clips; otherwise it is retried once at a
 lower quality and then discarded, unless `--keep-larger` keeps it. In a full
