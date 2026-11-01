@@ -187,12 +187,12 @@ def test_unexpected_error_keeps_original(folder, main, monkeypatch):
 
 def test_trash_failure_queues_instead_of_deleting(folder, main):
     """Without a trash and without --force-delete nothing is deleted; the
-    path is queued and kept when nobody can be asked."""
+    path is queued and kept."""
     d = folder("r5f", "photo.jpg")
     out = main("images", d, "--delete")
     assert (d / "photo.jpg").exists() and (d / "photo.jxl").exists(), out
     assert "[TRASH] failed, original kept" in out
-    assert "Cannot prompt" in out
+    assert "Originals are kept" in out
     assert "photo.jpg" in (d / ".img_pending_deletes.txt").read_text()
 
 
@@ -348,40 +348,6 @@ def test_sigint_while_started_with_sigint_ignored(folder, tmp_path):
 
 
 # --- prompts --------------------------------------------------------------------------------
-def test_no_menu_when_source_given(folder, tmp_path, pty_run):
-    d = folder("r12", "photo.jpg")
-    out = pty_run([], "images", d, tmp_path / "o")
-    assert "Run with the default settings" not in out, out
-
-
-def test_explicit_no_delete_is_not_asked_again(folder, pty_run):
-    d = folder("r12b", "photo.jpg")
-    out = pty_run([], "images", d, "--no-delete")
-    assert "Keep these settings" not in out, out
-    assert "_h265" not in out
-    assert (d / "photo.jpg").exists()
-
-
-def test_interactive_no_to_delete_is_honoured(folder, pty_run):
-    d = folder("r12c", "photo.jpg")
-    out = pty_run(["n", str(d), "", "n", "", "", ""], "images")
-    assert (d / "photo.jpg").exists() and (d / "photo.jxl").exists(), out
-
-
-def test_in_place_notice_offers_change(folder, pty_run):
-    d = folder("r12d", "photo.jpg")
-    out = pty_run(["n", "n"], "images", d)
-    assert "Keep these settings" in out, out
-    assert (d / "photo.jpg").exists() and (d / "photo.jxl").exists()
-
-
-def test_invalid_answer_is_asked_again(folder, pty_run):
-    d = folder("r12e", "photo.jpg")
-    out = pty_run(["n", str(d), "", "n", "11", "9", "", ""], "images")
-    assert "'11' is not valid here" in out, out
-    assert (d / "photo.jxl").exists()
-
-
 def test_webp_fallback_output_is_no_conflict_next_time(folder, run_cli, stub, tmp_path):
     """cjxl failing on a PNG writes the WebP fallback; with the original kept
     the next run tried cjxl again and reported a CONFLICT, every run."""

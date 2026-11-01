@@ -403,12 +403,12 @@ def main(argv: list[str] | None = None) -> int:
     if not source.is_dir():
         ui.out(f"Source directory not found: {source}", err=True)
         return RC_CANNOT_START
-    folders.resolve(source, settings, assume_yes=True)
+    folders.resolve(settings)
     return _run(args, settings, source)
 
 
 def _run(args, s: Settings, source: Path) -> int:
-    ctx = Context(s, source, None, dry_run=not args.convert, assume_yes=True)
+    ctx = Context(s, source, None, dry_run=not args.convert)
     journal_path = Path(s.journal_file).expanduser() if isinstance(s.journal_file, str) else default_journal_file()
     stage = AnimatedWebpStage(ctx, known=gif_outputs(journal_path), only_journal=args.only_journal,
                               include_maybe=args.include_maybe, verbose=args.verbose)

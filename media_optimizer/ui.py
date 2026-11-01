@@ -1,4 +1,4 @@
-"""Terminal output: colours, badges, boxes, prompts and the progress line.
+"""Terminal output: colours, badges, boxes and the progress line.
 
 Plain ANSI via StyleUI, like the owner's other projects (keepbest, lyrembed).
 Workers print from several threads, so every line goes through ``say`` /
@@ -14,7 +14,6 @@ import shutil
 import sys
 import threading
 import unicodedata
-from pathlib import Path
 
 _ANSI = {
     "RESET": "\033[0m", "BOLD": "\033[1m", "DIM": "\033[2m",
@@ -228,163 +227,7 @@ def pct_change(old: int, new: int) -> str:
     return f"{(new / old - 1) * 100:.1f}"
 
 
-# --- prompts -------------------------------------------------------------------
-YES = ("j", "ja", "y", "yes")      # German answers are tolerated on input
-NO = ("n", "nein", "no")
-
-
-def interactive() -> bool:
-    return sys.stdin.isatty()
-
-
+# --- who started this -----------------------------------------------------------
 def caller() -> str | None:
-    """The program that started this one and continues in the terminal
-    afterwards (MO_CALLER, set by keepbest), or None."""
+    """The program that started this one (MO_CALLER, set by keepbest), or None."""
     return os.environ.get("MO_CALLER", "").strip() or None
-
-
-def ask(question: str) -> str:
-    """input() that treats a closed stdin as an empty answer."""
-    with _lock:
-        _clear_progress()
-    try:
-        return input(question).strip()
-    except EOFError:
-        print()
-        return ""
-
-
-def prompt_bool(question: str, default: bool, *, indent: str = "  ") -> bool:
-    hint = "Y/n" if default else "y/N"
-    answer = ask(f"{indent}{question} [{hint}]: ").lower()
-    if answer in YES:
-        return True
-    if answer in NO:
-        return False
-    return default
-
-
-def prompt_text(question: str, default: str = "", *, indent: str = "  ") -> str:
-    shown = f" [{default}]" if default != "" else ""
-    answer = ask(f"{indent}{question}{shown}: ")
-    return answer or default
-
-
-def prompt_setting(settings, name: str, question: str) -> None:
-    """Ask for one setting with its current value as the preset. A value that
-    does not fit the rule is asked again instead of failing at the end."""
-    from .config import parse_value, RULES
-
-    current = getattr(settings, name)
-    shown = " ".join(current) if isinstance(current, list) else ("" if current is None else str(current))
-    if isinstance(current, bool):
-        shown = "true" if current else "false"
-    while True:
-        answer = prompt_text(question, shown)
-        try:
-            setattr(settings, name, parse_value(RULES[name], answer))
-            return
-        except ValueError as exc:
-            say("SETTING", StyleUI.RED, f"'{answer}' is not valid here, expected {exc}.")
-
-
-# --- keeping the window open -----------------------------------------------------
-# Started by double-click or from a .desktop file, the terminal closes as soon
-# as the program ends and an error would be unreadable. MO_HOLD=1/0 forces the
-# behaviour; auto keeps the window open unless the parent is an interactive
-# shell (then the user started it by hand and the window stays anyway).
-SHELLS = {"bash", "sh", "zsh", "dash", "fish", "ksh", "ksh93", "tcsh", "csh", "elvish", "nu"}
-
-
-# Programs that start the tool for a shell: the shell is one step up.
-WRAPPERS = {"sudo", "doas", "env", "nice", "ionice", "nohup", "time", "chrt", "taskset", "uv", "uvx",
-            "poetry", "pipx", "pdm", "hatch", "direnv"}
-
-
-def _cmdline(pid: int) -> list[str]:
-    try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError:
-        return []
-    return [a.decode(errors="replace") for a in raw.split(b"\0") if a]
-
-
-def _parent_of(pid: int) -> int:
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text()
-        return int(stat[stat.rindex(")") + 2:].split()[1])
-    except (OSError, ValueError, IndexError):
-        return 0
-
-
-def _program(argv: list[str]) -> str:
-    return argv[0].lstrip("-").rsplit("/", 1)[-1] if argv else ""
-
-
-def interactive_shell(argv: list[str]) -> bool:
-    """A shell someone types into. Options alone do not make it a script:
-    'fish --no-config' and 'bash --norc' held the window open after every
-    run. A command (-c) or a script file does."""
-    if _program(argv) not in SHELLS:
-        return False
-    for arg in argv[1:]:
-        if arg in ("-i", "--interactive"):
-            return True
-        if arg == "--command" or arg.startswith("--command="):
-            return False
-        if arg.startswith("-") and not arg.startswith("--") and "c" in arg[1:]:
-            return False                # -c, -lc
-        if not arg.startswith("-"):
-            return False                # a script
-    return True
-
-
-def _parent_is_interactive_shell() -> bool:
-    pid = os.getppid()
-    for _ in range(5):
-        argv = _cmdline(pid)
-        if _program(argv) not in WRAPPERS:
-            return interactive_shell(argv)
-        pid = _parent_of(pid)           # sudo, uv run, ...: the shell is further up
-    return False
-
-
-def should_hold(mode: str | None) -> bool:
-    mode = (mode or os.environ.get("MO_HOLD", "auto")).lower()
-    if mode in ("1", "true", "yes"):
-        return True
-    if mode in ("0", "false", "no"):
-        return False
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        return False
-    return not _parent_is_interactive_shell()
-
-
-def hold_open(rc: int, mode: str | None) -> None:
-    from .config import RC_PARTIAL
-
-    if rc == RC_PARTIAL:
-        say("DONE", StyleUI.YELLOW, "Finished, but some files failed (see the summary above).", err=True)
-    elif rc != 0:
-        say("ABORT", StyleUI.RED, f"Exited with code {rc}.", err=True)
-    if not should_hold(mode):
-        return
-    if rc == 0:
-        out()
-        say("DONE", StyleUI.GREEN, "Finished without errors.")
-    try:
-        timeout = int(os.environ.get("MO_HOLD_TIMEOUT", "0") or 0)
-    except ValueError:                  # a typo must not end the run with a traceback
-        timeout = 0
-    try:
-        with open("/dev/tty") as tty:
-            if timeout > 0:
-                import select
-                print(f"Window closes in {timeout}s, or press Enter. ", end="", flush=True)
-                select.select([tty], [], [], timeout)
-            else:
-                print("Window stays open. Press Enter to close. ", end="", flush=True)
-                tty.readline()
-    except OSError:
-        pass
-    print()

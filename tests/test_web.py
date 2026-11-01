@@ -147,8 +147,8 @@ def test_return_url_only_to_this_computer(url, ok):
 @pytest.mark.parametrize("args, message", [
     (["--web", "--return-url", "http://example.com:80/"], "must be a page on this computer"),
     (["--web", "--return-name", "keepbest"], "only applies together with --return-url"),
-    (["--no-browser"], "only applies together with --web"),
-    (["--return-url", "http://127.0.0.1:8000/"], "only applies together with --web"),
+    (["--no-browser", "-y"], "exclude each other"),
+    (["--return-url", "http://127.0.0.1:8000/", "-y"], "exclude each other"),
     (["--web", "-y"], "exclude each other"),
 ])
 def test_web_option_rules(run_cli, tmp_path, args, message):

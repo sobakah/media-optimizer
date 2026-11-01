@@ -12,7 +12,7 @@ INVARIANTS (each one has cost real data before, see CHANGELOG.md)
   5. One run per working directory: ``RunLock`` takes flock on the directory
      itself (as the former Bash version did); the kernel releases it when the
      process ends.
-  6. A failed trash never deletes: the path is queued and asked about once
+  6. A failed trash never deletes: the path is queued and reported once
      at the end of the run.
 
 The lock directory and temp file names are the same as in the former Bash
@@ -284,7 +284,7 @@ def trash_available() -> bool:
 class Trash:
     """Moves originals to the trash. A file that cannot go there is not
     deleted but queued in ``pending`` (a text file in the working directory)
-    and asked about once by ``resolve``."""
+    and reported once by ``resolve``."""
 
     def __init__(self, pending: Path | None, *, force: bool):
         self.pending = pending
@@ -352,11 +352,7 @@ class Trash:
             ui.out(f"    ... and {len(files) - 15} more (see {self.pending})")
         if self.force:
             ui.out("  --force-delete given: deleting permanently.")
-        elif not ui.interactive():
-            ui.out(f"  {S.CYAN}Cannot prompt (not interactive).{S.RESET} Originals are kept.")
-            ui.out(f"  List: {self.pending}")
-            return []
-        elif not ui.prompt_bool("Delete these file(s) permanently now (no trash)?", False):
+        else:
             ui.out(f"  Originals are kept. List: {self.pending}")
             return []
         deleted = []

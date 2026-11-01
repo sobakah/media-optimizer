@@ -10,7 +10,7 @@ before an original is touched.
 * **One command.** `media-optimizer ~/Pictures` counts the file types and runs
   the matching stages; each stage also runs on its own.
 * **Safe deletion.** Originals go to the desktop trash. If that fails nothing
-  is deleted, and you are asked once at the end.
+  is deleted: the originals are listed, and `--force-delete` deletes them.
 * **Verification before deletion.** An output is only accepted once it is
   readable; for video also with a runtime and a picture comparison.
 * **In place or mirrored.** Output next to the source, or into a separate
@@ -74,15 +74,15 @@ python3 -m pip install --user send2trash Pillow   # once
 ## Usage
 
 ```bash
-media-optimizer -n ~/Pictures                      # preview, writes nothing; then offers the real run
-media-optimizer ~/Pictures                         # in place
-media-optimizer ~/Pictures /mnt/archive --delete   # target dir, trash originals
+media-optimizer ~/Pictures                         # the browser page, on this folder
+media-optimizer -n ~/Pictures                      # the same, with a preview preset
+media-optimizer -y ~/Pictures                      # no page, the settings as they are
+media-optimizer -y ~/Pictures /mnt/archive --delete   # target dir, trash originals
 
 media-optimizer images ~/Pictures --target webp    # one stage on its own
 media-optimizer video ~/Videos --encoder cpu --crf 20
 media-optimizer verify ~/Videos /mnt/archive --fix --run
 media-optimizer gpu-selftest ~/Videos/clip.mp4
-media-optimizer ~/Pictures --web                   # settings and progress in the browser
 media-optimizer --install-desktop-entry            # add it to the app menu (Linux)
 ```
 
@@ -97,12 +97,13 @@ media-optimizer --install-desktop-entry            # add it to the app menu (Lin
 | `gpu-selftest FILE` | which GPU options produce a usable picture here |
 
 `media-optimizer COMMAND --help` lists the options. Positional source and
-target and `-i`/`-o` both work. Started on a terminal without a source
-directory, every command offers its settings menu and asks for the source
-with the current directory as the preset (`Source directory [/path]:`;
-Enter takes it, typing replaces it). The home folder, the folders above it,
-`/` and system folders are never preset: a launcher starts in the home
-folder.
+target and `-i`/`-o` both work.
+
+Nothing asks in the terminal. A full run opens the [browser page](#browser-page),
+which asks for what it needs; `-y` runs it right away with the settings as they
+are, for scripts and timers. The stage commands and `verify` never ask and need
+their folders on the command line. Without a display the page's address is
+printed; with neither a display nor a terminal a full run stops and points to `-y`.
 
 Options that behave the same everywhere:
 
@@ -111,7 +112,7 @@ Options that behave the same everywhere:
 | `-i, --input <dir>` | source directory |
 | `-o, --output <dir>` | target directory, empty = in place |
 | `-j, --workers <n>` | parallel workers (default: number of cores) |
-| `--subfolders <mode>` | `ask` (default), `include` or `exclude` (only the files directly in the source) |
+| `--subfolders <mode>` | `ask` (default: the page's tree, `include` anywhere else), `include` or `exclude` (only the files directly in the source) |
 | `--exclude-folder <dir>` | leave out that folder's own files (relative to the source, `.` = the source itself); repeatable |
 | `--delete` / `--no-delete` | move originals to the trash (default depends on the mode) |
 | `--force-delete` | if the trash fails, delete permanently without asking |
@@ -121,9 +122,8 @@ Options that behave the same everywhere:
 | `--journal <file>` / `--no-journal` | file journal (see [Journal](#journal)) / no journal |
 | `--events <file>` | the run's progress as JSON lines (see [Progress for other programs](#progress-for-other-programs)) |
 | `--results <file>` | the run's numbers as JSON when it ends (see [Results for other programs](#results-for-other-programs)) |
-| `--hold` / `--no-hold` | keep the window open at the end |
-| `-y, --yes` | no questions, settings as given |
-| `-n, --dry-run` | preview only; with questions allowed (no `-y`), it then offers the same run for real |
+| `-y, --yes` | full run: no page, the settings as they are |
+| `-n, --dry-run` | preview only; on the page it then offers the same run for real |
 
 ## The stages
 
@@ -262,14 +262,13 @@ default and a comment. Other places: `--config FILE`, `MO_CONFIG=FILE`, or
 `config.json` in the project folder when running from a checkout. Every key
 can also be set as an environment variable `MO_<KEY>` (`MO_MIN_SIZE_MB=0`).
 
-Precedence: **command line > interactive answer > environment > config file >
+Precedence: **the page's form > command line > environment > config file >
 default.** Invalid values stop the program with exit code 2 and one
 `[SETTING]` line per value, whichever source they came from.
 
 `delete_original` and `rename_inplace` are `null` by default and follow the
 mode: with a target directory false, in place true — with a notice that shows
-the values and offers to change them (not with `-y`, without a terminal, or
-when you set them yourself).
+the values.
 
 *Hardware tuning:* `asm=avx512` in `cpu_x265_params` helps on CPUs with a full
 512-bit datapath (Zen 5) and is ignored where AVX-512 is missing; remove it on
@@ -288,8 +287,8 @@ name only the first is converted.
 * **Atomic writes.** Output goes to a `.part` file with a unique name first
   and is moved into place only after its check, never over an existing file.
 * **Trash.** Space is freed once the trash is emptied. If moving fails, the
-  paths collect in `.<stage>_pending_deletes.txt` and one question appears at
-  the end.
+  paths collect in `.<stage>_pending_deletes.txt`, and `--force-delete` deletes
+  them.
 * **State files** live hidden in the working directory (the target directory,
   or the source in place): `.img_stats.json`, `.gif_stats.json`,
   `.clip_stats.json`, `.h265_stats.json` (counters of an interrupted run), the
@@ -308,23 +307,16 @@ name only the first is converted.
   file or a changed quality setting is handled again. Caches in subfolders
   from earlier runs on a subfolder are taken over. `--no-cache-write` still
   skips what the caches know but adds nothing of this run. `--no-cache`, or "Scan all
-  files again" in the settings menu, checks everything again; deleting a cache
+  files again" on the page, checks everything again; deleting a cache
   only costs time.
 * **Old video caches** from the Bash version (paths only) are detected at the start
-  and converted to the new format after a question (`.v1.bak` keeps the old
-  file; without a terminal or with `-y` they are converted). Declined, they
-  are used as before and the question comes again next run. The Bash scripts
-  cannot read the converted format.
-* **Subfolders.** When the source has subfolders with images or videos, a
-  run asks first: *include* (Enter), *exclude* (only the files directly in
-  the source) or *custom*, which opens a folder list like keepbest's: a tree
-  of the subfolders with their image and video counts, where a number
-  switches a folder (and asks whether the folders below it switch along),
-  `a`/`n` select all or no subfolders and `m` switches the main folder. A
-  left-out folder only loses its own files, its subfolders keep their own
-  state. Without a terminal or with `-y` subfolders are included. The choice
-  is saved with an interrupted run; `subfolders` and `exclude_folders` in the
-  config (or the options above) preset it and skip the question.
+  and converted to the new format (`.v1.bak` keeps the old file). The Bash
+  scripts cannot read the converted format.
+* **Subfolders.** The page shows them as a tree with their image and video
+  counts. A left-out folder only loses its own files, its subfolders keep their
+  own state. With `-y` and in the stage commands subfolders are included. The
+  choice is saved with an interrupted run; `subfolders` and `exclude_folders` in
+  the config (or the options above) preset it.
 * **Hidden and system folders are skipped:** trash (`.Trash-*`,
   `$RECYCLE.BIN`, `#recycle`), NAS folders (`@eaDir`, `#snapshot`),
   `lost+found`, AppleDouble files (`._name`), and other hidden entries unless
@@ -378,21 +370,13 @@ lossless, PNG → lossless WebP (up to 8 bits per channel; WebP cannot store
 `name.mp4`. Paths are absolute with symlinked folders resolved; a file name
 that is not valid UTF-8 is written with `\udcXX` escapes
 (`os.fsencode(json.loads(line)["src"])` gives back the bytes). An original
-whose trash failed and that is deleted only after a later run's question has
+whose trash failed and that a later run deletes has
 `kept: null`; its `converted` event names the output.
 
 Events are written only after the action succeeded, never for skipped,
 discarded or failed files, and never in a dry run. The file is only ever
 appended to (one locked write per line) and never rotated, about 350 bytes
 per event. If it cannot be written, the run warns once and carries on.
-
-### Launching by double-click
-
-Started from a file manager, the terminal would close as soon as the program
-ends. The window therefore stays open unless the parent is an interactive
-shell (also behind `sudo`, `env` or `uv run`; a shell running a command with
-`-c` or a script counts as none). `MO_HOLD=1`/`0` (or `--hold`/`--no-hold`) forces it, `MO_HOLD_TIMEOUT=15`
-closes by itself.
 
 ### Browser page
 
@@ -404,10 +388,9 @@ exists, a larger result, and so on.
 file, so a change lasts for every later run; the form's own changes last for
 one run. The file keeps its comments, and the old one stays as `.bak`.
 
-`media-optimizer DIR --web` asks for the settings in the browser and shows
-the run there; without `--web` everything stays in the terminal, unchanged.
-*Browse* beside each folder opens a folder picker, which also comes up by itself
-when `--web` is started without a folder.
+`media-optimizer DIR` asks for the settings in the browser and shows the run
+there. *Browse* beside each folder opens a folder picker, which also comes up by
+itself when no folder was given.
 The page:
 
 * asks for the folder (preset with the current one, never the home folder),
@@ -415,13 +398,12 @@ The page:
   their image and video counts; files a stage's cache already knows are
   marked "done before: skipped" (for the settings in the form), unless
   "Scan all files again" is chosen;
-* shows the same questions as the terminal, with the same conditions, the
-  image and video ones behind *Show*, and every other setting folded away
+* asks about the run's settings, the image and video ones behind *Show*, and every other setting folded away
   with its description; a value from the
   config file, the environment or the command line is marked as such and
   checked by the same rules;
 * offers "Resume" or "Start over" when the folder has an interrupted run;
-* runs the real program and shows it from top to bottom, like the terminal:
+* runs the real program and shows it from top to bottom:
   a section per stage with its progress, the video encodes, its warnings and
   errors and its newest files; the stages are steps in the top bar, next to
   *Stop* and the raw output with its colours under "Log". The page follows
@@ -462,22 +444,17 @@ somewhere else. `--remove-desktop-entry` removes both files.
 
 ### Started from keepbest
 
-[keepbest](https://github.com/sobakah/keepbest) removes duplicate pictures and videos. After a run, its end screen offers `m` to run media-optimizer on the same folder, in the same window. It sets `MO_CALLER=keepbest`: the run still asks whether to use the default settings (normally skipped when the folder is given on the command line), and the closing question reads *Process another directory? (No: back to keepbest)*. keepbest also sets `MO_HOLD=0`, since its window stays open anyway, and passes its folder choice as `MO_SUBFOLDERS` and `MO_EXCLUDE_FOLDERS` (a JSON list), so the run covers the same folders as keepbest's and does not ask about subfolders. With its own page in keepbest's tab, its last button leads back to keepbest; keepbest also passes `--results` and shows the run's numbers next to its own, with the space both freed together.
+[keepbest](https://github.com/sobakah/keepbest) removes duplicate pictures and videos. After a run, its end screen offers to run media-optimizer on the same folder: its page takes over keepbest's tab, and its last button leads back. keepbest passes its folder choice as `MO_SUBFOLDERS` and `MO_EXCLUDE_FOLDERS` (a JSON list), so the run covers the same folders, and `--results`, so it can show the run's numbers next to its own, with the space both freed together.
 
 ### Updates
 
 At every start media-optimizer looks for a newer release, in the background,
 so the start doesn't wait (it asks GitHub through git, so it has the same
-access as `pipx install`, and never asks for a password). When an earlier
-check found one, the terminal says so before a full run starts; one found
-while the run goes on is shown after it. Installed with
-pipx, it asks *Install it now?* (Enter: no); yes runs pipx and starts the new
-version with the same command. With `-y`, without a terminal or from a
-checkout it prints the command instead. The browser page shows the same with
-an *Update* button, when no run is going on; the page then reloads with the
-new version. An install pinned to a release (`...media-optimizer@1.0`) moves
-to the new release and stays pinned. Runs started by keepbest and the stage
-commands (`images`, `video`, ...) don't check. pipx's output from the page is
+access as `pipx install`, and never asks for a password). The page then shows
+an *Update* button, when no run is going on, and reloads with the new version;
+from a checkout it shows the command. An install pinned to a release (`...media-optimizer@1.0`) moves
+to the new release and stays pinned. `-y` runs, pages started by keepbest and
+the stage commands (`images`, `video`, ...) don't check. pipx's output from the page is
 kept in `update.log` in the state folder. `"check_for_updates": false` turns
 this off.
 
@@ -492,7 +469,6 @@ Description=Media Optimizer batch processing
 
 [Service]
 Type=oneshot
-Environment="MO_HOLD=0"
 ExecStart=%h/.local/bin/media-optimizer --yes %h/Ingest %h/Optimized
 ```
 

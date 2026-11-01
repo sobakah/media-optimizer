@@ -149,6 +149,8 @@ def _env(extra: dict | None, path: str | None) -> dict:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(PYDIR)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("DISPLAY", None)                   # no test opens a browser
+    env.pop("WAYLAND_DISPLAY", None)
     if path is not None:
         env["PATH"] = path
     if extra:
@@ -156,12 +158,23 @@ def _env(extra: dict | None, path: str | None) -> dict:
     return env
 
 
+def without_page(args) -> list[str]:
+    """A full run opens the page unless it has -y, so the fixtures add that."""
+    from media_optimizer import cli
+
+    argv = [str(a) for a in args]
+    if {"--web", "-y", "--yes", "-h", "--help", "--version", "--install-desktop-entry",
+        "--remove-desktop-entry"} & set(argv) or argv[:1] and argv[0] != "run" and argv[0] in cli.COMMANDS:
+        return argv
+    return [*argv, "-y"]
+
+
 @pytest.fixture
 def run_cli():
     """run_cli(*args, env={...}, path=..., timeout=...) -> Out (stdout+stderr)."""
     def run(*args, env: dict | None = None, path: str | None = None, timeout: float = 300,
             cwd: Path | None = None) -> Out:
-        proc = subprocess.run([sys.executable, "-m", "media_optimizer", *map(str, args)],
+        proc = subprocess.run([sys.executable, "-m", "media_optimizer", *without_page(args)],
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                               text=True, errors="replace", env=_env(env, path), timeout=timeout, cwd=cwd)
         return Out(proc.returncode, proc.stdout)
@@ -200,60 +213,13 @@ def main(capsys):
     def run(*args) -> Out:
         capsys.readouterr()
         try:
-            rc = cli.main([str(a) for a in args])
+            rc = cli.main(without_page(args))
         finally:
             for s, h in saved.items():
                 signal.signal(s, h)
         captured = capsys.readouterr()
         return Out(rc, captured.out + captured.err)
 
-    return run
-
-
-@pytest.fixture
-def pty_run():
-    """Drives the interactive prompts on a pseudo-terminal: answers are sent
-    one by one whenever the program waits. pty_run(answers, *args)."""
-    def run(answers: list[str], *args, env: dict | None = None, idle: float = 8.0,
-            cwd: Path | None = None) -> Out:
-        import pty
-        import select
-
-        child_env = _env(env, None)
-        if cwd is not None:
-            child_env["PWD"] = str(cwd)           # as a shell would set it
-        pid, fd = pty.fork()
-        if pid == 0:  # pragma: no cover - child
-            if cwd is not None:
-                os.chdir(cwd)
-            os.execvpe(sys.executable, [sys.executable, "-m", "media_optimizer", *map(str, args)],
-                       child_env)
-        out = b""
-        pending = list(answers)
-        last = time.monotonic()
-        while True:
-            ready, _, _ = select.select([fd], [], [], 0.3)
-            if ready:
-                try:
-                    data = os.read(fd, 4096)
-                except OSError:
-                    break
-                if not data:
-                    break
-                out += data
-                last = time.monotonic()
-                continue
-            quiet = time.monotonic() - last
-            if pending and quiet > 0.4:
-                os.write(fd, (pending.pop(0) + "\n").encode())
-                last = time.monotonic()
-            elif quiet > idle:
-                os.kill(pid, signal.SIGHUP)       # still waiting for an answer: give up
-                break
-        os.close(fd)
-        _, status = os.waitpid(pid, 0)
-        rc = os.waitstatus_to_exitcode(status)
-        return Out(rc, out.decode(errors="replace").replace("\r", ""))
     return run
 
 

@@ -1,6 +1,7 @@
 """Command line: one program with a subcommand per stage.
 
-    media-optimizer [run] SOURCE [TARGET]     full run (the default command)
+    media-optimizer [run] [SOURCE [TARGET]]   full run on the browser page (the default)
+    media-optimizer run -y SOURCE [TARGET]    full run without the page, for scripts
     media-optimizer images SOURCE [TARGET]    JPEG/PNG -> JXL or WebP
     media-optimizer gifs SOURCE [TARGET]      GIF -> WebP or AVIF
     media-optimizer clips SOURCE [TARGET]     short silent videos -> AVIF or WebP
@@ -8,27 +9,28 @@
     media-optimizer verify SOURCE TARGET      check outputs against originals
     media-optimizer gpu-selftest FILE         which GPU options work here
 
-Options that change a setting are checked with the same rules as the config
+Nothing asks in the terminal: the page does, and every other run goes by its
+settings. Options that change a setting are checked with the same rules as the config
 file, so a bad value stops with exit code 2 before anything runs.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
 import signal
 import sys
-import threading
 from pathlib import Path
 
-from . import files, folders, gpu, proc, selfupdate, ui
+from . import files, folders, gpu, proc, ui
 from .config import (FOLDER_CHOICE, NAME, RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RULES, Settings,
-                     SettingsError, __version__, load_settings, parse_value, state_dir)
+                     SettingsError, __version__, load_settings, parse_value)
 from .events import events
 from .journal import journal
 from .results import results
 from .runlog import log
-from .stages.base import Context, apply_mode_defaults, prompt_delete_original, prompt_rescan, reset_notices
+from .stages.base import Context, apply_mode_defaults
 from .ui import StyleUI as S
 
 COMMANDS = ("run", "images", "gifs", "clips", "video", "verify", "gpu-selftest")
@@ -73,13 +75,14 @@ def _common(p: argparse.ArgumentParser, *, dirs: str = "optional", workers: bool
               help="if the trash fails, delete permanently without asking")
     if folders:
         _value(g, "--subfolders", setting="subfolders", metavar="MODE",
-               help="ask | include | exclude (default: ask when there are any; include without a terminal)")
+               help="include | exclude, or ask: the page's tree (default; include anywhere else)")
         g.add_argument("--exclude-folder", dest=_SET + "exclude_folders", action="append", metavar="DIR",
                        default=argparse.SUPPRESS,
                        help='leave out the files of this folder (relative to the source, "." = the source '
                             "itself); repeatable")
     g.add_argument("-c", "--config", type=Path, metavar="FILE", help="use this config file")
-    g.add_argument("-y", "--yes", action="store_true", help="do not ask, keep the settings as given")
+    g.add_argument("-y", "--yes", action="store_true",
+                   help="full run: no page, the settings as given (the other commands never ask)")
     g.add_argument("-n", "--dry-run", action="store_true", help="preview only, write nothing")
     g.add_argument("--log", dest=_SET + "log_file", metavar="FILE", default=argparse.SUPPRESS,
                    help="log file")
@@ -92,8 +95,6 @@ def _common(p: argparse.ArgumentParser, *, dirs: str = "optional", workers: bool
                        help="write the run's progress as JSON lines to FILE (for programs that show it)")
         g.add_argument("--results", type=Path, metavar="FILE",
                        help="write the run's results as JSON to FILE when it ends (for the program that started it)")
-    g.add_argument("--hold", dest="hold", action="store_const", const="1", help="keep the window open at the end")
-    g.add_argument("--no-hold", dest="hold", action="store_const", const="0", help="never keep the window open")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -132,10 +133,11 @@ def build_parser() -> argparse.ArgumentParser:
     _flag(g, "--no-clips", setting="clip_stage", value=False, help="skip that stage (default)")
     g.add_argument("--reset", action="store_true", help="discard the saved state and start over")
     g = p.add_argument_group("browser page")
-    g.add_argument("--web", action="store_true", help="ask for the settings and show the run in the browser")
-    g.add_argument("--no-browser", action="store_true", help="with --web: do not open a tab, only print the address")
+    g.add_argument("--web", action="store_true",
+                   help="the page (the default without -y): also without a display or a terminal")
+    g.add_argument("--no-browser", action="store_true", help="do not open a tab, only print the address")
     g.add_argument("--return-url", metavar="URL",
-                   help="with --web: the page's last button leads there (only a page on this computer)")
+                   help="the page's last button leads there (only a page on this computer)")
     g.add_argument("--return-name", metavar="NAME", default="",
                    help="with --return-url: the name on that button (default: 'the previous page')")
 
@@ -299,14 +301,14 @@ def _check_options(parser: argparse.ArgumentParser, args) -> None:
         parser.error("-i with two folders, or with -o: which one is the target?")
     if args.command != "run":
         return
-    if not args.web:
-        for flag, given in (("--no-browser", args.no_browser), ("--return-url", args.return_url),
-                            ("--return-name", args.return_name)):
-            if given:
-                parser.error(f"{flag} only applies together with --web")
-        return
     if args.yes:
-        parser.error("--web and -y exclude each other: the page asks for the settings")
+        for flag, given in (("--web", args.web), ("--no-browser", args.no_browser),
+                            ("--return-url", args.return_url), ("--return-name", args.return_name)):
+            if given:
+                parser.error(f"{flag} and -y exclude each other: the page asks for the settings")
+        return
+    if args.events:
+        parser.error("--events only applies together with -y: the page keeps its own")
     if args.return_name and not args.return_url:
         parser.error("--return-name only applies together with --return-url")
     if args.return_url and not local_page(args.return_url):
@@ -321,53 +323,6 @@ def _dirs(args) -> tuple[str | None, str | None]:
     return source, output
 
 
-def _stage_menu(args, s: Settings, title: str, source: str, output: str) -> tuple[str, str]:
-    """The settings menu of a single stage: only with a terminal, without -y,
-    and when the source was not given on the command line."""
-    ui.out(f"{S.CYAN}{'═' * ui.BOX_WIDTH}{S.RESET}\n{S.BOLD}{title}{S.RESET}\n{S.CYAN}{'═' * ui.BOX_WIDTH}{S.RESET}")
-    defaults = ui.prompt_bool("Run with the default settings?", True, indent="")
-    # Asked with the defaults too: they ended in "No source directory given".
-    source = ui.prompt_text("Source directory", source or files.suggested_source())
-    output = ui.prompt_text("Target directory (empty = in place)", output)
-    if defaults:
-        return source, output
-    out_path = Path(output).expanduser() if output else None
-    if args.command == "verify":
-        s.check_visual = ui.prompt_bool("Compare the picture content as well (PSNR sampling)?", s.check_visual)
-        if s.check_visual:
-            ui.prompt_setting(s, "visual_psnr_min", "PSNR threshold in dB")
-            ui.prompt_setting(s, "visual_samples", "Samples per file")
-            if ui.prompt_bool("Store the compared stills for inspection?", False):
-                args.keep_samples = Path(ui.prompt_text("Directory for the stills",
-                                                        str(args.keep_samples or "/tmp/mo-samples")))
-        ui.prompt_setting(s, "duration_tolerance_pct", "Allowed runtime deviation in percent")
-        args.fix = ui.prompt_bool("Delete broken outputs and drop them from the cache?", args.fix)
-        if args.fix:
-            args.run = ui.prompt_bool("Start the repair run afterwards?", args.run)
-        ui.out()
-        return source, output
-    prompt_delete_original(s, out_path)
-    if args.command == "images":
-        ui.prompt_setting(s, "jxl_effort", "JXL effort (1-10)")
-        ui.prompt_setting(s, "png_mode", "PNG mode (lossless/lossy)")
-    elif args.command == "gifs":
-        ui.prompt_setting(s, "max_workers", "Parallel workers (empty = all cores)")
-        ui.prompt_setting(s, "gif_method", "Compression level (0-6)")
-    elif args.command == "video":
-        ui.prompt_setting(s, "encoder_mode", "Encoder (auto/gpu/cpu)")
-    prompt_rescan(s)
-    return source, output
-
-
-TITLES = {
-    "images": "Image converter: JPG/PNG -> {target}",
-    "gifs": "Batch converter: GIF to animated {target}",
-    "clips": "Short silent clips to animated {target}",
-    "video": "Batch video re-encoder (H.264 -> H.265 / HEVC)",
-    "verify": "Output check: compare converted videos with their originals",
-}
-
-
 def _run_stage(args, s: Settings) -> int:
     from .stages.clips import ClipStage
     from .stages.gifs import GifStage
@@ -376,12 +331,6 @@ def _run_stage(args, s: Settings) -> int:
     from .stages.video import VideoStage
 
     source, output = _dirs(args)
-    if ui.interactive() and not args.yes and not source:
-        target = {"images": "JXL (with WebP fallback)" if s.img_target == "jxl" else "WebP",
-                  "gifs": "WebP" if s.gif_target == "webp" else "AVIF (lossy)",
-                  "clips": s.clip_format.upper()}.get(args.command, "")
-        source, output = _stage_menu(args, s, TITLES[args.command].format(target=target),
-                                     source or "", output or "")
     if args.command == "verify" and (not source or not output):
         ui.out("Both source and target directory are required.", err=True)
         return RC_BAD_SETTING
@@ -405,11 +354,11 @@ def _run_stage(args, s: Settings) -> int:
     elif out == src:
         out = None
     if args.command != "verify":
-        folders.resolve(src, s, assume_yes=args.yes)
+        folders.resolve(s)
     if out is not None and not args.dry_run:
         out.mkdir(parents=True, exist_ok=True)
 
-    ctx = Context(s, src, out, dry_run=args.dry_run, assume_yes=args.yes)
+    ctx = Context(s, src, out, dry_run=args.dry_run)
     if args.command != "verify":
         apply_mode_defaults(ctx, with_rename=args.command == "video")
     tag = {"images": "img", "gifs": "gif", "clips": "clips", "video": "h265", "verify": "verify"}[args.command]
@@ -437,61 +386,18 @@ def _run_stage(args, s: Settings) -> int:
     return rc
 
 
-# How long a full run waits at its end for an update check that hasn't answered
-# yet (it never waits before it starts).
-UPDATE_WAIT = 3.0
-
-
 def _checks_for_updates(args, s: Settings) -> bool:
-    """Only a full run started by a person checks: not one started by keepbest
-    (it checks itself) and not the run the page starts (--events)."""
-    return s.check_for_updates and not ui.caller() and getattr(args, "events", None) is None \
-        and not getattr(args, "return_url", None)
+    """Only the page of a person checks: not one started by keepbest, which
+    checks itself."""
+    return s.check_for_updates and not ui.caller() and not args.return_url
 
 
-class _UpdateCheck:
-    """A newer media-optimizer for a full run in the terminal, without making
-    the run wait: the one the last check found is offered before it (known at
-    once), GitHub is asked meanwhile, and a newer answer is shown after the run."""
-
-    def __init__(self) -> None:
-        self.offered = selfupdate.known()
-        self.found: str | None = None
-        self.thread = threading.Thread(target=self._check, name="mo-update-check", daemon=True)
-        self.thread.start()
-
-    def _check(self) -> None:
-        self.found = selfupdate.available()
-
-    def report(self) -> None:
-        self.thread.join(UPDATE_WAIT)
-        if self.found is not None and self.found != self.offered:
-            ui.say("UPDATE", S.CYAN, f"{NAME} {self.found} is available (this is {__version__}).")
-            _show_command(selfupdate.how_installed(self.found))
-
-
-def _offer_update(version: str, assume_yes: bool) -> None:
-    """Before a full run in the terminal: install a newer version and start it
-    with the same command, or show the command."""
-    how = selfupdate.how_installed(version)
-    ui.say("UPDATE", S.CYAN, f"{NAME} {version} is available (this is {__version__}).")
-    if how.commands and ui.interactive() and not assume_yes:
-        if not ui.prompt_bool("Install it now? The run then starts with the new version", False, indent=""):
-            ui.out()
-            return
-        code, _ = selfupdate.install(how.commands, state_dir() / "update.log", show=True)
-        if code == 0:
-            ui.say("UPDATE", S.GREEN, f"{NAME} {version} is installed; starting it.")
-            selfupdate.restart(selfupdate.restart_argv())
-        ui.say("UPDATE", S.RED, f"The update didn't work (exit code {code}); this run uses {__version__}.")
-    _show_command(how)
-
-
-def _show_command(how: selfupdate.Install) -> None:
-    ui.out("  To update:")
-    for line in how.command.splitlines():
-        ui.out(f"    {line}")
-    ui.out()
+def graphical_session() -> bool:
+    """Whether a browser can be shown here: on Linux and BSD only with a display
+    (not over SSH or on a console). As keepbest's."""
+    if sys.platform.startswith(("linux", "freebsd", "openbsd", "netbsd")):
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return True
 
 
 def _run_web(args) -> int:
@@ -501,7 +407,7 @@ def _run_web(args) -> int:
     s = _settings(args, origins=origins)
     s.validate()
     source, output = _dirs(args)
-    # Without a folder: the current one, by the rule of the terminal's question.
+    # Without a folder: the current one, unless that is the home folder or above.
     source = source or files.suggested_source() or None
     other_origins: dict[str, str] = {}
     other, _, _ = load_settings(args.config, ignore_env=FOLDER_CHOICE, origins=other_origins)
@@ -510,41 +416,24 @@ def _run_web(args) -> int:
                           (args.return_url, args.return_name) if args.return_url else None,
                           dry_run=args.dry_run, reset=args.reset, results=args.results,
                           elsewhere=(other, other_origins), config=args.config)
-    return web.serve(session, open_browser=not args.no_browser, check_updates=_checks_for_updates(args, s))
+    return web.serve(session, open_browser=not args.no_browser and graphical_session(),
+                     check_updates=_checks_for_updates(args, s))
 
 
 def _run_full(args) -> int:
     from . import orchestrator
 
-    if args.web:
+    if not args.yes:
+        # A timer or a cron job would wait for a page nobody can open.
+        if not (args.web or graphical_session() or sys.stdin.isatty()):
+            ui.out("Neither a display nor a terminal for the page: -y runs without it.", err=True)
+            return RC_CANNOT_START
         return _run_web(args)
     source, output = _dirs(args)
-    first = True
-    check = None
-    follow_up = None
-    while True:
-        req = follow_up
-        if req is None:
-            s = _settings(args, folder_choice=first)
-            s.validate()
-            if first and _checks_for_updates(args, s):
-                check = _UpdateCheck()
-                if check.offered is not None:
-                    _offer_update(check.offered, args.yes)
-            req = orchestrator.Request(settings=s, source=source if first else None,
-                                       output=output if first else None,
-                                       dry_run=args.dry_run, assume_yes=args.yes, reset=args.reset and first,
-                                       call=f"{NAME} {shlex.join(sys.argv[1:])}")
-        rc, again = orchestrator.run(req)
-        follow_up = req.then
-        if not again and follow_up is None:
-            if check is not None:
-                check.report()
-            return rc
-        first = False
-        proc.reset()
-        reset_notices()
-        ui.out(f"\n{S.CYAN}─── New run ───{S.RESET}\n")
+    s = _settings(args)
+    s.validate()
+    return orchestrator.run(orchestrator.Request(settings=s, source=source, output=output, dry_run=args.dry_run,
+                                                 reset=args.reset, call=f"{NAME} {shlex.join(sys.argv[1:])}"))
 
 
 # The options of _common that take a value, to find a command after them.
@@ -606,7 +495,6 @@ def main(argv: list[str] | None = None) -> int:
     _check_options(parser, args)
     install_signal_handlers()
     proc.reset()
-    reset_notices()
     if getattr(args, "events", None) is not None:
         events.open(args.events)
     if getattr(args, "results", None) is not None:
@@ -638,7 +526,6 @@ def main(argv: list[str] | None = None) -> int:
         events.run_end(rc)
         events.close()
         results.close()
-    ui.hold_open(rc, getattr(args, "hold", None))
     return rc
 
 

@@ -168,9 +168,8 @@ def prune(path: Path, remove: set[str]) -> int:
     return removed
 
 
-def ask_convert(paths: list[Path], *, interactive: bool, assume_yes: bool) -> bool:
-    """The question about old caches. Without a terminal, or with -y, the
-    default answer applies: convert."""
+def announce_convert(paths: list[Path]) -> None:
+    """Old caches are converted; what that means, once."""
     entries = sum(1 for p in paths for line in _read_lines(p) if line and not line.startswith("#"))
     ui.say("CACHE", S.YELLOW, f"{len(paths)} video cache file(s) in the old format ({entries} entries, "
                               "paths only):")
@@ -181,11 +180,7 @@ def ask_convert(paths: list[Path], *, interactive: bool, assume_yes: bool) -> bo
     ui.out("          The new format also stores size, modification time and the settings a result\n"
            "          depends on, so a replaced file or changed settings are noticed. The old\n"
            "          files are kept as .v1.bak; the Bash version cannot read the new format.")
-    if assume_yes or not interactive:
-        ui.out(f"          {S.CYAN}Converting (default; {'-y given' if assume_yes else 'no terminal to ask'})."
-               f"{S.RESET}")
-        return True
-    return ui.prompt_bool("Convert them to the new format now?", True, indent="  ")
+    ui.out(f"          {S.CYAN}Converting.{S.RESET}")
 
 
 @dataclass

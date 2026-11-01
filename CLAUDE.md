@@ -33,7 +33,7 @@ are relative.
 cli.py           argparse, one subcommand per stage, signal handlers, main()
 config.py        Settings dataclass: default + rule + doc per field; JSON config,
                  MO_* environment, renamed keys, exit codes, state/log locations
-orchestrator.py  full run: counts, preflight, stages in-process, resume state, restart loop
+orchestrator.py  full run: counts, preflight, stages in-process, resume state
 stages/base.py   Context, results, Counters, mode defaults, BatchStage (thread pool)
 stages/images.py gifs.py clips.py   parallel stages on BatchStage
 stages/video.py  HEVC stage: decisions in the main thread, GPU and CPU lanes, VideoCache
@@ -43,15 +43,15 @@ proc.py          running tools in their own process group, stop_all, Stopped/Too
 media.py         ffprobe JSON, verify_video, verify_visual (PSNR; WebP via Pillow)
 gpu.py           gpu_args (the only place), device detection, self-test
 files.py         find_files, source_files (folder choice), real_type, jpeg_info, gif_width, names
-folders.py       the subfolder question and the folder picker (keepbest's model)
+folders.py       which folders a run covers (keepbest's model): counts, cached files for the page
 cache.py         per-stage caches (v2 format), old-format detection, conversion, pruning
-ui.py            StyleUI, say/badge, boxes, prompts, progress line, hold-open
+ui.py            StyleUI, say/badge, boxes, progress line
 runlog.py        the run log
 journal.py       the file journal for picktag (JSON Lines)
 events.py        --events FILE: the run's progress as JSON lines, for the browser page
 results.py       --results FILE: the run's numbers at its end, for keepbest; Tally, the fold both use
-questions.py     the full run's questionnaire as data (terminal and page), the page's settings schema
-web.py           the browser page's server (--web): copied rules from cdimport/lyrembed
+questions.py     the full run's questionnaire as data, the page's settings schema
+web.py           the browser page's server: copied rules from cdimport/lyrembed
 animated_webp.py media-optimizer-webp, its own command: animated WebPs from GIFs -> AVIF (a BatchStage)
 static/          the page: app.js (Preact + htm, no build step), style.css, base.css and icons.js
                  (lyrembed's, see below), logo.svg, vendor/ with LICENSES.txt
@@ -62,8 +62,7 @@ selfupdate.py    a newer release: git ls-remote tags (x.y or x.y.z), at every st
 
 ## Language
 
-Everything is English: messages, prompts, comments, docs. Prompts still accept
-"j"/"ja"/"nein" as answers; that is tolerance on input. State files with older
+Everything is English: messages, comments, docs. State files with older
 German names (`.defekte_videos.txt`, `.video_verdaechtig.txt`) are renamed
 once.
 
@@ -95,6 +94,12 @@ Breaking any of these has caused real data loss or silent corruption before.
 
 ## Rules for changes
 
+- **Nothing asks in the terminal**, as in keepbest. A full run without `-y` is
+  the page (`cli._run_web`); `-y`, the stages and `verify` go by their settings
+  and need their folders given. What used to be a question has a safe answer
+  there (a failed trash lists the originals, a saved state resumes). The terminal's
+  output stays: the page's log shows it, and `-y` runs have nothing else.
+
 - **End a file with an exception, not a return code**: `safety.Failed`,
   `safety.Conflict`. `proc.Stopped` means "interrupted, do not count".
   `proc.ToolMissing` aborts the batch (exit 255). `BatchStage._guarded`
@@ -114,10 +119,8 @@ Breaking any of these has caused real data loss or silent corruption before.
   `config.example.json` (command in `tests/test_units.py`); the test fails
   until it is in sync. Its topic on the browser page follows from its place
   among the fields (`config.GROUP_STARTS`). A setting the full run should ask
-  about goes into `questions.FULL_RUN`, never as a prompt in the
-  orchestrator: the terminal and the page both read that table, and a
-  condition there is data (`when=("png_mode", "lossy")`) so the page can
-  evaluate it too. CLI flags set settings through `_value`/`_flag` in
+  about goes into `questions.FULL_RUN`; a condition there is data
+  (`when=("png_mode", "lossy")`) so the page can evaluate it. CLI flags set settings through `_value`/`_flag` in
   `cli.py`, so they are validated by the same rule. A renamed setting goes
   into `config.RENAMED`.
 - **The page's *Defaults* edit the config file** (`config.save_config`,
@@ -150,8 +153,8 @@ Breaking any of these has caused real data loss or silent corruption before.
   before `handle` and records them after it. Only outcomes that leave no
   output to find next time, never failures. Each stage lists the settings its
   outcomes depend on (`cache_settings`, `video.CACHE_SETTINGS`); add a new
-  setting there when it changes a result. Old-format video caches are only
-  converted after `resolve_legacy_caches` asked, and only under the run lock.
+  setting there when it changes a result. Old-format video caches are
+  converted under the run lock (`convert_legacy_caches`).
   `cache.fingerprint` counts a number in its default's type (the page and
   the environment give 22.0 for 22; a page run missed every cached video).
   The page's folder tree reads the caches with `folders.CacheView`
@@ -220,19 +223,17 @@ Breaking any of these has caused real data loss or silent corruption before.
   small state (`web.Progress`) instead of sending every event to the page.
   The form's values exist only in the run they started (`Session._last`):
   a preview's real run (`run_for_real`) and the way back to the form
-  (`back_to_form`) take them from there. In the terminal `orchestrator.run`
-  leaves the real run in `Request.then` (`same_settings`: nothing asked again).
+  (`back_to_form`) take them from there.
   A saved state needs an explicit choice (resume or `--reset`): with `-y`
   the child would resume on its own. When the page goes away during a run,
   the run gets Ctrl+C (130, state saved) unless "Keep running in the
   background" was chosen; a background run ends with a notification and the
   program waits `BACKGROUND_WAIT` for the page (`web.Watch`). The owner does
   not want a silent process left running: keep both halves of that rule.
-- **Updates** (`selfupdate.py`, as in picktag and keepbest): only a full run
-  started by a person checks (not with `MO_CALLER`, `--events` or
-  `--return-url`); `MO_UPDATE_REPO` replaces the repository (the tests point
-  it at a missing one). The terminal asks before the run and `exec`s the new
-  version with the same argv; the page installs only when no run is going on
+- **Updates** (`selfupdate.py`, as in picktag and keepbest): only a person's
+  page checks (not with `MO_CALLER` or `--return-url`, never `-y` or a stage);
+  `MO_UPDATE_REPO` replaces the repository (the tests point it at a missing
+  one). The page installs only when no run is going on
   (`Session._update_ready`), refuses starts meanwhile, then `serve` `exec`s
   with `MO_RESTART_PAGE` = "port token" so the tab keeps its address and
   reloads when `boot` changes. The process id stays: keepbest waits on it.
@@ -294,7 +295,7 @@ A release, once the owner said so:
    --notes-file <notes>`. The notes: one line on what changed for the user,
    `### Added` / `### Changed` / `### Fixed` as needed (bullets with a bold
    lead-in), `### Upgrading` (`pipx upgrade media-optimizer`, or the update
-   offer in the terminal and the page's *Update* button), and a link to
+   the page's *Update* button), and a link to
    `CHANGELOG.md`.
 
 Commit messages and release notes are drafted outside the checkout, in
@@ -304,7 +305,7 @@ Commit messages and release notes are drafted outside the checkout, in
 ## Tests
 
 ```bash
-python3 -m pytest                  # all, about 420 tests, 5 minutes
+python3 -m pytest                  # all, about 420 tests, 3 minutes
 python3 -m pytest -m "not slow"    # without the signal tests
 python3 -m pytest tests/test_video.py -k cache
 ```
@@ -313,8 +314,8 @@ python3 -m pytest tests/test_video.py -k cache
   in-process so a test can monkeypatch one step and force a failure exactly
   there. `stub(tool, script)` puts a stand-in for an external tool first in
   PATH, which does its damage and runs the real tool via `PATH="${PATH#*:}"`.
-  `vanishing_path(tool)` makes an encoder disappear mid-run. `pty_run`
-  answers prompts on a pseudo-terminal.
+  `vanishing_path(tool)` makes an encoder disappear mid-run. `run_cli` and
+  `main` add `-y` to a full run (`without_page`).
 - `MO_TRASH=none` makes the trash fail; tests delete with `--force-delete`.
   Never let a test reach a real trash: on /tmp, send2trash would create
   `/tmp/.Trash-<uid>`. The fixture fails any test that writes the project's

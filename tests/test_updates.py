@@ -17,7 +17,7 @@ import time
 import pytest
 
 from conftest import PYDIR, _env, releases
-from media_optimizer import selfupdate, ui, web
+from media_optimizer import selfupdate, web
 from media_optimizer.config import Settings, __version__
 
 MAJOR = int(__version__.split(".")[0])
@@ -130,32 +130,11 @@ def test_starting_again_uses_the_same_command(monkeypatch, tmp_path):
 
 
 # --- a full run in the terminal -----------------------------------------------------
-def test_a_full_run_shows_the_command_without_asking(newer_release, run_cli, tmp_path):
-    """The run never waits for GitHub: what the check finds meanwhile comes after
-    it, and from the next start on before it."""
+@pytest.mark.parametrize("args", [["run", "-y", "-n"], ["images", "-n"]])
+def test_only_the_page_checks(newer_release, run_cli, tmp_path, args):
+    """A script with -y doesn't reach out, and the run the page starts neither."""
     (tmp_path / "src").mkdir()
-    out = run_cli("run", "-y", "-n", tmp_path / "src")      # from the checkout: git pull, not pipx
-    assert f"[UPDATE] media-optimizer {NEWER} is available (this is {__version__})." in out
-    assert f"git -C {PYDIR} pull" in out
-    assert out.text.index("[UPDATE]") > out.text.index("MEDIA OPTIMIZER")    # found during the run
-    again = run_cli("run", "-y", "-n", tmp_path / "src")
-    assert again.text.count("[UPDATE]") == 1
-    assert again.text.index("[UPDATE]") < again.text.index("MEDIA OPTIMIZER")   # known: before it
-
-
-@pytest.mark.parametrize("how", ["keepbest", "events", "setting", "stages"])
-def test_who_doesnt_check(newer_release, run_cli, tmp_path, how):
-    (tmp_path / "src").mkdir()
-    args, env = ["run", "-y", "-n", tmp_path / "src"], {}
-    if how == "keepbest":
-        env["MO_CALLER"] = "keepbest"             # keepbest checks itself
-    elif how == "events":
-        args += ["--events", tmp_path / "events.jsonl"]   # the run the page starts
-    elif how == "setting":
-        env["MO_CHECK_FOR_UPDATES"] = "false"
-    else:
-        args = ["images", "-n", tmp_path / "src"]   # only a full run checks
-    out = run_cli(*args, env=env)
+    out = run_cli(*args, tmp_path / "src")
     assert "[UPDATE]" not in out
     assert not (tmp_path / "state" / selfupdate.STATE_FILE).exists()
 
@@ -168,8 +147,8 @@ def pipx_install(monkeypatch, newer_release):
     monkeypatch.setattr(selfupdate, "how_installed", lambda version: how)
     outcome = {"code": 0, "tail": ""}
 
-    def install(commands, log, show=False):
-        calls["installed"].append((commands, show))
+    def install(commands, log):
+        calls["installed"].append(commands)
         return outcome["code"], outcome["tail"]
 
     class Restarted(Exception):
@@ -184,39 +163,6 @@ def pipx_install(monkeypatch, newer_release):
     calls["outcome"], calls["Restarted"] = outcome, Restarted
     assert selfupdate.available() == NEWER    # an earlier start found it: offered before the run
     return calls
-
-
-def answering(monkeypatch, *answers):
-    asked, pending = [], list(answers)
-    monkeypatch.setattr(ui, "interactive", lambda: True)
-    monkeypatch.setattr(ui, "ask", lambda question: (asked.append(question), pending.pop(0) if pending else "")[1])
-    return asked
-
-
-def test_yes_installs_and_starts_the_new_version(pipx_install, main, monkeypatch, tmp_path):
-    (tmp_path / "src").mkdir()
-    asked = answering(monkeypatch, "y")
-    with pytest.raises(pipx_install["Restarted"]):
-        main("run", "-n", tmp_path / "src")
-    assert asked[0].startswith("Install it now?") and "[y/N]" in asked[0]
-    assert pipx_install["installed"] == [([["pipx", "upgrade", "media-optimizer"]], True)]  # output on the terminal
-    assert pipx_install["restarted"] == [(selfupdate.restart_argv(), None)]
-
-
-def test_enter_keeps_this_version_and_the_run_goes_on(pipx_install, main, monkeypatch, tmp_path):
-    (tmp_path / "src").mkdir()
-    answering(monkeypatch, "")
-    out = main("run", "-n", tmp_path / "src")
-    assert pipx_install["installed"] == [] and out.rc == 0 and "MEDIA OPTIMIZER" in out
-
-
-def test_a_failed_update_says_so_and_the_run_goes_on(pipx_install, main, monkeypatch, tmp_path):
-    (tmp_path / "src").mkdir()
-    pipx_install["outcome"]["code"] = 1
-    answering(monkeypatch, "y")
-    out = main("run", "-n", tmp_path / "src")
-    assert f"[UPDATE] The update didn't work (exit code 1); this run uses {__version__}." in out
-    assert "pipx upgrade media-optimizer" in out and out.rc == 0 and pipx_install["restarted"] == []
 
 
 # --- on the page --------------------------------------------------------------------
@@ -280,7 +226,7 @@ def test_the_page_offers_the_update_and_starts_again(served, pipx_install):
     assert update["notes"].endswith(f"/releases/tag/{NEWER}")
     assert _page(srv, "POST", "/api/update", {})[0] == 200
     result["thread"].join(timeout=20)
-    assert result.get("restarted") and pipx_install["installed"] == [([["pipx", "upgrade", "media-optimizer"]], False)]
+    assert result.get("restarted") and pipx_install["installed"] == [[["pipx", "upgrade", "media-optimizer"]]]
     [(argv, address)] = pipx_install["restarted"]
     assert argv == selfupdate.restart_argv() and address == f"{srv.port} {srv.token}"
     assert f"Starting media-optimizer {NEWER}." in result["said"]

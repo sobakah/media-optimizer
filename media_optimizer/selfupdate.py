@@ -4,8 +4,7 @@ The same approach as picktag and keepbest. The repository is private, so the
 check asks git (``git ls-remote``), which uses the same access as ``pipx
 install`` (``gh auth setup-git``); it never prompts for a password. At every
 start, in a thread, so the start doesn't wait; the newest version found is
-remembered in the state folder (``known``), so a full run in the terminal can
-offer it before it starts without asking GitHub first. Release tags have two
+remembered in the state folder (``known``). Release tags have two
 or three parts (``1.0``, ``0.8.3``). A pipx install is updated by pipx: ``pipx
 upgrade`` for an install from the repository, ``pipx install --force`` with
 the new tag for one pinned to a release (it stays pinned; injected packages
@@ -166,17 +165,16 @@ def how_installed(version: str, prefix: str | Path | None = None,
     return Install("other", f"pipx install --force git+{REPO}")
 
 
-def install(commands: list[list[str]], log: Path | None, timeout: float = 900, show: bool = False) -> tuple[int, str]:
+def install(commands: list[list[str]], log: Path | None, timeout: float = 900) -> tuple[int, str]:
     """Run the update (pipx clones and builds: about a minute); return the exit
     code of the first command that failed (else 0) and the end of the output,
-    which is also kept in *log*. With *show* the output goes to the terminal
-    as it comes instead."""
+    which is also kept in *log*."""
     out, code = [], 0
     for argv in commands:
         out.append(f"$ {shlex.join(argv)}")
         try:
-            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=not show, text=True,
-                               timeout=timeout, env=_git_env(), start_new_session=not show)  # Ctrl+C reaches it
+            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                               timeout=timeout, env=_git_env(), start_new_session=True)
         except subprocess.TimeoutExpired:
             code = 124
             out.append(f"stopped after {timeout:.0f} seconds")
@@ -185,8 +183,7 @@ def install(commands: list[list[str]], log: Path | None, timeout: float = 900, s
             out.append(str(exc))
         else:
             code = r.returncode
-            if not show:
-                out.append((r.stdout + r.stderr).strip())
+            out.append((r.stdout + r.stderr).strip())
         if code != 0:
             break
     text = "\n".join(line for line in out if line)

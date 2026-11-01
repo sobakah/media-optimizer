@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from conftest import PYDIR, check_journal, wait_running
-from media_optimizer import cache, media, safety, ui
+from media_optimizer import cache, media, safety
 from media_optimizer import journal as journal_mod
 from media_optimizer.stages.images import ImageStage
 
@@ -285,12 +285,10 @@ def test_trash_is_journaled_as_trash(folder, main, tmp_path, monkeypatch):
 
 
 def test_pending_list_removal_is_journaled(folder, main, tmp_path, monkeypatch):
-    """The trash failed, so the original was queued; deleted after the
-    question at the end of the run. Only then is it journaled."""
+    """The trash failed, so the original was queued; --force-delete deletes
+    it at the end of the run. Only then is it journaled."""
     d = folder("j14", "photo.jpg")
-    monkeypatch.setattr(ui, "interactive", lambda: True)
-    monkeypatch.setattr(ui, "prompt_bool", lambda *a, **k: True)
-    out = main("images", d, "--delete", "-y")
+    out = main("images", d, "--delete", "--force-delete")
     assert out.rc == 0 and not (d / "photo.jpg").exists(), out
     recs = _journal(tmp_path)
     removed = _only(recs, "removed")
@@ -304,10 +302,8 @@ def test_pending_entry_of_an_earlier_run_has_no_known_successor(folder, main, tm
     event from that run still links it to the output."""
     d = folder("j15", "photo.jpg")
     out = main("images", d, "--delete")
-    assert "Cannot prompt" in out and (d / "photo.jpg").exists(), out
-    monkeypatch.setattr(ui, "interactive", lambda: True)
-    monkeypatch.setattr(ui, "prompt_bool", lambda *a, **k: True)
-    out = main("images", d, "--delete", "-y")
+    assert "Originals are kept" in out and (d / "photo.jpg").exists(), out
+    out = main("images", d, "--delete", "--force-delete")
     assert not (d / "photo.jpg").exists(), out
     recs = _journal(tmp_path)
     assert _only(recs, "converted")["dest"] == _c(d / "photo.jxl")
@@ -452,19 +448,6 @@ def test_sigterm_ends_the_run_in_the_journal(folder, tmp_path, start_cli):
     recs = _journal(tmp_path)
     assert [r["event"] for r in recs] == ["run_start", "run_end"], recs
     assert recs[-1]["code"] == 130 and recs[-1]["interrupted"] is True
-
-
-def test_another_directory_gets_its_own_start_and_end(folder, tmp_path, pty_run):
-    """One run id per process; each directory of "process another
-    directory" is framed by its own run_start and run_end."""
-    a = folder("j24a", "photo.jpg")
-    b = folder("j24b", "photo.jpg")
-    out = pty_run(["y", str(b), str(tmp_path / "j24b-out"), "", "n"], a, tmp_path / "j24a-out")
-    assert "New run" in out, out
-    recs = _journal(tmp_path)
-    frame = [(r["event"], r.get("source")) for r in recs if r["event"] in ("run_start", "run_end")]
-    assert frame == [("run_start", _c(a)), ("run_end", None), ("run_start", _c(b)), ("run_end", None)], recs
-    assert len({r["run"] for r in recs}) == 1
 
 
 def test_resume_uses_the_journal_setting_of_this_call(folder, tmp_path, run_cli):

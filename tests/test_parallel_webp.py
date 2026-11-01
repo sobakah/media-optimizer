@@ -31,7 +31,9 @@ def test_webp_clip_animates_and_loops(folder, tmp_path, run_cli):
 
 def test_webp_larger_than_source_is_retried_then_discarded(folder, run_cli):
     """testsrc2 in H.264 is small; WebP stays larger even at a lower quality."""
-    d = folder("w2", "c.mp4=clip.mp4")
+    d = folder("w2")
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25", "-t", "3",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(d / "c.mp4")], check=True)
     out = run_cli("clips", d, "--format", "webp", "--delete", "--force-delete")
     assert "[RETRY]" in out and "quality 25" in out, out
     assert "[DISCARDED]" in out and (d / "c.mp4").exists() and not (d / "c.webp").exists()

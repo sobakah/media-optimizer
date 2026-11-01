@@ -19,7 +19,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import files, folders, proc, questions, safety, ui
+from . import files, folders, proc, safety, ui
 from .config import (RC_BAD_SETTING, RC_CANNOT_START, RC_INTERRUPTED, RC_OK, RC_PARTIAL, Settings,
                      state_dir)
 from .events import events
@@ -152,15 +152,8 @@ class Request:
     source: str | None
     output: str | None
     dry_run: bool = False
-    assume_yes: bool = False
     reset: bool = False
     call: str = ""
-    same_settings: bool = False       # the preview's real run: everything is decided
-    then: "Request | None" = None     # set by run(): to run next, a preview for real
-
-
-def _settings_menu(s: Settings, output: Path | None) -> None:
-    questions.ask(s, output)          # the same table the browser page shows
 
 
 def _preflight(source: Path, output: Path | None, s: Settings, dry_run: bool) -> None:
@@ -215,8 +208,9 @@ def _collision_warning(source: Path, s: Settings) -> None:
         ui.out(f"            ... and {len(clashes) - 10} more")
 
 
-def run(req: Request) -> tuple[int, bool]:
-    """One full run. Returns (exit code, whether to process another directory)."""
+def run(req: Request) -> int:
+    """One full run, without questions: a saved state of the folder resumes
+    (--reset starts over). Returns the exit code."""
     s = req.settings
     ui.banner("MEDIA OPTIMIZER")
     if req.reset and not req.dry_run:
@@ -226,11 +220,10 @@ def run(req: Request) -> tuple[int, bool]:
                 st.remove()
 
     resuming = False
-    declined: RunState | None = None
     state, busy = _pick_state(req)
     if busy:
         ui.out(f"{S.RED}{busy}{S.RESET}", err=True)
-        return RC_CANNOT_START, False
+        return RC_CANNOT_START
     if req.reset and req.dry_run:
         state = None                    # kept for later, but the preview starts over
     if state is not None:
@@ -238,57 +231,38 @@ def run(req: Request) -> tuple[int, bool]:
         done = state.done
         ui.out(f"  Source: {S.BOLD}{state.source}{S.RESET} | images: {_open(done, 'images')} | "
                f"GIFs: {_open(done, 'gifs')} | video: {_open(done, 'video')}\n")
-        if ui.interactive() and not req.assume_yes and not req.same_settings and \
-                not ui.prompt_bool("Resume the last run with its saved settings?", True, indent=""):
-            # Removed once the new run turns out to be on the same folder:
-            # a run on another folder must leave it (README).
-            ui.out("-> Starting a new run.\n")
-            declined, state = state, None
-        else:
-            resuming = True
-            ui.out(f"-> {S.GREEN}Settings loaded, resuming.{S.RESET}\n")
-            saved = Settings.from_dict(state.settings)
-            # Logging belongs to this invocation, not the interrupted one:
-            # --no-log or --log FILE given now must apply. The journal too.
-            for name in ("log", "log_file", "log_max_kb", "journal_file"):
-                setattr(saved, name, getattr(s, name))
-            s = saved
-            errors = s.errors()
-            if errors:
-                for line in errors:
-                    ui.out(f"{S.RED}{line}{S.RESET} (in the saved state)", err=True)
-                return RC_BAD_SETTING, False
+        resuming = True
+        ui.out(f"-> {S.GREEN}Settings loaded, resuming.{S.RESET}\n")
+        saved = Settings.from_dict(state.settings)
+        # Logging belongs to this invocation, not the interrupted one:
+        # --no-log or --log FILE given now must apply. The journal too.
+        for name in ("log", "log_file", "log_max_kb", "journal_file"):
+            setattr(saved, name, getattr(s, name))
+        s = saved
+        errors = s.errors()
+        if errors:
+            for line in errors:
+                ui.out(f"{S.RED}{line}{S.RESET} (in the saved state)", err=True)
+            return RC_BAD_SETTING
 
     if resuming:
         source = Path(state.source)
         output = Path(state.output) if state.output else None
         if not source.is_dir():
             ui.out(f"{S.RED}Directory not found: {source}{S.RESET}", err=True)
-            return RC_CANNOT_START, False
+            return RC_CANNOT_START
     else:
         src_text = req.source or ""
-        if not src_text and ui.interactive():
-            src_text = ui.prompt_text("Source directory", files.suggested_source(), indent="")
         if not src_text:
             ui.out(f"{S.RED}No source directory given.{S.RESET}", err=True)
-            return RC_CANNOT_START, False
+            return RC_CANNOT_START
         source = Path(src_text).expanduser()
         if not source.is_dir():
             ui.out(f"{S.RED}Directory not found: {source}{S.RESET}", err=True)
-            return RC_CANNOT_START, False
-        out_text = req.output or ""
-        if not out_text and ui.interactive() and req.output is None and not req.assume_yes:
-            out_text = ui.ask("Target directory (Enter = in place): ")
-        output = Path(out_text).expanduser() if out_text else None
-        # The settings menu is for interactive use: not when the source was
-        # given on the command line, unless another program (keepbest) passed
-        # it on for a run the user started by hand.
-        if ui.interactive() and not req.assume_yes and not req.same_settings and (not req.source or ui.caller()):
-            ui.out()
-            if not ui.prompt_bool("Use the default settings for all media types?", True, indent=""):
-                _settings_menu(s, output)
+            return RC_CANNOT_START
+        output = Path(req.output).expanduser() if req.output else None
         # Before the state is saved: a resumed run keeps the folder choice.
-        folders.resolve(source, s, assume_yes=req.assume_yes)
+        folders.resolve(s)
         state = RunState(source=str(source), output=str(output) if output else None)
 
     source = source.absolute()
@@ -301,15 +275,8 @@ def run(req: Request) -> tuple[int, bool]:
     if not resuming:
         # Absolute, so a resume from another working directory finds them.
         state.source, state.output = str(source), str(output) if output else None
-        other = RunState.load(state_file(source))          # a folder typed in at the prompt
-        if other is not None and other.running_elsewhere:
-            ui.out(f"{S.RED}Another run is working on '{source}' (process {other.pid}).{S.RESET}\n"
-                   "If there is none, start over with --reset.", err=True)
-            return RC_CANNOT_START, False
-        if declined is not None and _same_folder(declined.source, source) and not req.dry_run:
-            declined.remove()
 
-    ctx = Context(s, source, output, dry_run=req.dry_run, resuming=resuming, assume_yes=req.assume_yes)
+    ctx = Context(s, source, output, dry_run=req.dry_run, resuming=resuming)
     apply_mode_defaults(ctx, with_rename=True)
     state.settings = s.to_dict()
 
@@ -322,10 +289,10 @@ def run(req: Request) -> tuple[int, bool]:
         ui.say("MISSING", S.RED, f"Required programs not found: {' '.join(missing)}", err=True)
         ui.out(f"{S.RED}Please install the missing packages (libjxl-tools, webp, ffmpeg).{S.RESET}", err=True)
         log.close(RC_CANNOT_START)
-        return RC_CANNOT_START, False
+        return RC_CANNOT_START
     if not safety.trash_available():
         ui.say("NOTE", S.YELLOW, "No trash available (send2trash, gio, trash-put). Originals are only "
-                                 "deleted after a prompt.")
+                                 "listed, unless --force-delete is given.")
     if req.dry_run:
         ui.out()
         ui.say("DRY-RUN", S.CYAN, "No writes, no deletions.")
@@ -356,7 +323,7 @@ def run(req: Request) -> tuple[int, bool]:
     state.status = "RUNNING"
     state.save(req.dry_run)
     if count_vid:
-        resolve_legacy_caches(ctx)        # asked now, converted by the video stage
+        resolve_legacy_caches(ctx)        # said now, converted by the video stage
 
     titles = {
         "images": ("Images", f"Starting image conversion ({count_img} files)...", ImageStage),
@@ -397,7 +364,7 @@ def run(req: Request) -> tuple[int, bool]:
                 log.close(rc)
                 journal.end(rc)
                 events.run_end(rc)
-                return rc, False
+                return rc
             state.done[name] = True
             if name == "images" and not wanted["gifs"] and output is None and not req.dry_run:
                 # In place the image stage renames a GIF named .png to .gif;
@@ -421,7 +388,7 @@ def run(req: Request) -> tuple[int, bool]:
             state.save(req.dry_run)
             ui.out(f"{S.CYAN}Progress and settings have been saved.{S.RESET}\n"
                    f"{S.CYAN}The next start will resume where this stopped.{S.RESET}")
-        return RC_INTERRUPTED, False
+        return RC_INTERRUPTED
 
     # Final check: only with a target directory, against the untouched
     # originals. Read-only; findings print the repair command.
@@ -444,7 +411,7 @@ def run(req: Request) -> tuple[int, bool]:
                 log.close(rc)
                 journal.end(rc)
                 events.run_end(rc)
-                return rc, False
+                return rc
             if rc != RC_OK:
                 ui.say("NOTE", S.YELLOW, "The check reported findings. Nothing was changed;")
                 ui.out(f"       repair with: media-optimizer verify {source} {output} --fix --run")
@@ -460,18 +427,7 @@ def run(req: Request) -> tuple[int, bool]:
     else:
         ui.box("ALL STAGES COMPLETED SUCCESSFULLY", [], S.GREEN)
 
-    another = False
-    if ui.interactive() and not req.assume_yes:
-        ui.out()
-        if req.dry_run and ui.prompt_bool("Run this for real now, with the same settings?", False):
-            # A declined state stays for a real run on another folder, not for this one.
-            req.then = Request(settings=s, source=str(source), output=str(output) if output else "",
-                               reset=req.reset or declined is not None, call=req.call, same_settings=True)
-            return rc, False
-        caller = ui.caller()
-        question = f"Process another directory? (No: back to {caller})" if caller else "Process another directory?"
-        another = ui.prompt_bool(question, False)
-    return rc, another
+    return rc
 
 
 def _plan(wanted: dict, counts: dict, state: RunState) -> None:

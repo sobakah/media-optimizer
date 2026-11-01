@@ -293,20 +293,6 @@ def test_box_frame_with_wide_characters(capsys):
     assert len({ui.visible_width(line) for line in lines}) == 1, lines
 
 
-def test_bad_hold_timeout_is_not_a_crash(monkeypatch, capsys):
-    import builtins
-    from media_optimizer import ui
-    real_open = builtins.open
-
-    def no_tty(path, *args, **kwargs):
-        if path == "/dev/tty":
-            raise OSError("no terminal in the test")
-        return real_open(path, *args, **kwargs)
-    monkeypatch.setattr(builtins, "open", no_tty)
-    monkeypatch.setenv("MO_HOLD_TIMEOUT", "5s")
-    ui.hold_open(0, "1")
-
-
 def test_options_before_the_command(folder, main, tmp_path):
     """'-c FILE images DIR' ran a full run of a folder called "images"."""
     d = folder("u1", "photo.jpg")
@@ -371,27 +357,6 @@ def test_a_path_queued_twice_is_deleted_once(tmp_path):
     pending.write_text(f"{f}\n{f}\n")
     assert safety.Trash(pending, force=True).resolve() == [f]
     assert not f.exists() and not pending.exists()
-
-
-@pytest.mark.parametrize("argv, typed_into", [
-    (["-fish"], True), (["/bin/bash", "-l"], True), (["fish", "--no-config"], True), (["bash", "--norc"], True),
-    (["zsh", "-i", "-c", "x"], True), (["bash", "-c", "media-optimizer"], False), (["bash", "-lc", "x"], False),
-    (["fish", "--command=x"], False), (["bash", "run.sh"], False), (["konsole"], False), ([], False)])
-def test_interactive_shell(argv, typed_into):
-    """'fish --no-config' or 'bash --norc' held the window open after every run."""
-    assert ui.interactive_shell(argv) is typed_into
-
-
-def test_a_shell_behind_sudo_is_still_the_shell(monkeypatch):
-    """Started as 'sudo media-optimizer' or 'uv run', the parent is no shell:
-    the window was held open in a terminal."""
-    tree = {10: (["sudo", "media-optimizer"], 9), 9: (["uv", "run"], 8), 8: (["fish"], 1)}
-    monkeypatch.setattr(ui.os, "getppid", lambda: 10)
-    monkeypatch.setattr(ui, "_cmdline", lambda pid: tree[pid][0])
-    monkeypatch.setattr(ui, "_parent_of", lambda pid: tree[pid][1])
-    assert ui._parent_is_interactive_shell()
-    tree[8] = (["bash", "-c", "uv run media-optimizer"], 1)
-    assert not ui._parent_is_interactive_shell()
 
 
 def test_input_with_two_more_folders_is_an_error(folder, run_cli, tmp_path):

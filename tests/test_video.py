@@ -69,12 +69,11 @@ def test_in_place_rename_and_delete(folder, run_cli):
     assert "[RENAME]" in out
 
 
-def test_rename_after_the_permanent_delete_at_the_end(folder, pty_run):
+def test_rename_after_the_permanent_delete_at_the_end(folder, run_cli):
     """The trash refused the original, so 'l_h265.mp4' could not take its
     name; deleting it at the end of the stage left the suffix."""
     d = folder("h1d", "l.mp4=long.mp4")
-    out = pty_run(["y"], "video", d, *FAST, "--delete", "--rename-inplace")
-    assert "TRASH NOT AVAILABLE" in out and "1 deleted" in out, out
+    out = run_cli("video", d, *FAST, "--delete", "--rename-inplace", "--force-delete")
     assert sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) == ["l.mp4"], out
     assert _probe_json(d / "l.mp4")["streams"][0]["codec_name"] == "hevc"
 
@@ -518,14 +517,3 @@ def test_verify_stills_of_equal_names_are_kept_apart(folder, tmp_path, media, ru
 
 
 # --- interactive ---------------------------------------------------------------------------------
-def test_interactive_rescan(folder, tmp_path, pty_run, run_cli):
-    d = folder("hi", "l.mp4=long.mp4")
-    o = tmp_path / "hiout"
-    run_cli("video", d, o, *FAST)
-    env = {"MO_MIN_SIZE_MB": "0", "MO_ENABLE_PROBE": "false", "MO_CPU_PRESET": "ultrafast"}
-    # default settings? n, source, target, delete originals, encoder, rescan
-    out = pty_run(["n", str(d), str(o), "", "cpu", "y"], "video", env=env)
-    assert "Scan all files again" in out and "Ignored for this run" in out, out
-    assert "Cache (this scan):    0 file(s)" in out
-    out = pty_run(["n", str(d), str(o), "", "cpu", ""], "video", env=env)
-    assert "Cache (this scan):    1 file(s)" in out, out

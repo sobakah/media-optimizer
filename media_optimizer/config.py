@@ -3,11 +3,11 @@
 Every setting is a field of ``Settings`` with its rule next to it, so the
 default, the check and the documentation live in one place. Values come from,
 in rising precedence: built-in default < config file < environment
-(``MO_<NAME>``) < interactive prompt < command line.
+(``MO_<NAME>``) < command line < the page's form.
 
 ``delete_original`` and ``rename_inplace`` default to ``None``: "not chosen".
 The mode then decides (in place: true, with a target directory: false). Any
-value from the config file, the environment, a prompt or a flag is a
+value from the config file, the environment, the form or a flag is a
 deliberate choice and is never overwritten by the mode.
 """
 
@@ -123,7 +123,7 @@ def check_value(rule: tuple, value: Any) -> bool:
 
 
 def parse_value(rule: tuple, text: str) -> Any:
-    """Turn text from the environment, a prompt or the command line into a
+    """Turn text from the environment or the command line into a
     typed value. Raises ValueError with the expectation on bad input."""
     kind = rule[0]
     text = text.strip()
@@ -176,13 +176,12 @@ class Settings:
     include_hidden: bool = _setting(False, ("bool",),
         "Also process hidden files and folders. Trash and NAS system folders are always skipped.")
     subfolders: str = _setting("ask", ("choice", "ask", "include", "exclude"),
-        "Subfolders of the source. ask = ask before a run when there are subfolders with images or "
-        "videos (Enter: include; without a terminal or with -y: include). exclude = only the files "
-        "directly in the source.")
+        "Subfolders of the source. ask = choose them on the page (with -y and in the single stages: "
+        "include). exclude = only the files directly in the source.")
     exclude_folders: list[str] = _setting(None, ("paths",),
         "Folders left out, relative to the source, e.g. [\"Archive\", \"2019/raw\"]; \".\" = the files "
         "directly in the source. Each entry covers only that folder's own files, not its subfolders. "
-        "The custom choice of the subfolder question fills it for one run.", factory=list)
+        "The page's folder tree fills it for one run.", factory=list)
     verify_deep: bool = _setting(False, ("bool",),
         "Fully decode every image output before accepting it (slower).")
     preflight: bool = _setting(False, ("bool",),
@@ -196,8 +195,7 @@ class Settings:
         "skipped, but nothing new is remembered: the next run looks at this run's files again.")
     check_for_updates: bool = _setting(True, ("bool",),
         "Look for a newer media-optimizer at every start, in the background (git asks GitHub, with the "
-        "same access as pipx). A full run in the terminal offers what the last check found before it "
-        "starts, and shows a newer one after the run; the page shows it.")
+        "same access as pipx); the page offers it.")
     log: bool = _setting(True, ("bool",), "Write the run log.")
     log_file: str | None = _setting(None, ("opt", ("text",)),
         "Path of the run log. null = media-optimizer.log in the project folder (checkout) "
@@ -325,7 +323,7 @@ class Settings:
 
     # --- helpers ---------------------------------------------------------------
     def set_text(self, name: str, text: str) -> None:
-        """Set a value given as text (prompt, environment). Raises ValueError."""
+        """Set a value given as text (environment). Raises ValueError."""
         setattr(self, name, parse_value(RULES[name], text))
 
     def errors(self) -> list[str]:

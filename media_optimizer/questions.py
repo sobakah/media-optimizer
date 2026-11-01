@@ -1,9 +1,8 @@
-"""The settings questionnaire of a full run, as data: the terminal asks it
-(``ask``), the browser page shows it as a form (``schema``). One table, so
-the two never drift apart.
+"""The settings questionnaire of a full run, as data: the browser page shows
+it as a form (``schema``).
 
 A question belongs to a setting. Its condition is data too, not code, so
-the page can show and hide it the same way: ``when=("png_mode", "lossy")``
+the page can show and hide it: ``when=("png_mode", "lossy")``
 asks only while png_mode is one of the listed values; the name ``target``
 stands for "a target directory is given".
 
@@ -18,7 +17,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import ui
 from .config import DOCS, RULES, Settings, groups
 
 DELETE_TEXT = "Move originals to the trash after a successful conversion?"
@@ -35,14 +33,13 @@ class Question:
 
 @dataclass(frozen=True)
 class Section:
-    title: str                    # the terminal's heading
-    label: str                    # the page's
+    label: str
     questions: tuple[Question, ...]
     hint: str = ""                # a section with one starts folded on the page
 
 
 FULL_RUN = (
-    Section("GLOBAL SETTINGS", "Global settings", (
+    Section("Global settings", (
         Question("preflight", "Correct wrong file extensions by content first?"),
         Question("delete_original", DELETE_TEXT, special="delete"),
         Question("verify_deep", "Fully decode image outputs to verify them (slower)?"),
@@ -52,7 +49,7 @@ FULL_RUN = (
         Question("use_cache", RESCAN_TEXT, special="rescan"),
         Question("cache_write", "Remember this run's results, so the next run can skip them?", ("use_cache", True)),
     )),
-    Section("IMAGES & GIFS", "Images & GIFs", (
+    Section("Images & GIFs", (
         Question("img_target", "Image target format (jxl or webp)"),
         Question("img_webp_quality", "WebP quality, higher is better (0-100)", ("img_target", "webp")),
         Question("jxl_effort", "JXL effort, higher is slower and smaller (1-10)"),
@@ -60,7 +57,7 @@ FULL_RUN = (
         Question("png_quality", "JXL quality for PNG, higher is better (1-100)", ("png_mode", "lossy")),
         Question("gif_method", "WebP compression level for GIFs (0-6)"),
     ), hint="Format, quality and compression"),
-    Section("VIDEO (H.265)", "Video (H.265)", (
+    Section("Video (H.265)", (
         Question("encoder_mode", "Video encoder (auto, gpu or cpu)"),
         Question("bitrate_threshold_kbps", "Bitrate above which the GPU is used (kb/s)", ("encoder_mode", "auto")),
         Question("gpu_qp", "GPU quality, lower is better (24-28)", ("encoder_mode", "auto", "gpu")),
@@ -83,26 +80,6 @@ def shown(q: Question, s: Settings, output: Path | None) -> bool:
     name, *allowed = q.when
     value = output is not None if name == "target" else getattr(s, name)
     return value in allowed
-
-
-def ask(s: Settings, output: Path | None, sections=FULL_RUN) -> None:
-    """The questionnaire on the terminal, in order: a condition sees the
-    answers given above it."""
-    from .stages.base import prompt_delete_original, prompt_rescan
-
-    for section in sections:
-        ui.section(section.title)
-        for q in section.questions:
-            if not shown(q, s, output):
-                continue
-            if q.special == "delete":
-                prompt_delete_original(s, output)
-            elif q.special == "rescan":
-                prompt_rescan(s)
-            elif RULES[q.setting][0] == "bool":
-                setattr(s, q.setting, ui.prompt_bool(q.text, getattr(s, q.setting)))
-            else:
-                ui.prompt_setting(s, q.setting, q.text)
 
 
 # --- for the page -------------------------------------------------------------------

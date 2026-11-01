@@ -1,7 +1,6 @@
-"""The browser page (``media-optimizer DIR --web``): a thin layer around the
+"""The browser page (``media-optimizer DIR``): a thin layer around the
 program. The page asks for the settings, starts the real program as a child
-(``run -y``) and shows its progress; the terminal stays the default and is
-not changed by any of this.
+(``run -y``) and shows its progress. Nothing asks in the terminal any more.
 
 Copied from cdimport and lyrembed, including every rule that was found by a
 failure there:
@@ -396,8 +395,7 @@ class Session:
 
     def _folder_choice(self) -> None:
         """The folder choice belongs to the folder it was given with (keepbest's,
-        the command line's); another one starts without it, as the terminal's
-        "process another directory" does. The config file's stays for all."""
+        the command line's); another one starts without it. The config file's stays for all."""
         if self._choices is None or self._first_source is None:
             return
         for name, (value, origin) in self._choices[self.source == self._first_source].items():
@@ -485,7 +483,7 @@ class Session:
         # A resumed run keeps its own target and settings, whatever the form says.
         target = (state.output or "") if mode == "resume" and state is not None else str(self.target or "")
         delete = state.settings.get("delete_original") if mode == "resume" and state is not None else s.delete_original
-        env = {**os.environ, **to_env(s), "MO_HOLD": "0", "COLUMNS": str(LOG_COLUMNS)}
+        env = {**os.environ, **to_env(s), "COLUMNS": str(LOG_COLUMNS)}
         master, slave = os.openpty()
         try:
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, LOG_COLUMNS, 0, 0))

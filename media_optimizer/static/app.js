@@ -143,7 +143,7 @@ function Field({ field, value, onChange, label, error, prefix = 'f-', reset }) {
 
 function Question({ q, field, values, setValue, hasTarget, error, prefix, reset }) {
   if (q.special === 'delete') {
-    // As the terminal: the default follows the mode, the answer counts as chosen.
+    // The default follows the mode, the answer counts as chosen.
     const value = values.delete_original === null ? !hasTarget : values.delete_original;
     return html`<${Field} field=${{ ...field, kind: 'bool' }} label=${q.text} value=${value} prefix=${prefix} reset=${reset}
       onChange=${(v) => setValue('delete_original', v)} error=${error} />`;
@@ -156,7 +156,7 @@ function Question({ q, field, values, setValue, hasTarget, error, prefix, reset 
     onChange=${(v) => setValue(field.name, v)} error=${error} />`;
 }
 
-// The subfolder choice as the terminal's picker: a folder's checkbox covers
+// The subfolder choice: a folder's checkbox covers
 // its own files; switching one switches the folders below along, unless
 // "only this folder" is used. While the caches are used, the files an earlier
 // run handled (cached: per folder, for the form's settings) are marked as
@@ -439,7 +439,7 @@ function DefaultsView({ onSaved, onClose, onError }) {
   };
   return html`<section class="section">
       <h2>Default settings</h2>
-      <p class="muted">Every run starts from these, on this page and in the terminal. What you change on a run's form lasts for that run and doesn't show here. Saved in <span class="mono">${data.path}</span>; only what differs from the built-in defaults is written there.</p>
+      <p class="muted">Every run starts from these, on this page and with -y. What you change on a run's form lasts for that run and doesn't show here. Saved in <span class="mono">${data.path}</span>; only what differs from the built-in defaults is written there.</p>
       ${data.overridden.length > 0 && html`<p class="note note-info">This start overrides ${data.overridden.join(', ')} from the command line or the environment, so those stay as they are until it ends.</p>`}
     </section>
     <${SettingsForm} schema=${data.schema} fields=${fields} values=${values} setValue=${setValue} hasTarget=${false}

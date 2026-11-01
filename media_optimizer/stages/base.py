@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Iterator
 
 from .. import cache, files, media, proc, safety, ui
-from ..questions import DELETE_TEXT, RESCAN_TEXT
 from ..config import RC_FATAL, RC_INTERRUPTED, RC_OK, RC_PARTIAL, Settings
 from ..events import events
 from ..runlog import log
@@ -37,8 +36,7 @@ class Context:
     output: Path | None
     dry_run: bool = False
     resuming: bool = False
-    assume_yes: bool = False
-    legacy_cache: str = "ask"     # old-format caches: ask, convert, keep, none, done
+    legacy_cache: str = "open"    # old-format caches: open, convert, none, done
 
     @property
     def work_dir(self) -> Path:
@@ -130,21 +128,10 @@ OUTCOMES = {Kind.SUCCESS: "converted", Kind.SKIP: "skipped", Kind.FAIL: "failed"
 
 
 # --- defaults that depend on the mode -------------------------------------------------
-_inplace_notice_shown = False
-
-
-def reset_notices() -> None:
-    global _inplace_notice_shown
-    _inplace_notice_shown = False
-
-
 def apply_mode_defaults(ctx: Context, *, with_rename: bool) -> None:
     """delete_original/rename_inplace that were not chosen follow the mode:
     with a target directory false, in place true. In place that is
-    destructive, so a notice shows the values and offers to change them;
-    nothing is asked when both were chosen already, with -y, or without a
-    terminal. Shown once per run, not per stage."""
-    global _inplace_notice_shown
+    destructive, so a notice shows the values."""
     s = ctx.settings
     if ctx.output is not None:
         if s.delete_original is None:
@@ -152,15 +139,10 @@ def apply_mode_defaults(ctx: Context, *, with_rename: bool) -> None:
         if s.rename_inplace is None:
             s.rename_inplace = False
         return
-    delete_chosen = s.delete_original is not None
-    rename_chosen = s.rename_inplace is not None
     if s.delete_original is None:
         s.delete_original = True
     if s.rename_inplace is None:
         s.rename_inplace = True
-    if _inplace_notice_shown:
-        return
-    _inplace_notice_shown = True
 
     ui.out(f"\n{S.YELLOW}╔{'═' * ui.BOX_WIDTH}╗{S.RESET}\n"
            f"{S.YELLOW}║{S.RESET}  {S.BOLD}IN-PLACE MODE: originals will be modified{S.RESET}"
@@ -172,21 +154,6 @@ def apply_mode_defaults(ctx: Context, *, with_rename: bool) -> None:
         ui.out(f"    Remove _h265 suffix      : {S.BOLD}{_tf(s.rename_inplace)}{S.RESET}")
     if s.delete_original:
         ui.out("  Originals go to the trash and can be restored from there.")
-    if delete_chosen and (not with_rename or rename_chosen):
-        ui.out()
-        return
-    if not ui.interactive():
-        ui.out(f"  {S.CYAN}Cannot prompt (not interactive).{S.RESET}")
-        return
-    if ctx.assume_yes:
-        ui.out(f"  {S.CYAN}-y given, settings are kept.{S.RESET}")
-        return
-    if not ui.prompt_bool("Keep these settings?", True, indent="  "):
-        s.delete_original = ui.prompt_bool("Move originals to the trash after a successful conversion?",
-                                           s.delete_original)
-        if with_rename:
-            s.rename_inplace = ui.prompt_bool("Rename the result to the original name after deleting it?",
-                                              s.rename_inplace)
     ui.out()
 
 
@@ -194,28 +161,10 @@ def _tf(value) -> str:
     return "true" if value else "false"
 
 
-def prompt_delete_original(settings: Settings, output: Path | None) -> None:
-    """The interactive "delete originals?" question. The default shown is the
-    one the mode would apply, so Enter changes nothing; the answer counts as
-    chosen and is never overwritten by the mode."""
-    default = settings.delete_original
-    if default is None:
-        default = output is None
-    settings.delete_original = ui.prompt_bool(DELETE_TEXT, default)
-
-
-def prompt_rescan(settings: Settings) -> None:
-    """Asked the other way round than use_cache, because ignoring the caches
-    is the deliberate choice."""
-    rescan = ui.prompt_bool(RESCAN_TEXT, not settings.use_cache)
-    settings.use_cache = not rescan
-
-
 def resolve_legacy_caches(ctx: Context) -> None:
-    """Ask once per run whether old-format video caches are converted. Only
-    the answer is taken here; the video stage converts under its run lock.
-    A dry run writes nothing, so it neither asks nor converts."""
-    if ctx.legacy_cache not in ("ask", "none"):
+    """Announce once per run that old-format video caches are converted; the
+    video stage does that under its run lock. A dry run writes nothing."""
+    if ctx.legacy_cache not in ("open", "none"):
         return
     if ctx.dry_run or not ctx.settings.use_cache or not ctx.work_dir.is_dir():
         ctx.legacy_cache = "none"
@@ -224,10 +173,8 @@ def resolve_legacy_caches(ctx: Context) -> None:
     if not paths:
         ctx.legacy_cache = "none"
         return
-    convert = cache.ask_convert(paths, interactive=ui.interactive(), assume_yes=ctx.assume_yes)
-    ctx.legacy_cache = "convert" if convert else "keep"
-    if not convert:
-        ui.out("          Kept as they are and used as before (paths only); asked again next run.")
+    cache.announce_convert(paths)
+    ctx.legacy_cache = "convert"
 
 
 def convert_legacy_caches(ctx: Context) -> None:

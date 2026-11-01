@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import time
 
 import pytest
 from PIL import Image
 
-from conftest import leftovers, running, snapshot, wait_running
-from media_optimizer import orchestrator
+from conftest import _env, leftovers, running, snapshot, wait_running
 
 FAST_VIDEO = {"MO_MIN_SIZE_MB": "0", "MO_ENCODER_MODE": "cpu", "MO_ENABLE_PROBE": "false",
               "MO_CPU_PRESET": "ultrafast"}
@@ -103,7 +104,7 @@ def test_missing_tool(folder, tmp_path, run_cli, vanishing_path):
 def test_in_place_with_yes_keeps_settings(folder, run_cli):
     d = folder("o7", "photo.jpg")
     out = run_cli("-y", d)
-    assert "IN-PLACE MODE" in out and "Cannot prompt" in out, out
+    assert "IN-PLACE MODE" in out, out
 
 
 # --- interruption and resume --------------------------------------------------------------
@@ -211,133 +212,79 @@ def test_reset_discards_state(folder, tmp_path, run_cli):
 
 
 # --- restart ------------------------------------------------------------------------------
-def test_process_another_directory(folder, tmp_path, pty_run):
-    a = folder("ra", "photo.jpg")
-    b = folder("rb", "photo.jpg")
-    out = pty_run(["y", str(b), str(tmp_path / "rb-out"), "", "n"], a, tmp_path / "ra-out")
-    assert "New run" in out, out
-    assert (tmp_path / "ra-out" / "photo.jxl").exists() and (tmp_path / "rb-out" / "photo.jxl").exists()
-
-
-def test_another_directory_does_not_inherit_the_folder_choice(folder, tmp_path, pty_run):
-    """keepbest passes its folder choice in the environment; the second
-    directory silently got the first one's."""
-    a = folder("rsa", "photo.jpg", "sub/photo.jpg=photo.jpg")
-    b = folder("rsb", "photo.jpg", "sub/photo.jpg=photo.jpg")
-    # another? y, source, target, defaults, the subfolder question (Enter: include), another? n
-    out = pty_run(["y", str(b), str(tmp_path / "rsb-out"), "", "", "n"], a, tmp_path / "rsa-out",
-                  env={"MO_SUBFOLDERS": "exclude"})
-    assert not (tmp_path / "rsa-out" / "sub").exists(), out
-    assert (tmp_path / "rsb-out" / "sub" / "photo.jxl").exists(), out
-
-
-def test_a_preview_can_be_run_for_real_with_the_same_settings(folder, tmp_path, pty_run):
-    """No second questionnaire: "another directory" asked for everything again
-    and stayed a preview."""
-    d = folder("rr", "photo.jpg", "sub/photo.jpg=photo.jpg")
-    o = tmp_path / "rr-out"
-    # subfolders: exclude; for real? y; another? n
-    out = pty_run(["e", "y", "n"], "-n", d, o)
-    assert "Run this for real now, with the same settings? [y/N]" in out, out
-    assert (o / "photo.jxl").exists() and not (o / "sub").exists(), out
-    assert out.text.count("Process subfolders?") == 1, out
-    assert out.text.count("Process another directory?") == 1, out
-
-
-def test_a_preview_stays_a_preview_when_declined(folder, tmp_path, pty_run):
-    d = folder("rs", "photo.jpg")
-    o = tmp_path / "rs-out"
-    out = pty_run(["n", "n"], "-n", d, o)
-    assert "Run this for real now" in out and "Process another directory?" in out, out
-    assert not o.exists(), out
-
-
 def test_preview_with_y_asks_nothing(folder, tmp_path, run_cli):
     out = run_cli("-y", "-n", folder("rt", "photo.jpg"), tmp_path / "rt-out")
     assert "for real" not in out.text, out
 
 
-def test_called_from_keepbest(folder, tmp_path, pty_run):
-    # keepbest passes the folder on, but the run is interactive: the defaults
-    # question is asked, and the closing question says where No leads.
-    d = folder("rk", "photo.jpg")
-    o = tmp_path / "rk-out"
-    out = pty_run([str(o), "", ""], d, env={"MO_CALLER": "keepbest", "MO_HOLD": "0"})
-    assert "Use the default settings for all media types?" in out, out
-    assert "Process another directory? (No: back to keepbest) [y/N]" in out, out
-    assert (o / "photo.jxl").exists(), out
+# --- the page is the default -----------------------------------------------------------
+def _page_start(argv, env, cwd=None):
+    """The address media-optimizer printed, with the process still running."""
+    proc = subprocess.Popen([sys.executable, "-m", "media_optimizer", *map(str, argv)], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env, cwd=cwd)
+    line = proc.stdout.readline()
+    proc.terminate()
+    proc.wait(10)
+    return proc.returncode, line
 
 
-def test_started_in_a_folder_offers_it_as_the_source(folder, tmp_path, pty_run):
-    d = folder("rw", "photo.jpg")
-    o = tmp_path / "rw-out"
-    # source: Enter takes the working directory; target, defaults, another? n
-    out = pty_run(["", str(o), "", "n"], cwd=d)
-    assert f"Source directory [{d}]:" in out, out
-    assert (o / "photo.jxl").exists(), out
+@pytest.mark.parametrize("argv", [["--no-browser"], ["run", "--no-browser", "--web"]])
+def test_a_full_run_opens_the_page_without_y(folder, argv):
+    d = folder("p1", "photo.jpg")
+    env = _env({"DISPLAY": ":99"}, None)
+    code, line = _page_start([*argv, d], env)
+    assert "is running at http://127.0.0.1:" in line
+    assert (d / "photo.jpg").exists() and not (d / "photo.jxl").exists()
 
 
-def test_home_folder_is_not_offered_as_the_source(folder, tmp_path, pty_run):
-    """Started from a launcher, the working directory is the home folder."""
-    d = folder("rh", "photo.jpg")
-    out = pty_run([""], cwd=d, env={"HOME": d})
-    assert "Source directory:" in out and "No source directory given." in out, out
-    assert not (d / "photo.jxl").exists()
+def test_without_a_display_it_prints_the_address(folder, tmp_path, monkeypatch):
+    """Over SSH: no tab to open, webbrowser would start a text browser."""
+    from media_optimizer import cli, web
+
+    opened = []
+    monkeypatch.setattr(web, "serve", lambda session, open_browser, check_updates: opened.append(open_browser) or 0)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True, raising=False)
+    assert cli.main(["run", str(folder("p2", "photo.jpg"))]) == 0
+    assert opened == [False]
 
 
-def test_stage_started_in_a_folder_offers_it_as_the_source(folder, tmp_path, pty_run):
-    """With the default settings, a stage without a folder used to end in
-    "No source directory given" without asking for one."""
-    d = folder("rws", "photo.jpg")
-    o = tmp_path / "rws-out"
-    out = pty_run(["", "", str(o)], "images", cwd=d)
-    assert f"Source directory [{d}]:" in out, out
-    assert (o / "photo.jxl").exists(), out
+def test_a_timer_without_y_stops_instead_of_waiting_for_a_page(folder, run_cli):
+    """No display, no terminal: nobody could ever open it. It used to run."""
+    d = folder("p3", "photo.jpg")
+    proc = subprocess.run([sys.executable, "-m", "media_optimizer", str(d)], stdin=subprocess.DEVNULL, text=True,
+                          capture_output=True, env=_env(None, None), timeout=30)
+    assert proc.returncode == 1 and "-y runs without it" in proc.stderr
+    assert (d / "photo.jpg").exists()
 
 
-def test_source_on_the_command_line_skips_the_defaults_question(folder, tmp_path, pty_run):
-    d = folder("rl", "photo.jpg")
-    o = tmp_path / "rl-out"
-    out = pty_run([str(o), ""], d)
-    assert "Use the default settings" not in out, out
-    assert "Process another directory? [y/N]" in out, out
-    assert (o / "photo.jxl").exists(), out
+def test_y_runs_without_a_page_and_says_what_happens_in_place(folder, run_cli):
+    d = folder("p4", "photo.jpg")
+    out = run_cli("run", "-y", d, "--force-delete")
+    assert out.rc == 0 and "IN-PLACE MODE" in out and "Move originals to trash  : true" in out
+    assert (d / "photo.jxl").exists() and not (d / "photo.jpg").exists()
 
 
-def test_discarding_a_stopped_run(folder, tmp_path, pty_run):
-    a = folder("rc", "photo.jpg")
-    b = folder("rd", "photo.jpg")
-    (tmp_path / "state").mkdir()
-    (tmp_path / "state" / "state.json").write_text(json.dumps(
-        {"status": "INTERRUPTED", "source": str(a), "output": str(tmp_path / "rc-out"), "settings": {},
-         "done": {"images": False, "gifs": True, "clips": True, "video": True}}))
-    out = pty_run(["n", str(b), str(tmp_path / "rd-out"), "", "n"])
-    assert "Starting a new run" in out, out
-    assert (tmp_path / "rd-out" / "photo.jxl").exists() and not (tmp_path / "rc-out").exists()
-    # Declined before the folder was chosen: a run on another folder used to
-    # delete the stopped run's state anyway.
-    assert [st.source for st in orchestrator.open_states()] == [str(a)]
+def test_the_page_does_not_preset_the_home_folder(tmp_path, monkeypatch):
+    from media_optimizer import cli, web
+
+    seen = []
+    monkeypatch.setattr(web, "serve", lambda session, **kw: seen.append(session.source) or 0)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["run"]) == 0
+    assert seen == [None]
 
 
-def test_declining_and_running_the_same_folder_replaces_its_state(folder, tmp_path, pty_run):
-    a = folder("rc2", "photo.jpg")
-    (tmp_path / "state").mkdir()
-    (tmp_path / "state" / "state.json").write_text(json.dumps(
-        {"status": "INTERRUPTED", "source": str(a), "output": str(tmp_path / "rc2-old"), "settings": {},
-         "done": {"images": False, "gifs": True, "clips": True, "video": True}}))
-    out = pty_run(["n", str(a), str(tmp_path / "rc2-out"), "", "n"])
-    assert (tmp_path / "rc2-out" / "photo.jxl").exists(), out
-    assert orchestrator.open_states() == [], out
+@pytest.mark.parametrize("flags", [["--web"], ["--no-browser"], ["--return-url", "http://127.0.0.1:9/"]])
+def test_the_pages_options_exclude_y(folder, run_cli, flags):
+    assert run_cli("run", "-y", folder("p5", "photo.jpg"), *flags).rc == 2
 
 
-def test_settings_menu(folder, tmp_path, pty_run):
-    d = folder("rm", "photo.jpg", "other.png")
-    o = tmp_path / "rm-out"
-    # source, target, "use defaults?" n, then the menu: preflight, delete, deep, clips, workers,
-    # rescan, remember, target format webp, quality, effort, png mode, gif method, encoder, threshold, qp,
-    # crf, preset, probe, discard, salvaged, visual, strict, verify-output; another dir: n
-    answers = [str(d), str(o), "n", "", "", "", "", "2", "", "", "webp", "80", "", "", "", "", "", "", "",
-               "", "", "", "", "", "", "", "n"]
-    out = pty_run(answers, env={"MO_MIN_SIZE_MB": "0"})
-    assert (o / "photo.webp").exists() and (o / "other.webp").exists(), out
-    assert "Scan all files again" in out
+def test_events_need_y(folder):
+    d = folder("p6", "photo.jpg")
+    proc = subprocess.run([sys.executable, "-m", "media_optimizer", "run", str(d), "--events", str(d / "e")],
+                          stdin=subprocess.DEVNULL, capture_output=True, env=_env(None, None), timeout=30)
+    assert proc.returncode == 2

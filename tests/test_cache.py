@@ -89,6 +89,7 @@ def test_clips_not_selected_are_not_probed_again(folder, run_cli, stub, tmp_path
 def test_clips_existing_output_is_checked_before_probing(folder, run_cli, stub, tmp_path):
     d = folder("k6", "c.mp4=clip.mp4")
     (d / "c.avif").write_bytes(b"x" * 100)
+    os.utime(d / "c.avif", ns=(0, (d / "c.mp4").stat().st_mtime_ns))     # as an output of it has
     log = tmp_path / "ffprobe.calls"
     run_cli("clips", d, "--no-cache", path=_counting_stub(stub, "ffprobe", log))
     assert not log.exists()
@@ -129,30 +130,13 @@ def _old_cache(folder, tmp_path, run_cli, name):
     return d, o
 
 
-def test_old_cache_converted_after_yes(folder, tmp_path, run_cli, pty_run):
+def test_old_cache_is_converted(folder, tmp_path, run_cli):
     d, o = _old_cache(folder, tmp_path, run_cli, "m1")
-    out = pty_run(["y"], "video", d, o, *FAST)
+    out = run_cli("video", d, o, *FAST)
     assert "in the old format" in out and "1 entries kept, 1 for missing files dropped" in out, out
     assert _entries(o / ".video_conversion_cache.txt") == {f"{d}/l.mp4": "done"}
     assert (o / ".video_conversion_cache.txt.v1.bak").read_text() == f"{d}/l.mp4\n{d}/gone.mp4\n"
     assert "Cache (this scan):    1 file(s)" in out
-
-
-def test_old_cache_kept_after_no(folder, tmp_path, run_cli, pty_run):
-    d, o = _old_cache(folder, tmp_path, run_cli, "m2")
-    out = pty_run(["n"], "video", d, o, *FAST)
-    assert "Kept as they are" in out, out
-    assert (o / ".video_conversion_cache.txt").read_text() == f"{d}/l.mp4\n{d}/gone.mp4\n"
-    assert "Cache (this scan):    1 file(s)" in out, "still used, by path as before"
-    out = pty_run(["n"], "video", d, o, *FAST)
-    assert "in the old format" in out, "asked again next run"
-
-
-def test_old_cache_without_terminal_is_converted(folder, tmp_path, run_cli):
-    d, o = _old_cache(folder, tmp_path, run_cli, "m3")
-    out = run_cli("video", d, o, *FAST)
-    assert "Converting (default; no terminal to ask)" in out, out
-    assert _entries(o / ".video_conversion_cache.txt") == {f"{d}/l.mp4": "done"}
 
 
 def test_old_cache_in_dry_run_is_used_not_touched(folder, tmp_path, run_cli):
@@ -267,20 +251,6 @@ def test_entries_under_a_symlinked_path_are_rewritten(tmp_path):
     sc.load()
     assert sc.lookup(f) == "discarded" and sc.lookup(tmp_path / "link" / "x.jpg") == "discarded"
     assert _entries(c) == {str(f): "discarded"}
-
-
-def test_declined_conversion_still_takes_over_subfolder_caches(folder, tmp_path, pty_run):
-    """With the old root cache kept, entries from subfolders went into the
-    new-format table that an old-format cache never looks at."""
-    d = folder("s3", "sub/l.mp4=long.mp4", "x.mp4=long.mp4")
-    o = tmp_path / "s3out"
-    (o / "sub").mkdir(parents=True)
-    (o / ".video_conversion_cache.txt").write_text(f"{d}/x.mp4\n")
-    (o / "sub" / ".video_conversion_cache.txt").write_text(f"{d}/sub/l.mp4\n")
-    out = pty_run(["", "n"], "video", d, o, *FAST)       # subfolders: include; old cache: keep
-    assert "Kept as they are" in out and "Cache (this scan):    2 file(s)" in out, out
-    assert not (o / "sub" / "l.mp4").exists() and not (o / "sub" / "l.mkv").exists()
-    assert (o / ".video_conversion_cache.txt").read_text().splitlines()[-1] == f"{d}/sub/l.mp4"
 
 
 def test_a_dry_run_leaves_an_old_format_cache_alone(folder, tmp_path):
