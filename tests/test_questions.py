@@ -112,3 +112,11 @@ def test_schema_for_the_page(tmp_path, monkeypatch):
     assert first[1] == {"setting": "delete_original", "text": questions.DELETE_TEXT, "when": [], "special": "delete"}
     png = next(q for sec in data["questionnaire"] for q in sec["questions"] if q["setting"] == "png_quality")
     assert png["when"] == ["png_mode", "lossy"]
+
+
+def test_the_defaults_show_the_same_form_as_a_run():
+    """They were the raw list of settings, which read like other settings."""
+    page = (Path(__file__).resolve().parent.parent / "media_optimizer" / "static" / "app.js").read_text()
+    assert page.count("<${SettingsForm} ") == 2
+    assert page.count("schema.questionnaire.map") == 1 and page.count('class="section all"') == 1
+    assert "values[f.name] === null ? !hasTarget" in page, "a switch not chosen yet reads as the question above it"

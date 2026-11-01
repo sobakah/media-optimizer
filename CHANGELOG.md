@@ -503,3 +503,12 @@ top to bottom, and keepbest shows the run's numbers next to its own.
 | `cache_write` (`--no-cache-write`, a question in the full run) | `--no-cache` also remembers nothing, but ignores what the caches know as well. This one still skips what they know and adds nothing, so the next run looks at this run's files again |
 | Short clips: `avif_crf` defaults to 28 instead of 32 | 32 softened the weakest moments too much: on eight real clips the weakest 5 % of frames rise from VMAF 89.6 to 91.2, at 62 % of the source's size instead of 46 %, and none grew past its source. At 24 three of the eight did. Clips the clip stage's cache knew are looked at once more, because this setting is part of what it remembers |
 | `media-optimizer-webp`: animated WebPs from GIFs to AVIF, and WebPs labelled animated that aren't | A report by default. A WebP counts as from a GIF by the journal, or by marks gif2webp leaves; with only a GIF's timing it is a "maybe" and needs `--include-maybe`. A result has to have every frame, the runtime and the picture before the WebP goes. Transparent ones stay WebP: the AVIF command flattens transparency |
+
+---
+
+## Unreleased
+
+| Change | Why |
+|---|---|
+| The page's *Defaults* show the same form as a run, with the same states | They drew the raw list, so the same value looked different: an unset *Move originals to the trash* read off where the form reads on, and `use_cache` on where the form's *Scan all files again* reads off. Both now draw one form |
+| *All settings* shows a switch not chosen yet as the mode decides | `delete_original` and `rename_inplace` read off there while the question above them read on |

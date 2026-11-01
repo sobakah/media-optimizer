@@ -95,7 +95,7 @@ function shown(when, values, hasTarget) {
   return allowed.includes(value);
 }
 
-function Field({ field, value, onChange, label, error, prefix = 'f-' }) {
+function Field({ field, value, onChange, label, error, prefix = 'f-', reset }) {
   const id = prefix + field.name;
   const title = label || field.name;
   const origin = field.origin !== 'default' ? html`<span class="origin">${ORIGINS[field.origin] || field.origin}</span>` : '';
@@ -104,7 +104,7 @@ function Field({ field, value, onChange, label, error, prefix = 'f-' }) {
     return html`<div class=${'field check' + (error ? ' invalid' : '')}>
       <label><span>${title}</span>
         <input class="switch" type="checkbox" id=${id} checked=${!!value} onChange=${(e) => onChange(e.target.checked)} /></label>${origin}
-      ${!label && html`<p class="doc">${field.doc}</p>`}${error && html`<p class="error">${error}</p>`}
+      ${!label && html`<p class="doc">${field.doc}</p>`}${error && html`<p class="error">${error}</p>`}${reset}
     </div>`;
   }
   if (field.kind === 'choice') {
@@ -137,22 +137,22 @@ function Field({ field, value, onChange, label, error, prefix = 'f-' }) {
   return html`<div class=${'field' + (error ? ' invalid' : '')}>
     <label for=${id}>${title}</label>${origin}
     ${input}
-    ${!label && html`<p class="doc">${field.doc}</p>`}${error && html`<p class="error">${error}</p>`}
+    ${!label && html`<p class="doc">${field.doc}</p>`}${error && html`<p class="error">${error}</p>`}${reset}
   </div>`;
 }
 
-function Question({ q, field, values, setValue, hasTarget, error }) {
+function Question({ q, field, values, setValue, hasTarget, error, prefix, reset }) {
   if (q.special === 'delete') {
     // As the terminal: the default follows the mode, the answer counts as chosen.
     const value = values.delete_original === null ? !hasTarget : values.delete_original;
-    return html`<${Field} field=${{ ...field, kind: 'bool' }} label=${q.text} value=${value}
+    return html`<${Field} field=${{ ...field, kind: 'bool' }} label=${q.text} value=${value} prefix=${prefix} reset=${reset}
       onChange=${(v) => setValue('delete_original', v)} error=${error} />`;
   }
   if (q.special === 'rescan') {
-    return html`<${Field} field=${{ ...field, kind: 'bool' }} label=${q.text} value=${!values.use_cache}
+    return html`<${Field} field=${{ ...field, kind: 'bool' }} label=${q.text} value=${!values.use_cache} prefix=${prefix} reset=${reset}
       onChange=${(v) => setValue('use_cache', !v)} error=${error} />`;
   }
-  return html`<${Field} field=${field} label=${q.text} value=${values[field.name]}
+  return html`<${Field} field=${field} label=${q.text} value=${values[field.name]} prefix=${prefix} reset=${reset}
     onChange=${(v) => setValue(field.name, v)} error=${error} />`;
 }
 
@@ -218,6 +218,33 @@ function FoldedSection({ sec, failed, children }) {
     <summary><h2>${sec.title}</h2><span class="muted small">${sec.hint}</span></summary>
     ${children}
   </details>`;
+}
+
+// The questionnaire and All settings: one form for a run and for the defaults,
+// so the two show the same. The defaults belong to no folder: a question that
+// needs a target folder is shown, and each setting can go back to the built-in value.
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+function SettingsForm({ schema, fields, values, setValue, hasTarget, errors, prefix = 'f-', defaults = false }) {
+  // A switch not chosen yet follows the mode, as the question about it shows.
+  const byMode = (f) => (f.kind === 'bool' && values[f.name] === null ? !hasTarget : values[f.name]);
+  const reset = (f) => defaults && !same(values[f.name], f.default)
+    && html`<button class="btn-link small" onClick=${() => setValue(f.name, f.default)}>Back to the built-in default</button>`;
+  return html`${schema.questionnaire.map((sec) => {
+      const questions = sec.questions.filter((q) => shown(q.when, values, defaults || hasTarget)).map((q) => html`<${Question} key=${q.setting}
+        q=${q} field=${fields[q.setting]} values=${values} setValue=${setValue} hasTarget=${hasTarget}
+        error=${errors[q.setting]} prefix=${prefix} reset=${reset(fields[q.setting])} />`);
+      if (sec.hint) return html`<${FoldedSection} sec=${sec} failed=${sec.questions.some((q) => errors[q.setting])}>${questions}<//>`;
+      return html`<section class="section"><h2>${sec.title}</h2>${questions}</section>`;
+    })}
+    <details class="section all">
+      <summary><h2>All settings</h2></summary>
+      ${schema.groups.map((g) => html`<div class="group">
+        <h3>${g.title}</h3>
+        ${g.fields.filter((f) => !FOLDER_FIELDS.includes(f.name)).map((f) => html`<${Field} key=${f.name} prefix=${prefix}
+          field=${f} value=${byMode(f)} onChange=${(v) => setValue(f.name, v)} error=${errors[f.name]} reset=${reset(f)} />`)}
+      </div>`)}
+    </details>`;
 }
 
 function SetupView({ setup, onSetup, onError }) {
@@ -309,21 +336,7 @@ function SetupView({ setup, onSetup, onError }) {
     ${!folder.error && !resumeLocked && html`<${FolderTree} folder=${folder} excluded=${excluded} setExcluded=${setExcluded}
       cached=${cached} useCache=${values.use_cache} />`}
     <fieldset class="plain" disabled=${resumeLocked}>
-      ${setup.schema.questionnaire.map((sec) => {
-        const questions = sec.questions.filter((q) => shown(q.when, values, hasTarget)).map((q) => html`<${Question} key=${q.setting}
-          q=${q} field=${fields[q.setting]} values=${values} setValue=${setValue} hasTarget=${hasTarget}
-          error=${errors[q.setting]} />`);
-        if (sec.hint) return html`<${FoldedSection} sec=${sec} failed=${sec.questions.some((q) => errors[q.setting])}>${questions}<//>`;
-        return html`<section class="section"><h2>${sec.title}</h2>${questions}</section>`;
-      })}
-      <details class="section all">
-        <summary><h2>All settings</h2></summary>
-        ${setup.schema.groups.map((g) => html`<div class="group">
-          <h3>${g.title}</h3>
-          ${g.fields.filter((f) => !FOLDER_FIELDS.includes(f.name)).map((f) => html`<${Field}
-            key=${f.name} field=${f} value=${values[f.name]} onChange=${(v) => setValue(f.name, v)} error=${errors[f.name]} />`)}
-        </div>`)}
-      </details>
+      <${SettingsForm} schema=${setup.schema} fields=${fields} values=${values} setValue=${setValue} hasTarget=${hasTarget} errors=${errors} />
     </fieldset>
     <section class="section start">
       <label class="check"><span>Preview only (dry run): show what would happen, change nothing</span>
@@ -337,8 +350,6 @@ function SetupView({ setup, onSetup, onError }) {
 // What every run starts from: the config file, not this start's options, as
 // the form shows them. Saved values reach the form; a run's own changes never
 // reach the file.
-const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-
 function DefaultsView({ onSaved, onClose, onError }) {
   const [data, setData] = useState(null);
   const [values, setValues] = useState({});
@@ -351,14 +362,15 @@ function DefaultsView({ onSaved, onClose, onError }) {
   };
   useEffect(() => { api('/defaults').then(load).catch((err) => onError(err.message)); }, []);
   if (!data) return html`<p class="muted">Reading the config file…</p>`;
-  const fields = data.schema.groups.flatMap((g) => g.fields);
-  const dirty = fields.some((f) => !same(values[f.name], f.value));
+  const list = data.schema.groups.flatMap((g) => g.fields);
+  const fields = Object.fromEntries(list.map((f) => [f.name, f]));
+  const dirty = list.some((f) => !same(values[f.name], f.value));
   const setValue = (name, value) => { setValues((v) => ({ ...v, [name]: value })); setSaved(''); };
   const save = async () => {
     setBusy(true);
     setErrors({});
     try {
-      const done = await api('/defaults', { settings: Object.fromEntries(fields.filter((f) => !FOLDER_FIELDS.includes(f.name)).map((f) => [f.name, values[f.name]])) });
+      const done = await api('/defaults', { settings: Object.fromEntries(list.filter((f) => !FOLDER_FIELDS.includes(f.name)).map((f) => [f.name, values[f.name]])) });
       load(await api('/defaults'));
       setSaved(`Saved ${plural(done.changed.length, 'setting')}.`);
       onSaved();
@@ -370,21 +382,19 @@ function DefaultsView({ onSaved, onClose, onError }) {
     setBusy(false);
   };
   return html`<section class="section">
-    <h2>Default settings</h2>
-    <p class="muted">Every run starts from these, on this page and in the terminal. Saved in <span class="mono">${data.path}</span>; only what differs from the built-in defaults is written there.</p>
-    ${data.overridden.length > 0 && html`<p class="note note-info">This start overrides ${data.overridden.join(', ')} from the command line or the environment, so those stay as they are until it ends.</p>`}
-    ${data.schema.groups.map((g) => html`<div class="group">
-      <h3>${g.title}</h3>
-      ${g.fields.filter((f) => !FOLDER_FIELDS.includes(f.name)).map((f) => html`<${Field} key=${f.name} prefix="d-"
-        field=${f} value=${values[f.name]} onChange=${(v) => setValue(f.name, v)} error=${errors[f.name]} />
-        ${!same(values[f.name], f.default) && html`<button class="btn-link small" onClick=${() => setValue(f.name, f.default)}>Back to the built-in default</button>`}`)}
-    </div>`)}
-    <div class="row">
-      <button class="btn btn-primary" disabled=${busy || !dirty} onClick=${save}><${Icon} name="check" /> Save as defaults</button>
-      <button class="btn" onClick=${onClose}><${Icon} name="left" /> Back</button>
-      ${saved && !dirty && html`<span class="muted small" role="status">${saved}</span>`}
-    </div>
-  </section>`;
+      <h2>Default settings</h2>
+      <p class="muted">Every run starts from these, on this page and in the terminal. What you change on a run's form lasts for that run and doesn't show here. Saved in <span class="mono">${data.path}</span>; only what differs from the built-in defaults is written there.</p>
+      ${data.overridden.length > 0 && html`<p class="note note-info">This start overrides ${data.overridden.join(', ')} from the command line or the environment, so those stay as they are until it ends.</p>`}
+    </section>
+    <${SettingsForm} schema=${data.schema} fields=${fields} values=${values} setValue=${setValue} hasTarget=${false}
+      errors=${errors} prefix="d-" defaults=${true} />
+    <section class="section start">
+      <div class="row">
+        <button class="btn btn-primary" disabled=${busy || !dirty} onClick=${save}><${Icon} name="check" /> Save as defaults</button>
+        <button class="btn" onClick=${onClose}><${Icon} name="left" /> Back</button>
+        ${saved && !dirty && html`<span class="muted small" role="status">${saved}</span>`}
+      </div>
+    </section>`;
 }
 
 // --- the run ----------------------------------------------------------------------
