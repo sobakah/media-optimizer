@@ -190,6 +190,10 @@ Breaking any of these has caused real data loss or silent corruption before.
   server that is gone. Clicking through is a manual check: Playwright in a
   venv outside the repo, `chromium.launch(channel="chrome")`, both
   `color_scheme`s, 390 px wide with `scrollWidth` against `innerWidth`.
+  The folder picker is keepbest's: the server lists folders (`web.list_folders`,
+  `/api/folders`), names of folders only, because a browser can't hand out
+  paths; a symlink keeps the path it was reached by. Choosing another folder
+  makes a new form, so `useFolder` carries the form's changes over (`edits`).
   The address line (`web.ADDRESS_LINE`) is read by keepbest with cdimport's
   `_HANDOFF` pattern: keep its wording. A new file under `static/` needs a
   pattern in `pyproject.toml`'s package-data (tested).

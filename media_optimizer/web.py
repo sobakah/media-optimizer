@@ -46,7 +46,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import folders, questions, selfupdate
+from . import files, folders, questions, selfupdate
 from .results import Tally
 from .config import (FOLDER_CHOICE, NAME, PROJECT_URL, RC_OK, RULES, Settings, SettingsError, __version__,
                      check_value, config_file, load_settings, save_config, state_dir, to_env)
@@ -143,6 +143,7 @@ class Log:
 RECENT_FILES = 50                 # per stage; a problem's message stays in view anyway
 GROUPED = ("dry", "skipped", "cached", "discarded")      # kept whole, to list them on request
 MAX_MESSAGES = 500
+MAX_FOLDER_ENTRIES = 500
 
 
 class Progress(Tally):
@@ -675,6 +676,34 @@ class Session:
 LOG_COLUMNS = 110
 
 
+def list_folders(raw: str, settings: Settings) -> dict:
+    """Subfolders of *raw* for the folder picker: the browser can't hand out
+    paths, so the server lists them (keepbest's). Names of folders only, never
+    of files; a symlink stays as it was reached, its path goes on to the form."""
+    start = raw.strip() or files.suggested_source() or Path.home()
+    path = Path(os.path.normpath(Path(start).expanduser().absolute()))
+    try:
+        entries = sorted(path.iterdir(), key=lambda p: p.name.lower())
+    except OSError as exc:
+        raise ApiError(400, f"Cannot open '{path}': {exc.strerror or exc}") from exc
+    images = files.extension_matcher(folders.IMAGE_EXTS)
+    videos = files.extension_matcher(settings.video_extensions, exclude_parts=True)
+    dirs, media = [], 0
+    for entry in entries:
+        if entry.name.startswith("."):
+            continue
+        try:
+            if entry.is_dir():
+                dirs.append({"name": entry.name, "path": str(entry)})
+            elif images(entry.name) or videos(entry.name):
+                media += 1
+        except OSError:
+            continue
+    return {"path": str(path), "parent": str(path.parent) if path.parent != path else "",
+            "dirs": dirs[:MAX_FOLDER_ENTRIES], "truncated": len(dirs) > MAX_FOLDER_ENTRIES, "mediaFiles": media,
+            "protected": files.protected_folder(path), "home": str(Path.home())}
+
+
 def _bytes(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024:
@@ -865,6 +894,8 @@ class _Handler(BaseHTTPRequestHandler):
                                     int(log_run) if log_run.isdigit() else 0)
         if method == "GET" and path == "/api/setup":
             return session.setup()
+        if method == "GET" and path == "/api/folders":
+            return list_folders((query.get("path") or [""])[0], session.settings)
         if method == "POST" and path == "/api/folder":
             return session.set_folder(str(body.get("source") or ""), str(body.get("target") or ""))
         if method == "POST" and path == "/api/cached":

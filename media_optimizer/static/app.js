@@ -247,13 +247,58 @@ function SettingsForm({ schema, fields, values, setValue, hasTarget, errors, pre
     </details>`;
 }
 
+// The browser can't hand out folder paths, so the server lists folders to choose from.
+function FolderPicker({ start, source, onChoose, onInPlace, onCancel, busy }) {
+  const [listing, setListing] = useState(null);
+  const [typed, setTyped] = useState(start);
+  const [error, setError] = useState('');
+  const open = async (path) => {
+    try {
+      const data = await api(`/folders?path=${encodeURIComponent(path)}`);
+      setListing(data);
+      setTyped(data.path);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  useEffect(() => { open(start); }, []);
+  const refused = source && listing && listing.protected;
+  return html`<div class="picker">
+    <form onSubmit=${(e) => { e.preventDefault(); open(typed); }}>
+      <input type="text" class="mono" aria-label="Folder" value=${typed} spellcheck="false" onInput=${(e) => setTyped(e.target.value)} />
+      <button class="btn" type="submit"><${Icon} name="right" /> Go</button>
+    </form>
+    ${error && html`<p class="error">${error}</p>`}
+    ${listing && html`
+      <div class="row">
+        <button class="btn btn-small" disabled=${!listing.parent} onClick=${() => open(listing.parent)}><${Icon} name="up" size=${14} /> Up</button>
+        <button class="btn btn-small" onClick=${() => open(listing.home)}><${Icon} name="home" size=${14} /> Home</button>
+        <span class="small muted">${listing.mediaFiles} picture/video file(s) directly in this folder</span>
+      </div>
+      <ul class="dirs">${listing.dirs.map((d) => html`<li key=${d.path}><button onClick=${() => open(d.path)}>
+        <${Icon} name="folder" /> ${d.name}</button></li>`)}
+        ${!listing.dirs.length && html`<li class="muted small">No subfolders.</li>`}</ul>
+      ${listing.truncated && html`<p class="small muted">Only the first folders are listed; type a path to go further.</p>`}`}
+    <div class="row">
+      ${listing && html`<button class="btn btn-primary" disabled=${busy || refused} onClick=${() => onChoose(listing.path)}>
+        <${Icon} name="check" /> Use this folder</button>`}
+      ${onInPlace && html`<button class="btn" disabled=${busy} onClick=${onInPlace}>Same folder (in place)</button>`}
+      ${onCancel && html`<button class="btn" onClick=${onCancel}>Cancel</button>`}
+    </div>
+    ${refused && html`<p class="small muted">The home folder, the folders above it and system folders can't be chosen here.</p>`}
+  </div>`;
+}
+
 function SetupView({ setup, onSetup, onError }) {
   const folder = setup.folder;
   const fields = {};
   for (const g of setup.schema.groups) for (const f of g.fields) fields[f.name] = f;
-  const [values, setValues] = useState(() => Object.fromEntries(Object.values(fields).map((f) => [f.name, f.value])));
+  const [values, setValues] = useState(() => ({
+    ...Object.fromEntries(Object.values(fields).map((f) => [f.name, f.value])), ...setup.edits }));
   const [source, setSource] = useState(folder.source);
   const [target, setTarget] = useState(folder.target);
+  const [picking, setPicking] = useState(folder.source ? '' : 'source');
   const [excluded, setExcluded] = useState(() => {
     if (values.subfolders === 'exclude') return new Set(folder.tree.map((e) => e.rel).concat(values.exclude_folders));
     return new Set(values.exclude_folders);
@@ -266,7 +311,7 @@ function SetupView({ setup, onSetup, onError }) {
   // (the target format, qualities, ... decide whether a cached result still holds).
   const [cached, setCached] = useState(folder.cached || { root: [0, 0], tree: {} });
   useEffect(() => { setCached(folder.cached || { root: [0, 0], tree: {} }); }, [folder]);
-  const firstValues = useRef(true);
+  const firstValues = useRef(!setup.edits);
   useEffect(() => {
     if (firstValues.current) { firstValues.current = false; return undefined; }
     if (!values.use_cache || folder.error) return undefined;
@@ -279,10 +324,15 @@ function SetupView({ setup, onSetup, onError }) {
 
   const setValue = (name, value) => setValues((v) => ({ ...v, [name]: value }));
   const hasTarget = !!folder.target;
-  const useFolder = async () => {
+  // Another folder is a new form; what was changed on this one comes along,
+  // except the choice of subfolders, which belonged to the old folder.
+  const useFolder = async (newSource = source, newTarget = target) => {
     setBusy(true);
-    try { onSetup(await api('/folder', { source, target })); onError(''); } catch (err) { onError(err.message); }
+    const edits = Object.fromEntries(Object.entries(values).filter(([name, value]) =>
+      !['subfolders', 'exclude_folders'].includes(name) && JSON.stringify(value) !== JSON.stringify(fields[name].value)));
+    try { onSetup({ ...await api('/folder', { source: newSource, target: newTarget }), edits }); onError(''); } catch (err) { onError(err.message); }
     setBusy(false);
+    setPicking('');
   };
   const start = async () => {
     setBusy(true);
@@ -307,12 +357,18 @@ function SetupView({ setup, onSetup, onError }) {
     <section class="section">
       <h2>Folder</h2>
       <div class="field"><label for="source">Convert the files in</label>
-        <input type="text" id="source" class="mono" value=${source} onInput=${(e) => setSource(e.target.value)} /></div>
+        <div class="pathfield"><input type="text" id="source" class="mono" value=${source} onInput=${(e) => setSource(e.target.value)} />
+          <button class="btn" disabled=${busy} aria-expanded=${picking === 'source'} onClick=${() => setPicking(picking === 'source' ? '' : 'source')}><${Icon} name="folder" /> Browse</button></div>
+        ${picking === 'source' && html`<${FolderPicker} key="source" start=${source} source=${true} busy=${busy}
+          onChoose=${(path) => useFolder(path, target)} onCancel=${folder.source ? () => setPicking('') : null} />`}</div>
       <div class="field"><label for="target">Write the results to</label>
-        <input type="text" id="target" class="mono" placeholder="the same folder (in place)" value=${target}
-          onInput=${(e) => setTarget(e.target.value)} /></div>
+        <div class="pathfield"><input type="text" id="target" class="mono" placeholder="the same folder (in place)" value=${target}
+          onInput=${(e) => setTarget(e.target.value)} />
+          <button class="btn" disabled=${busy} aria-expanded=${picking === 'target'} onClick=${() => setPicking(picking === 'target' ? '' : 'target')}><${Icon} name="folder" /> Browse</button></div>
+        ${picking === 'target' && html`<${FolderPicker} key="target" start=${target || source} busy=${busy}
+          onChoose=${(path) => useFolder(source, path)} onInPlace=${() => useFolder(source, '')} onCancel=${() => setPicking('')} />`}</div>
       <div class="row">
-        <button class="btn" disabled=${busy || (source === folder.source && target === folder.target)} onClick=${useFolder}><${Icon} name="folder" /> Use these folders</button>
+        <button class="btn" disabled=${busy || (source === folder.source && target === folder.target)} onClick=${() => useFolder()}><${Icon} name="check" /> Use these folders</button>
       </div>
       ${folder.error && html`<p class="error">${folder.error}</p>`}
       ${folder.busy && html`<p class="error">${folder.busy}</p>`}

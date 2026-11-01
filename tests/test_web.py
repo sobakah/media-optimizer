@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -877,3 +878,60 @@ def test_defaults_are_refused_during_a_run_and_need_the_page(server, tmp_path):
     assert _http(server, "POST", "/api/defaults", {"settings": {}}, evil)[0] == 403
     assert _http(server, "POST", "/api/defaults", {"settings": {}}, cookie=False)[0] == 403
     assert _http(server, "GET", "/api/defaults")[0] == 200
+
+
+def test_the_folder_picker_lists_folders_and_no_file_names(folder, tmp_path):
+    d = folder("pick", "photo.jpg", "clip.mp4=long.mp4")
+    (d / "b sub").mkdir()
+    (d / "A sub").mkdir()
+    (d / ".hidden").mkdir()
+    (d / "notes.txt").write_text("x")
+    listing = web.list_folders(str(d), Settings())
+    assert listing["path"] == str(d) and listing["parent"] == str(d.parent)
+    assert listing["dirs"] == [{"name": "A sub", "path": str(d / "A sub")}, {"name": "b sub", "path": str(d / "b sub")}]
+    assert listing["mediaFiles"] == 2 and listing["protected"] is False and listing["truncated"] is False
+    assert "photo.jpg" not in json.dumps(listing)
+
+
+def test_the_folder_picker_starts_at_the_working_folder_or_home(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    monkeypatch.delenv("PWD", raising=False)
+    assert web.list_folders("", Settings())["path"] == str(work)
+    monkeypatch.setenv("HOME", str(work))
+    home = web.list_folders("", Settings())
+    assert home["path"] == home["home"] == str(work) and home["protected"] is True
+
+
+def test_the_folder_picker_keeps_a_symlink_as_reached(tmp_path):
+    real = tmp_path / "real"
+    (real / "inner").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(real)
+    listing = web.list_folders(str(tmp_path / "link"), Settings())
+    assert listing["path"] == str(tmp_path / "link")
+    assert listing["dirs"][0]["path"] == str(tmp_path / "link" / "inner")
+    assert listing["parent"] == str(tmp_path)
+
+
+def test_the_folder_picker_at_the_root_and_on_a_long_list(tmp_path, monkeypatch):
+    assert web.list_folders("/", Settings())["parent"] == "" and web.list_folders("/", Settings())["protected"]
+    for i in range(3):
+        (tmp_path / f"d{i}").mkdir()
+    monkeypatch.setattr(web, "MAX_FOLDER_ENTRIES", 2)
+    listing = web.list_folders(str(tmp_path), Settings())
+    assert len(listing["dirs"]) == 2 and listing["truncated"] is True
+
+
+def test_the_folder_picker_says_what_it_cannot_open(server, tmp_path):
+    (tmp_path / "file.txt").write_text("x")
+    for name in ("file.txt", "missing"):
+        status, _, raw = _http(server, "GET", "/api/folders?path=" + quote(str(tmp_path / name)))
+        assert status == 400 and "Cannot open" in json.loads(raw)["error"]
+
+
+def test_the_folder_picker_needs_the_token(server, tmp_path):
+    path = "/api/folders?path=" + quote(str(tmp_path))
+    assert _http(server, "GET", path, cookie=False)[0] == 403
+    status, _, raw = _http(server, "GET", path)
+    assert status == 200 and json.loads(raw)["path"] == str(tmp_path)

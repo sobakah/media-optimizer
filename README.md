@@ -391,6 +391,8 @@ one run. The file keeps its comments, and the old one stays as `.bak`.
 
 `media-optimizer DIR --web` asks for the settings in the browser and shows
 the run there; without `--web` everything stays in the terminal, unchanged.
+*Browse* beside each folder opens a folder picker, which also comes up by itself
+when `--web` is started without a folder.
 The page:
 
 * asks for the folder (preset with the current one, never the home folder),
