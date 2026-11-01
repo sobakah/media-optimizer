@@ -506,7 +506,7 @@ top to bottom, and keepbest shows the run's numbers next to its own.
 
 ---
 
-## Unreleased
+## 1.3.1 – A preview's file list and matching defaults
 
 | Change | Why |
 |---|---|
