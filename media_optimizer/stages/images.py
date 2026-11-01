@@ -92,7 +92,7 @@ class ImageStage(BatchStage):
         # target format counts: an unrelated foo.webp must not stop foo.png
         # from becoming foo.jxl.
         if nonempty(dest):
-            return FileResult(Kind.SKIP)
+            return FileResult(Kind.SKIP, why="existing")
         if ctx.dry_run:
             ui.say("DRY-RUN", S.CYAN, f"'{src.name}' -> '{dest.name}'")
             return FileResult(Kind.DRY)

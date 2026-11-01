@@ -381,6 +381,10 @@ closes by itself.
 
 ### Browser page
 
+Each stage says why files were left as they are, with a count per reason and
+the files behind it: too long or with sound for a short clip, the result already
+exists, a larger result, and so on.
+
 *Defaults* in its header bar shows every setting and saves it to the config
 file, so a change lasts for every later run; the form's own changes last for
 one run. The file keeps its comments, and the old one stays as `.bak`.
@@ -511,7 +515,7 @@ else.
 | `stage_start` / `stage_end` | `stage`, `total` / `code`, `counters` (the summary box) |
 | `job_start` / `encode` | a video encode: `idx`, `total`, `src`, `encoder` / `percent`, `speed`, `eta` (seconds), at most once a second |
 | `file` | what the log line says: `stage`, `status` (`OK`, `ERROR`, `DISCARDED`, `SALVAGED`, …), `src`, `dest`, `before`, `after` |
-| `done` | one per finished file: `stage`, `src`, `outcome` (`converted`, `skipped`, `cached`, `failed`, `discarded`, `conflict`, `dry`), `reason` |
+| `done` | one per finished file: `stage`, `src`, `outcome` (`converted`, `skipped`, `cached`, `failed`, `discarded`, `conflict`, `dry`), `reason` (why it stayed, such as `existing`, `small`, `clip-long+sound`; for `cached`, what the cache remembers) |
 | `message` | `level` (`error`, `warning`, `info`), `tag`, `text` |
 | `run_end` | `code` (the exit code) |
 

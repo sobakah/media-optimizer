@@ -196,8 +196,9 @@ Breaking any of these has caused real data loss or silent corruption before.
   The run view reads top to bottom as keepbest's page (a section per
   stage, the summary tiles, the end card) and follows the end while the
   reader is there; a stage sends only its newest files (`RECENT_FILES`),
-  a finished one folds them away. A preview's files are kept whole
-  (`Progress.planned`), but only sent when their list is opened (`/api/planned`).
+  a finished one folds them away. A preview's files and the files a run left
+  alone are kept whole by reason (`Progress.groups`), but only sent when their
+  list is opened (`/api/files`). A new reason needs its text in `WHY` in `app.js`.
   The page never runs a stage itself: it starts `run -y … --events FILE`
   as a child on a pty, with every setting as `MO_*` (`config.to_env`; the
   environment beats the config file and inherited variables), reads the

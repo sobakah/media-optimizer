@@ -119,6 +119,7 @@ details.folded[open] summary { margin-bottom: 8px; }
 .files li.other .tag { color: var(--warn); }
 .files .path { flex: 1 1 260px; overflow-wrap: anywhere; }
 .planned .files { max-height: 50vh; overflow-y: auto; margin-top: 6px; }
+.reasons { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
 .log { background: var(--tool-bg); color: var(--tool-ink); border-radius: 12px; padding: 10px 12px; height: 60vh;
        overflow: auto; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .log .partial { color: var(--tool-faint); }

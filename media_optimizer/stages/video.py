@@ -458,11 +458,12 @@ class VideoStage:
     def _decide(self, src: Path) -> Job | None:
         """The cheap checks, in the main thread. None = nothing to encode."""
         ctx, s = self.ctx, self.s
-        if self.cache.lookup(src) is not None:
+        known = self.cache.lookup(src)
+        if known is not None:
             with self.lock:
                 self.cache_skipped += 1
             self._tick()
-            events.done(self.tag, src, "cached")
+            events.done(self.tag, src, "cached", known)
             return None
         try:
             size = src.stat().st_size

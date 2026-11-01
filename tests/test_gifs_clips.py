@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -146,3 +148,33 @@ def test_avif_claimed_name_is_a_conflict(folder, main, monkeypatch):
 def test_avif_bad_crf(folder, run_cli):
     d = folder("a3", "c.mp4=clip.mp4")
     assert run_cli("clips", d, "--crf", "99").rc == 2
+
+
+# --- why a file was left alone ---------------------------------------------------------
+@pytest.mark.parametrize("info, why", [
+    (dict(video_codec="h264", duration=30.0), "clip-long"),
+    (dict(video_codec="h264", duration=3.0, has_audio=True), "clip-sound"),
+    (dict(video_codec="h264", duration=30.0, has_audio=True), "clip-long+sound"),
+    (dict(video_codec="wmv3", duration=3.0), "clip-codec"),
+    (dict(video_codec="wmv3", duration=None, has_audio=True), "clip-codec+long+sound"),
+])
+def test_why_a_video_is_no_short_clip(info, why):
+    from media_optimizer.config import Settings
+    from media_optimizer.stages import clips
+    s, video = Settings(), mo_media.MediaInfo(**info)
+    assert not clips.selected(video, s) and clips.why_not(video, s) == why
+
+
+def test_the_events_say_why_a_gif_was_skipped(folder, tmp_path, run_cli):
+    """The same file three ways: the result exists, not a GIF, and that remembered."""
+    d = folder("gw", "a.gif=anim.gif", "p.gif=photo.jpg")
+    (d / "a.webp").write_bytes(b"x")
+    ev = tmp_path / "ev.jsonl"
+
+    def reasons():
+        lines = [json.loads(line) for line in ev.read_text().splitlines()]
+        return {Path(e["src"]).name: (e["outcome"], e["reason"]) for e in lines if e["event"] == "done"}
+    assert run_cli("gifs", d, "--events", ev).rc == 0
+    assert reasons() == {"a.gif": ("skipped", "existing"), "p.gif": ("skipped", "not-a-gif")}
+    assert run_cli("gifs", d, "--events", ev).rc == 0
+    assert reasons()["p.gif"] == ("cached", "not-a-gif")

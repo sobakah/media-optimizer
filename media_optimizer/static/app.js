@@ -425,30 +425,47 @@ function Folded({ items, shown, more, render: draw }) {
     <details><summary class="small muted">${more(items.length - shown)}</summary>${draw(items.slice(shown))}</details>`;
 }
 
-// What a preview would convert: every file, fetched when the list is opened,
-// a part at a time on the page. A stage still running is fetched again at its end.
-const PLANNED_STEP = 500;
+// A group of files, every one of them, fetched when the list is opened, a part
+// at a time on the page: what a preview would convert, what a run left alone
+// and why. A stage still running is fetched again at its end.
+const GROUP_STEP = 500;
+const WHY = { existing: 'the result already exists', small: 'smaller than the minimum size (min_size_mb)',
+              codec: 'already in an efficient format (source_codecs)', probe: 'a test encode predicted too little saving',
+              discarded: 'the result would be larger than the original', 'not-a-gif': 'not really a GIF',
+              unsupported: 'a variant the encoder can\'t read', 'taken-over': 'already in the right format',
+              'jxl-failed': 'JXL failed, and the WebP fallback already exists',
+              salvaged: 'salvaged from a damaged video', done: 'converted before', output: 'a converted video',
+              'not-selected': 'not a short clip: too long, with sound, or another codec',
+              'clip-long': 'too long for a short clip (clip_max_seconds)', 'clip-sound': 'has sound, which AVIF and WebP can\'t store',
+              'clip-long+sound': 'too long, and has sound', 'clip-codec': 'a codec the clip stage doesn\'t take',
+              'clip-codec+long': 'too long, and a codec it doesn\'t take', 'clip-codec+sound': 'has sound, and a codec it doesn\'t take',
+              'clip-codec+long+sound': 'too long, has sound, and a codec it doesn\'t take' };
 
-function PlannedFiles({ stage, label }) {
+function whyText(which) {
+  const [outcome, reason] = which.split(/:(.*)/s);
+  const text = WHY[reason || outcome] || reason || 'no reason given';
+  return outcome === 'cached' ? `${text} (known from an earlier run)` : text;
+}
+
+function FileGroup({ stage, which, label }) {
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState(null);
-  const [limit, setLimit] = useState(PLANNED_STEP);
+  const [limit, setLimit] = useState(GROUP_STEP);
   const [failed, setFailed] = useState('');
   useEffect(() => {
     if (!open) return undefined;
     let alive = true;
-    api(`/planned?stage=${encodeURIComponent(stage.stage)}`)
+    api(`/files?stage=${encodeURIComponent(stage.stage)}&which=${encodeURIComponent(which)}`)
       .then((data) => { if (alive) { setFiles(data.files); setFailed(''); } })
       .catch((err) => { if (alive) setFailed(err.message); });
     return () => { alive = false; };
   }, [open, stage.state]);
-  const count = stage.outcomes.dry;
   return html`<details class="planned" onToggle=${(e) => setOpen(e.target.open)}>
-    <summary class="small">${label || 'Show'} ${plural(count, 'file')} that would be converted</summary>
+    <summary class="small">${label}</summary>
     ${failed && html`<p class="error">${failed}</p>`}
     ${!failed && !files && html`<p class="small muted">Loading the list…</p>`}
     ${files && html`<ul class="files">${files.slice(0, limit).map((f) => html`<li key=${f}><span class="path" title=${f}>${f}</span></li>`)}</ul>
-      ${files.length > limit && html`<button class="btn-link small" onClick=${() => setLimit(limit + PLANNED_STEP)}>Show ${Math.min(PLANNED_STEP, files.length - limit)} more of the ${files.length - limit} left</button>`}`}
+      ${files.length > limit && html`<button class="btn-link small" onClick=${() => setLimit(limit + GROUP_STEP)}>Show ${Math.min(GROUP_STEP, files.length - limit)} more of the ${files.length - limit} left</button>`}`}
   </details>`;
 }
 
@@ -483,7 +500,11 @@ function StageCard({ stage, encodes, messages, current }) {
       <span class="small muted">${e.percent !== null ? Math.round(e.percent) + '%' : ''} ${e.speed || ''} ${e.eta !== null ? duration(e.eta) + ' left' : ''}</span>
     </div>`)}
     ${messages.length > 0 && html`<${Messages} messages=${messages} />`}
-    ${stage.outcomes.dry > 0 && html`<${PlannedFiles} stage=${stage} />`}
+    ${Object.keys(stage.reasons || {}).length > 0 && html`<div class="reasons">
+      <p class="small muted">Why these files were left as they are:</p>
+      ${Object.entries(stage.reasons).sort((a, b) => b[1] - a[1]).map(([which, n]) => html`<${FileGroup} key=${which} stage=${stage}
+        which=${which} label=${`${n} – ${whyText(which)}`} />`)}</div>`}
+    ${stage.outcomes.dry > 0 && html`<${FileGroup} stage=${stage} which="dry" label=${`Show ${plural(stage.outcomes.dry, 'file')} that would be converted`} />`}
     ${running && files.length > 0 && html`<${FileList} files=${files.slice(-RUNNING_FILES)} />`}
     ${!running && files.length > 0 && html`<details><summary class="small muted">${stage.listed > files.length
       ? `Files: the last ${files.length} of ${stage.listed} (all are in the log)` : `Files (${files.length})`}</summary>
@@ -517,9 +538,10 @@ function Summary({ progress, code }) {
       ${sub && html`<dd class="sub">${sub}</dd>`}</div>`)}</dl>
     ${sum('cached') > 0 && html`<p class="small muted">${plural(sum('cached'), 'file')} of the skipped ${sum('cached') === 1
       ? 'was' : 'were'} handled by earlier runs.</p>`}
+    ${skipped + sum('discarded') > 0 && html`<p class="small muted">Each stage above says why files were left as they are.</p>`}
     ${t.failed > 0 && html`<p class="small muted">The originals of the failed files are kept; the log tab says why.</p>`}
     ${dry && html`<p class="small muted">Nothing was written or deleted.</p>`}
-    ${dry && progress.stages.filter((s) => s.outcomes.dry > 0).map((s) => html`<${PlannedFiles} key=${s.stage} stage=${s} label=${s.title + ':'} />`)}
+    ${dry && progress.stages.filter((s) => s.outcomes.dry > 0).map((s) => html`<${FileGroup} key=${s.stage} stage=${s} which="dry" label=${`${s.title}: ${plural(s.outcomes.dry, 'file')} that would be converted`} />`)}
   </section>`;
 }
 

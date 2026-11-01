@@ -729,9 +729,9 @@ def test_a_preview_lists_every_file_it_would_convert(folder, tmp_path):
     session = _session(d)
     session.start({"settings": {}, "dry_run": True})
     _wait_finished(session)
-    assert session.planned("images") == {"files": ["a.jpg", "sub/b.jpg", "sub/deep/c.jpg"]}
-    assert session.planned("gifs") == {"files": []} and session.planned("nonsense") == {"files": []}
-    assert "planned" not in json.dumps(session.snapshot()), "not in what the page polls"
+    assert session.files("images", "dry") == {"files": ["a.jpg", "sub/b.jpg", "sub/deep/c.jpg"]}
+    assert session.files("gifs", "dry") == {"files": []} and session.files("nonsense", "dry") == {"files": []}
+    assert "sub/b.jpg" not in json.dumps(session.snapshot()["progress"]["stages"][0]["reasons"]), "not in what the page polls"
 
 
 def test_the_preview_list_holds_more_than_a_stage_card_shows():
@@ -739,7 +739,7 @@ def test_the_preview_list_holds_more_than_a_stage_card_shows():
     for i in range(web.RECENT_FILES * 3):
         progress.apply({"event": "done", "stage": "images", "src": f"/s/{i}.png", "outcome": "dry"})
     progress.apply({"event": "done", "stage": "images", "src": "/s/skipped.png", "outcome": "skipped"})
-    assert len(progress.planned["images"]) == web.RECENT_FILES * 3
+    assert len(progress.groups["images"]["dry"]) == web.RECENT_FILES * 3
 
 
 def test_a_real_run_lists_nothing_as_planned(folder):
@@ -747,12 +747,35 @@ def test_a_real_run_lists_nothing_as_planned(folder):
     session = _session(d)
     session.start({"settings": {"delete_original": False}, "dry_run": False})
     _wait_finished(session)
-    assert session.planned("images") == {"files": []}
+    assert session.files("images", "dry") == {"files": []}
 
 
 def test_the_preview_list_needs_the_page(server):
-    assert _http(server, "GET", "/api/planned?stage=images")[0] == 200
-    assert _http(server, "GET", "/api/planned?stage=images", cookie=False)[0] == 403
+    assert _http(server, "GET", "/api/files?stage=images&which=dry")[0] == 200
+    assert _http(server, "GET", "/api/files?stage=images&which=dry", cookie=False)[0] == 403
+
+
+def test_a_stage_counts_why_files_were_left_alone():
+    progress = web.Progress()
+    for name, outcome, reason in (("a", "skipped", "clip-long"), ("b", "skipped", "clip-long"),
+                                  ("c", "skipped", "clip-long+sound"), ("d", "cached", "discarded"),
+                                  ("e", "discarded", "discarded"), ("f", "skipped", None), ("g", "converted", None)):
+        progress.apply({"event": "done", "stage": "clips", "src": f"/s/{name}.mp4", "outcome": outcome, "reason": reason})
+    stage = progress.snapshot()["stages"][0]
+    assert stage["reasons"] == {"skipped:clip-long": 2, "skipped:clip-long+sound": 1, "cached:discarded": 1,
+                                "discarded:discarded": 1, "skipped": 1}
+    assert progress.groups["clips"]["skipped:clip-long"] == ["/s/a.mp4", "/s/b.mp4"]
+
+
+def test_the_page_can_name_every_reason():
+    """A new reason without a text would show as its code."""
+    import re as regex
+    page = (PYDIR / "media_optimizer" / "static" / "app.js").read_text()
+    table = page[page.index("const WHY = {"):page.index("function whyText")]
+    known = set(regex.findall(r"'?([a-z+-]+)'?: '", table))
+    assert {"existing", "small", "codec", "probe", "discarded", "not-a-gif", "unsupported", "taken-over", "jxl-failed",
+            "salvaged", "done", "output", "not-selected", "clip-long", "clip-sound", "clip-long+sound", "clip-codec",
+            "clip-codec+long", "clip-codec+sound", "clip-codec+long+sound"} <= known
 
 
 # --- the defaults ----------------------------------------------------------------------

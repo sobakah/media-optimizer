@@ -73,6 +73,7 @@ class FileResult:
     new: int = 0
     suspect: bool = False
     cache: str | None = None      # outcome to remember: nothing to do next time
+    why: str | None = None        # for the events, when it says more than cache (not stored)
 
 
 @dataclass
@@ -315,13 +316,14 @@ class BatchStage:
     def _guarded(self, src: Path) -> tuple[FileResult, str | None]:
         result, missing = self._guarded_handle(src)
         if result.kind is not Kind.STOPPED:
-            events.done(self.tag, src, OUTCOMES[result.kind], result.cache)
+            events.done(self.tag, src, OUTCOMES[result.kind], result.why or result.cache)
         return result, missing
 
     def _guarded_handle(self, src: Path) -> tuple[FileResult, str | None]:
         try:
-            if self.cache.lookup(src) is not None:
-                return FileResult(Kind.CACHED), None
+            known = self.cache.lookup(src)
+            if known is not None:
+                return FileResult(Kind.CACHED, why=known), None
             result = self.handle(src)
             if result.cache and result.kind is not Kind.FAIL:
                 self.cache.add(src, result.cache)

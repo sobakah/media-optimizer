@@ -141,6 +141,7 @@ class Log:
 
 # --- the events, folded into what the page draws ---------------------------------------
 RECENT_FILES = 50                 # per stage; a problem's message stays in view anyway
+GROUPED = ("dry", "skipped", "cached", "discarded")      # kept whole, to list them on request
 MAX_MESSAGES = 500
 
 
@@ -154,13 +155,14 @@ class Progress(Tally):
         super().__init__()
         self.messages: list[dict] = []
         self.encodes: dict[int, dict] = {}
-        self.planned: dict[str, list[str]] = {}   # a preview's files, per stage: asked for on their own
+        # A preview's files and why others stayed: per stage, asked for on their own.
+        self.groups: dict[str, dict[str, list[str]]] = {}
 
     def _stage(self, name: str) -> dict:
         new = name not in self.stages
         st = super()._stage(name)
         if new:
-            st.update(files=deque(maxlen=RECENT_FILES), listed=0)
+            st.update(files=deque(maxlen=RECENT_FILES), listed=0, reasons={})
         return st
 
     def apply(self, ev: dict) -> None:
@@ -168,8 +170,12 @@ class Progress(Tally):
         kind = ev.get("event")
         if kind == "stage_end":
             self.encodes.clear()
-        elif kind == "done" and ev.get("outcome") == "dry":
-            self.planned.setdefault(ev["stage"], []).append(ev["src"])
+        elif kind == "done" and ev.get("outcome") in GROUPED:
+            which = ev["outcome"] + (f":{ev['reason']}" if ev.get("reason") else "")
+            self.groups.setdefault(ev["stage"], {}).setdefault(which, []).append(ev["src"])
+            if ev["outcome"] != "dry":
+                reasons = self._stage(ev["stage"])["reasons"]
+                reasons[which] = reasons.get(which, 0) + 1
         elif kind == "file":
             st = self._stage(ev["stage"])
             st["listed"] += 1
@@ -548,12 +554,12 @@ class Session:
             self.phase = "setup"
         self.bump()
 
-    def planned(self, stage: str) -> dict:
-        """The files a preview would convert in a stage, all of them, by their
-        path in the source folder. Not in the state the page polls: a preview
-        can have 100 000 of them."""
+    def files(self, stage: str, which: str) -> dict:
+        """All the files of a stage with one ending ("dry", "skipped:long", ...),
+        by their path in the source folder. Not in the state the page polls: a
+        run can have 100 000 of them."""
         with self._cond:
-            files = list(self.progress.planned.get(stage, ()))
+            files = list(self.progress.groups.get(stage, {}).get(which, ()))
         source = str(self.source) if self.source else ""
         return {"files": sorted(os.path.relpath(f, source) if source else f for f in files)}
 
@@ -864,8 +870,8 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/cached":
             values = body.get("settings")
             return session.cached_for(values if isinstance(values, dict) else {})
-        if method == "GET" and path == "/api/planned":
-            return session.planned((query.get("stage") or [""])[0])
+        if method == "GET" and path == "/api/files":
+            return session.files((query.get("stage") or [""])[0], (query.get("which") or [""])[0])
         if method == "GET" and path == "/api/defaults":
             return session.defaults()
         if method == "POST" and path == "/api/defaults":

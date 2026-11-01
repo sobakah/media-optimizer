@@ -46,6 +46,19 @@ def selected(info: media.MediaInfo, s) -> bool:
     return not (s.clip_require_silent and info.has_audio)
 
 
+def why_not(info: media.MediaInfo, s) -> str:
+    """Why selected() said no, for the page: "codec", "long", "sound", or
+    "long+sound"."""
+    reasons = []
+    if info.video_codec not in s.clip_source_codecs:
+        reasons.append("codec")
+    if info.duration is None or not info.duration < s.clip_max_seconds:
+        reasons.append("long")
+    if s.clip_require_silent and info.has_audio:
+        reasons.append("sound")
+    return "clip-" + "+".join(reasons)
+
+
 class ClipStage(BatchStage):
     tag = "clips"
     label = "Short clip"
@@ -132,12 +145,12 @@ class ClipStage(BatchStage):
         folder = ctx.target_folder(src)
         dest = folder / f"{stem}.{self.ext}"
         if nonempty(dest):
-            return FileResult(Kind.SKIP)
+            return FileResult(Kind.SKIP, why="existing")
 
         # Not selected: remembered, so long videos are not probed on every run.
         info = media.probe(src)
         if not selected(info, s):
-            return FileResult(Kind.SKIP, cache="not-selected")
+            return FileResult(Kind.SKIP, cache="not-selected", why=why_not(info, s))
         if ctx.dry_run:
             ui.say("DRY-RUN", S.CYAN, f"'{src.name}' ({int(info.duration)}s, {info.video_codec}) -> '{dest.name}'")
             return FileResult(Kind.DRY)

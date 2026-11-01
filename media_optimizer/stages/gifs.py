@@ -79,7 +79,7 @@ class GifStage(BatchStage):
         dest = folder / f"{stem}.{ext}"
 
         if nonempty(dest):
-            return FileResult(Kind.SKIP)
+            return FileResult(Kind.SKIP, why="existing")
         if ctx.dry_run:
             ui.say("DRY-RUN", S.CYAN, f"'{src.name}' -> '{dest.name}'")
             return FileResult(Kind.DRY)
