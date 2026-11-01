@@ -493,7 +493,7 @@ top to bottom, and keepbest shows the run's numbers next to its own.
 
 ---
 
-## Unreleased
+## 1.3.0 – Saved defaults and a WebP helper
 
 | Change | Why |
 |---|---|

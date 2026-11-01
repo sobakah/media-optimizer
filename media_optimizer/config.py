@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 NAME = "media-optimizer"
 PROJECT_URL = "https://github.com/sobakah/media-optimizer"
 ENV_PREFIX = "MO_"
