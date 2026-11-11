@@ -4,8 +4,8 @@ The same approach as picktag and keepbest. The repository is private, so the
 check asks git (``git ls-remote``), which uses the same access as ``pipx
 install`` (``gh auth setup-git``); it never prompts for a password. At every
 start, in a thread, so the start doesn't wait; the newest version found is
-remembered in the state folder (``known``). Release tags have two
-or three parts (``1.0``, ``0.8.3``). A pipx install is updated by pipx: ``pipx
+remembered in the state folder (``known``). Release tags have three
+parts (``1.0.0``); two parts are read as well. A pipx install is updated by pipx: ``pipx
 upgrade`` for an install from the repository, ``pipx install --force`` with
 the new tag for one pinned to a release (it stays pinned; injected packages
 are injected again). Any other install gets the command to run, not an offer.
@@ -60,7 +60,7 @@ def _git_env() -> dict[str, str]:
 
 
 def latest(url: str | None = None, timeout: float = 30) -> str:
-    """The newest release tag of *url* (``repo()``), as it is written (``1.1``)."""
+    """The newest release tag of *url* (``repo()``), as it is written (``1.0.0``)."""
     git = shutil.which("git")
     if git is None:
         raise UpdateError("git isn't installed")
@@ -146,7 +146,7 @@ def how_installed(version: str, prefix: str | Path | None = None,
         pipx = shutil.which("pipx") or "pipx"
         if main.get("pinned"):          # held back with `pipx pin`: that stays the owner's call
             return Install("pinned", f"pipx unpin {name}\npipx upgrade {name}")
-        # A release named in the URL ("...media-optimizer@1.0"): the new one, still pinned.
+        # A release named in the URL ("...media-optimizer.git@1.0.0"): the new one, still pinned.
         pinned = re.fullmatch(r"(.*git\+\S+?)@[^/@\s]+", url)
         if pinned:
             commands = [[pipx, "install", "--force", *meta.get("venv_args", []),

@@ -1,7 +1,7 @@
 """A newer media-optimizer: the check (git tags with two or three parts, at
-every start), the command for each kind of install, the question before a full run
-in the terminal, and installing it from the page, which then starts again in
-the same process and tab. The releases are a local repository, never GitHub."""
+every start, only on a person's page), the command for each kind of install,
+and installing it from the page, which then starts again in the same process
+and tab. The releases are a local repository, never GitHub."""
 
 from __future__ import annotations
 
@@ -87,10 +87,10 @@ def test_a_pipx_install_from_the_repository_is_upgraded(tmp_path, monkeypatch):
 
 def test_a_pinned_install_moves_to_the_new_release_and_injects_again(tmp_path, monkeypatch):
     monkeypatch.setattr(selfupdate.shutil, "which", lambda name: f"/bin/{name}")
-    spec = "git+https://github.com/sobakah/media-optimizer@1.0"
+    spec = "git+https://github.com/sobakah/media-optimizer.git@1.0.0"
     venv = write_metadata(tmp_path / "venv", spec, injected=["pytest"])
     how = selfupdate.how_installed(NEWER, venv)
-    assert how.commands == [["/bin/pipx", "install", "--force", spec.replace("@1.0", f"@{NEWER}")],
+    assert how.commands == [["/bin/pipx", "install", "--force", spec.replace("@1.0.0", f"@{NEWER}")],
                             ["/bin/pipx", "inject", "media-optimizer", "pytest"]]
 
 
@@ -129,7 +129,7 @@ def test_starting_again_uses_the_same_command(monkeypatch, tmp_path):
     assert selfupdate.restart_argv() == [sys.executable, "-m", "media_optimizer", "pics"]
 
 
-# --- a full run in the terminal -----------------------------------------------------
+# --- runs without the page ---------------------------------------------------------
 @pytest.mark.parametrize("args", [["run", "-y", "-n"], ["images", "-n"]])
 def test_only_the_page_checks(newer_release, run_cli, tmp_path, args):
     """A script with -y doesn't reach out, and the run the page starts neither."""

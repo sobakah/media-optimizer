@@ -1,6 +1,6 @@
 """Everything between "encoded" and "original deleted".
 
-INVARIANTS (each one has cost real data before, see CHANGELOG.md)
+INVARIANTS (each one has cost real data before, see CLAUDE.md)
   1. Output goes to ``<target>.part.<pid>.<random>.<ext>`` first and is only
      moved into place once it passed verification.
   2. An original is only deleted after its output is verified and in place.
@@ -16,7 +16,7 @@ INVARIANTS (each one has cost real data before, see CHANGELOG.md)
      at the end of the run.
 
 The lock directory and temp file names are the same as in the former Bash
-version (up to 0.3.1), so its leftovers are cleaned up too.
+version, so its leftovers are cleaned up too.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 program. The page asks for the settings, starts the real program as a child
 (``run -y``) and shows its progress. Nothing asks in the terminal any more.
 
-Copied from cdimport and lyrembed, including every rule that was found by a
+Copied from cdport and lyrembed, including every rule that was found by a
 failure there:
   - 127.0.0.1 only, a port the system picks, no framework, no build step.
   - The printed address carries a token; the first visit turns it into an
@@ -70,7 +70,7 @@ CLOSE_GRACE = 10.0
 # the page to be opened again (the notification's "Open") before exiting.
 BACKGROUND_WAIT = 15 * 60.0
 MAX_BODY = 1024 * 1024
-# keepbest and cdimport find a page's address in its output with
+# keepbest and cdport find a page's address in its output with
 # r"is running at (http://(?:127\.0\.0\.1|localhost):\d+/\?token=[A-Za-z0-9_-]+)": keep the wording.
 ADDRESS_LINE = "media-optimizer is running at {url}"
 # After an update: the address the new program takes over ("port token"), so the tab stays.
@@ -109,7 +109,7 @@ LOG_LINES = 4000
 class Log:
     """The child's terminal output, colours included (the page turns them
     into spans). A line a progress display redraws with \r keeps only its
-    newest state, as in cdimport."""
+    newest state, as in cdport."""
 
     def __init__(self) -> None:
         self.lines: list[str] = []

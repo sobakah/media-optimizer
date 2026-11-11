@@ -98,14 +98,14 @@ def has_encoder(name: str) -> bool:
     return f" {name} " in encoders()
 
 
-# Measured with SVT-AV1 3.1.2 (Fedora 44): frames narrower than about 31 px
+# Measured with SVT-AV1 3.1.2: frames narrower than about 31 px
 # (24 hung, 31 worked; the height does not matter) make libsvtav1 hang
 # forever, and only SIGKILL ends it. libaom-av1 encodes them fine.
 SVT_MIN_WIDTH = 32
 # Safety net for the short-content AV1 encodes (GIFs, clips): a hang that is
 # not known yet must not block a worker forever.
 AV1_TIMEOUT = 600
-# Sixteen encoders at once, one per worker, froze a session on 30 GB: each one
+# Sixteen encoders at once, one per worker, froze a desktop session: each one
 # starts a thread per core and holds frames for them. Fewer are faster as well
 # (11 1080p clips, 16 threads: 8 at once 27 s, 13.4 GB; 4 at once with lp=4
 # 16 s, 5.6 GB; the same total size, lp doesn't change the result).

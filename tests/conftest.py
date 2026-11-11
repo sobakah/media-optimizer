@@ -91,12 +91,11 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("MO_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("MO_CONFIG", str(config))
     monkeypatch.setenv("MO_TRASH", "none")
-    monkeypatch.setenv("MO_HOLD", "0")
     monkeypatch.setenv("MO_LOG", "false")
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     for name in list(os.environ):
-        if name.startswith("MO_") and name not in ("MO_STATE_DIR", "MO_CONFIG", "MO_TRASH", "MO_HOLD", "MO_LOG"):
+        if name.startswith("MO_") and name not in ("MO_STATE_DIR", "MO_CONFIG", "MO_TRASH", "MO_LOG"):
             monkeypatch.delenv(name)
     # The update check asks a repository that isn't there, never GitHub (tests/test_updates.py makes one).
     monkeypatch.setenv("MO_UPDATE_REPO", str(tmp_path / "no-releases"))

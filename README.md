@@ -1,30 +1,31 @@
 # media-optimizer
 
-Batch-convert images, GIFs and videos to more efficient formats: JPEG and PNG
-to JPEG XL (or WebP), GIF to animated WebP, short silent clips to looping
-AVIF or WebP, video to HEVC on the GPU or CPU. Every result is verified
-before an original is touched.
+Converts pictures, GIFs and videos to more efficient formats and checks every result before an
+original is touched.
 
-## Features
+## What it does
 
-* **One command.** `media-optimizer ~/Pictures` counts the file types and runs
-  the matching stages; each stage also runs on its own.
-* **Safe deletion.** Originals go to the desktop trash. If that fails nothing
-  is deleted: the originals are listed, and `--force-delete` deletes them.
-* **Verification before deletion.** An output is only accepted once it is
-  readable; for video also with a runtime and a picture comparison.
-* **In place or mirrored.** Output next to the source, or into a separate
-  directory with the folder structure preserved; the source is then never
-  changed.
-* **Resumable.** `Ctrl+C` saves progress and all settings; the next start
-  continues where it stopped.
-* **Parallel.** Images, GIFs and clips use every core; videos run several
-  GPU encodes at once plus one CPU encode.
-* **Dry run.** `-n` walks through everything without writing or deleting.
+JPEG and PNG become JPEG XL (or WebP), GIFs animated WebP, short silent clips looping AVIF or
+WebP, and videos HEVC on the GPU or the CPU.
 
-## Requirements
+* **One command.** `media-optimizer ~/Pictures` counts the file types and runs the matching
+  stages; each stage also runs on its own.
+* **Checked before deleting.** A result is accepted only once it is readable; a video also needs
+  the right runtime and a picture that matches the original.
+* **Safe deletion.** Originals go to the trash. If that fails nothing is deleted: the originals are
+  listed, and `--force-delete` deletes them.
+* **In place or mirrored.** Results next to the sources, or in a separate folder with the folder
+  structure kept; the source is then never changed.
+* **Resumable.** Ctrl+C saves the progress and all settings; the next start continues where it
+  stopped.
+* **Parallel.** Images, GIFs and clips use every core; videos run several GPU encodes at once plus
+  one CPU encode.
+* **Dry run.** `-n` goes through everything without writing or deleting anything.
+* **A page in the browser** for the settings and the run, or `-y` for scripts and timers.
 
-Python 3.10 or newer and these programs:
+## Install
+
+You need Python 3.10 or newer and these programs:
 
 **Fedora / RHEL**
 ```bash
@@ -42,27 +43,23 @@ rpm-ostree install libjxl-utils libwebp-tools perl-Image-ExifTool
 systemctl reboot
 ```
 
-`ffmpeg` is part of these images. Bazzite ships the full ffmpeg, Silverblue
-and Bluefin the stripped `ffmpeg-free`, which has no HEVC encoder — swap it
-with `rpm-ostree override remove ffmpeg-free --install ffmpeg` from RPM Fusion.
+`ffmpeg` is part of these images. Bazzite ships the full ffmpeg, Silverblue and Bluefin the
+stripped `ffmpeg-free`, which has no HEVC encoder: swap it with
+`rpm-ostree override remove ffmpeg-free --install ffmpeg` from RPM Fusion.
 
-`exiftool` is optional and only carries metadata out of PNG sources.
-`libva-utils` (`vainfo`) helps debugging GPU encoding. AVIF output needs an
-AV1 encoder in ffmpeg (`libsvtav1` or `libaom-av1`). Missing programs are
-reported at startup.
+`exiftool` is optional and only carries metadata out of PNG sources. `libva-utils` (`vainfo`)
+helps when GPU encoding fails. AVIF output needs an AV1 encoder in ffmpeg (`libsvtav1` or
+`libaom-av1`). Missing programs are reported at the start.
 
-## Install
+Then:
 
 ```bash
-pipx install git+https://github.com/sobakah/media-optimizer
+pipx install git+https://github.com/sobakah/media-optimizer.git
 media-optimizer --help
 ```
 
-To install a specific release, add it to the URL: `...media-optimizer@1.0`.
-Releases before 1.0 are pre-releases.
-
-To update: `pipx upgrade media-optimizer`, or let the program do it (see
-[Updates](#updates)).
+To install a specific release, add it to the URL: `...media-optimizer.git@1.0.0`. To update:
+`pipx upgrade media-optimizer`, or the page's *Update* button (see [Updates](#updates)).
 
 From a checkout: `pipx install .`, or without installing:
 
@@ -71,13 +68,13 @@ python3 -m pip install --user send2trash Pillow   # once
 ./run.py --help
 ```
 
-## Usage
+## Using it
 
 ```bash
-media-optimizer ~/Pictures                         # the browser page, on this folder
-media-optimizer -n ~/Pictures                      # the same, with a preview preset
+media-optimizer ~/Pictures                         # the page, on this folder
+media-optimizer -n ~/Pictures                      # the same, with a dry run preset
 media-optimizer -y ~/Pictures                      # no page, the settings as they are
-media-optimizer -y ~/Pictures /mnt/archive --delete   # target dir, trash originals
+media-optimizer -y ~/Pictures /mnt/archive --delete   # into a target folder, originals to the trash
 
 media-optimizer images ~/Pictures --target webp    # one stage on its own
 media-optimizer video ~/Videos --encoder cpu --crf 20
@@ -96,21 +93,20 @@ media-optimizer --install-desktop-entry            # add it to the app menu (Lin
 | `verify` | check video outputs against their originals |
 | `gpu-selftest FILE` | which GPU options produce a usable picture here |
 
-`media-optimizer COMMAND --help` lists the options. Positional source and
-target and `-i`/`-o` both work.
+`media-optimizer COMMAND --help` lists the options. The source and target can be given as
+positional arguments or with `-i`/`-o`.
 
-Nothing asks in the terminal. A full run opens the [browser page](#browser-page),
-which asks for what it needs; `-y` runs it right away with the settings as they
-are, for scripts and timers. The stage commands and `verify` never ask and need
-their folders on the command line. Without a display the page's address is
+Nothing asks in the terminal. A full run opens [the page](#the-page), which asks for what it
+needs; `-y` runs it right away with the settings as they are. The stage commands and `verify`
+never ask and need their folders on the command line. Without a display the page's address is
 printed; with neither a display nor a terminal a full run stops and points to `-y`.
 
 Options that behave the same everywhere:
 
 | Option | Effect |
 |---|---|
-| `-i, --input <dir>` | source directory |
-| `-o, --output <dir>` | target directory, empty = in place |
+| `-i, --input <dir>` | source folder |
+| `-o, --output <dir>` | target folder, empty = in place |
 | `-j, --workers <n>` | parallel workers (default: number of cores) |
 | `--subfolders <mode>` | `ask` (default: the page's tree, `include` anywhere else), `include` or `exclude` (only the files directly in the source) |
 | `--exclude-folder <dir>` | leave out that folder's own files (relative to the source, `.` = the source itself); repeatable |
@@ -119,78 +115,62 @@ Options that behave the same everywhere:
 | `--keep-larger` | keep results that are larger than the original |
 | `-c, --config <file>` | use this config file |
 | `--log <file>` / `--no-log` | log file / no log |
-| `--journal <file>` / `--no-journal` | file journal (see [Journal](#journal)) / no journal |
-| `--events <file>` | the run's progress as JSON lines (see [Progress for other programs](#progress-for-other-programs)) |
-| `--results <file>` | the run's numbers as JSON when it ends (see [Results for other programs](#results-for-other-programs)) |
+| `--journal <file>` / `--no-journal` | file journal (see [The journal](#the-journal)) / no journal |
+| `--events <file>` | the run's progress as JSON lines (see [Progress](#progress---events)) |
+| `--results <file>` | the run's numbers as JSON when it ends (see [Results](#results---results)) |
 | `-y, --yes` | full run: no page, the settings as they are |
-| `-n, --dry-run` | preview only; on the page it then offers the same run for real |
-
-## The stages
+| `-n, --dry-run` | dry run: write and delete nothing; the page then offers the same run for real |
 
 ### Images
 
-JPEG is transcoded to JPEG XL bit-exactly: `djxl` restores the original file
-byte for byte. PNG is converted losslessly or with a quality setting
-(`png_mode`); if cjxl fails, a lossless WebP is the fallback. The settings
-follow the real file type, not the extension: a PNG named `.jpg` is still
-converted losslessly. `--target webp` converts everything to WebP instead;
-JPEG is then necessarily re-encoded lossily.
+JPEG is transcoded to JPEG XL bit-exactly: `djxl` restores the original file byte for byte. PNG is
+converted losslessly or with a quality setting (`png_mode`); if cjxl fails, a lossless WebP is the
+fallback. The settings follow the real file type, not the extension: a PNG named `.jpg` is still
+converted losslessly. `--target webp` converts everything to WebP instead; JPEG is then re-encoded
+lossily.
 
-CMYK and arithmetic-coded JPEGs cannot be read by `cjxl` and are reported as
-`[UNSUPPORTED]`. There is deliberately no pixel-based fallback for JPEGs: for
-a truncated file it would "succeed" and replace the damaged original with an
-equally damaged copy, so such files count as failed.
+CMYK and arithmetic-coded JPEGs cannot be read by `cjxl` and are reported as `[UNSUPPORTED]`.
+There is no pixel-based fallback for JPEGs: for a truncated file it would "succeed" and replace the
+damaged original with an equally damaged copy, so such files count as failed.
 
-When an extension does not match the content (a WebP named `.jpg`), the source
-is renamed in place; with a target directory the source stays untouched and
-the result gets the correct name there.
+When an extension does not match the content (a WebP named `.jpg`), the source is renamed in
+place; with a target folder the source stays untouched and the result gets the correct name there.
 
 ### GIFs
 
-Lossless animated WebP by default; `--target avif` is about half the size but
-lossy. Results larger than the original are discarded. A photo named `.gif`
-is skipped as `[UNSUPPORTED]` and kept (`--preflight` corrects the name).
+Lossless animated WebP by default; `--target avif` is about half the size but lossy, and it
+flattens transparency. Results larger than the original are discarded. A photo named `.gif` is
+skipped as `[UNSUPPORTED]` and kept (`--preflight` corrects the name).
 
 ### Short clips: AVIF or WebP
 
-`clips` (in a full run `--clips`) turns short, silent videos into animations
-that loop like a GIF: codec in `clip_source_codecs`, shorter than
-`--max-seconds` (default 10), no audio track. `--format webp` (setting
-`clip_format`) writes animated WebP instead of AVIF. Measured on Fedora 44
-with glycin 2.1.5, the image loader behind GNOME's image viewer (Loupe) and
-the file manager's thumbnails:
+`clips` (in a full run `--clips`) turns short, silent videos into animations that loop like a GIF:
+codec in `clip_source_codecs`, shorter than `--max-seconds` (default 10), no audio track.
+`--format webp` (setting `clip_format`) writes animated WebP instead of AVIF.
 
-| Format | GNOME image viewer | Size vs. an H.264 source (4 test clips) |
+| Format | GNOME's image viewer and thumbnails | Size vs. an H.264 source |
 |---|---|---|
-| animated AVIF (CRF 32) | first frame only | 12–106 % |
-| animated WebP (quality 50) | plays, loops | 32–144 % |
+| animated AVIF | first frame only with glycin 2.1, plays with glycin 2.2 | 12–106 % |
+| animated WebP | plays, loops | 32–144 % |
 | animated JPEG XL | first frame only | – |
 | GIF / APNG | plays, loops | 10–20× larger |
 
-Fedora 45's glycin 2.2.2 plays animated AVIF too.
+Browsers play both. The default `avif_crf` is 28, a balance between size and the weakest frames;
+lower values make more clips larger than their source. WebP is only smaller than the source for
+noisy, high-bitrate footage such as phone clips; otherwise it is retried once at a lower quality
+and then discarded, unless `--keep-larger` keeps it. A clip's AVIF that comes out larger than the
+source is discarded and the source stays (`avif_crf_retry` adds a second attempt at a higher CRF;
+it is off, since it costs visible quality for little space). In a full run, clips are converted
+before the video stage, which then skips them.
 
-The default is `avif_crf` 28. On eight real clips it gave 62 % of the source's
-size and VMAF 93.6 (CRF 32: 46 %, 92.6), with none larger than its source. CRF 24
-gave 84 %, and three of the eight came out larger.
-
-Browsers play both. WebP is only smaller than the source for noisy,
-high-bitrate footage such as phone clips; otherwise it is retried once at a
-lower quality and then discarded, unless `--keep-larger` keeps it. In a full
-run, clips are converted before the video stage, which then skips them.
-
-AV1 encodes run one per four cores with four threads each, fewer when the
-free memory calls for it (a 4K clip takes about 5 GB): more at once were slower
-too, and could use up the memory.
-
-A clip's AVIF that comes out larger than the source is discarded and the source
-stays. `avif_crf_retry` adds a second attempt at a higher CRF; it is off, because
-on real clips it lost 1.6 VMAF to save about 0.45 MB per clip.
+AV1 encodes run one per four cores with four threads each, fewer when the free memory calls for it
+(a 4K clip takes about 5 GB).
 
 ### Animated WebPs from GIFs: `media-optimizer-webp`
 
-A separate command for WebPs that already exist. It finds animated WebPs that
-came from GIFs and lists WebPs labelled animated that aren't (no frame, one
-frame, or every frame the same picture). On its own it changes nothing:
+A separate command for WebPs that already exist. It finds animated WebPs that came from GIFs and
+lists WebPs labelled animated that aren't (no frame, one frame, or every frame the same picture).
+On its own it changes nothing:
 
 ```bash
 media-optimizer-webp ~/Pictures                  # the report
@@ -198,265 +178,106 @@ media-optimizer-webp ~/Pictures -v               # every file, not the first 30
 media-optimizer-webp ~/Pictures --convert        # to AVIF; the WebPs go to the trash
 ```
 
-A WebP counts as from a GIF when the journal says so, or when it looks like
-gif2webp's work: every frame lossless, timing in hundredths of a second, at most
-256 colours per frame, no partial transparency. One that only has a GIF's timing
-is a "maybe" (a lossy conversion of a GIF and a 25 fps video look the same);
-`--include-maybe` converts those too, `--only-journal` limits it to the certain
-ones. `--keep-webp` keeps the WebPs, `--crf` sets the quality (default
-`gif_avif_crf`, 20).
+A WebP counts as made from a GIF when the journal says so, or when it looks like gif2webp's work:
+every frame lossless, timing in hundredths of a second, at most 256 colours per frame, no partial
+transparency. One that only has a GIF's timing is a "maybe" (a lossy conversion of a GIF and a
+25 fps video look the same); `--include-maybe` converts those too, `--only-journal` limits it to
+the certain ones. `--keep-webp` keeps the WebPs, `--crf` sets the quality (default `gif_avif_crf`,
+20).
 
-AVIF is lossy here, so a result needs every frame, the right runtime and a
-picture close to the WebP's, or the WebP stays. WebPs with transparency or
-metadata stay WebP (the encode keeps neither), a result that isn't smaller is
-discarded, and an existing `.avif` is never overwritten. It needs ffmpeg 9 or
-newer, which decodes animated WebP.
+AVIF is lossy here, so a result needs every frame, the right runtime and a picture close to the
+WebP's, or the WebP stays. WebPs with transparency or metadata stay WebP (the encode keeps
+neither), a result that isn't smaller is discarded, and an existing `.avif` is never overwritten.
+It needs ffmpeg 9 or newer, which decodes animated WebP.
 
 ### Video
 
-Re-encodes to HEVC, on the GPU above `bitrate_threshold_kbps` and from
-1080p frames on, on the CPU below. Up to `gpu_workers` GPU encodes run at the
-same time (default 2) plus one CPU encode; measured on an RX 9070 XT with six
-1080p clips including the picture check: 17.6 s with one GPU encode at a
-time, 12.2 s with two, 10.9 s with three.
+Re-encodes to HEVC, on the GPU above `bitrate_threshold_kbps` and from 1080p frames on, on the CPU
+below. Up to `gpu_workers` GPU encodes run at the same time (default 2) plus one CPU encode.
 
-* **Container.** MP4 accepts neither Opus nor SRT, both common in MKV and
-  WebM; `auto` writes MP4 for MP4/MOV/M4V sources and MKV otherwise. If a
-  stream still cannot be copied, one retry runs with AAC audio and without
-  subtitles.
+* **Container.** MP4 accepts neither Opus nor SRT, both common in MKV and WebM; `auto` writes MP4
+  for MP4/MOV/M4V sources and MKV otherwise. If a stream still cannot be copied, one retry runs
+  with AAC audio and without subtitles.
 * **Source codecs.** HEVC, VP9 and AV1 are already efficient and skipped.
-* **Probe slices.** Several short slices spread over the runtime are encoded
-  first; a file that would not save enough is skipped (`probe_margin_pct`).
-* **Checks.** The runtime must match, and samples of the picture are compared
-  with the source (PSNR). A suspicious picture keeps the output but never
-  deletes the original; `--strict-visual` discards it instead.
-* **Damaged sources.** Intact frames are salvaged; the original is always
-  kept for those.
-* **GPU failure.** If the GPU fails on a file, that file and everything still
-  waiting goes to the CPU.
-* **In place** the output is named `name_h265.<ext>`; `--rename-inplace`
-  drops the suffix once the original is gone and the container keeps the
-  extension.
+* **Probe slices.** Several short slices spread over the runtime are encoded first; a file that
+  would not save enough is skipped (`probe_margin_pct`).
+* **Checks.** The runtime must match, and samples of the picture are compared with the source
+  (PSNR). A suspicious picture keeps the output but never deletes the original; `--strict-visual`
+  discards it instead.
+* **Damaged sources.** Intact frames are salvaged; the original is always kept for those.
+* **GPU failure.** If the GPU fails on a file, that file and everything still waiting goes to the
+  CPU.
+* **In place** the output is named `name_h265.<ext>`; `--rename-inplace` drops the suffix once the
+  original is gone and the container keeps the extension.
 
 ### Verify
 
-`verify SOURCE TARGET` checks every video output: `[UNREADABLE]`,
-`[DURATION]` (runtime off), `[PICTURE?]` (below `visual_psnr_min`, default
-18 dB). A low PSNR is a suspicion, not proof; without `--fix` nothing is
-changed. `--keep-samples DIR` stores the compared stills (in the folder
-structure of the target), `--fix` deletes the
-broken outputs and removes their originals from every video cache, `--run`
-regenerates them right away.
+`verify SOURCE TARGET` checks every video output: `[UNREADABLE]`, `[DURATION]` (runtime off),
+`[PICTURE?]` (below `visual_psnr_min`, default 18 dB). A low PSNR is a suspicion, not proof;
+without `--fix` nothing is changed. `--keep-samples DIR` stores the compared stills (in the folder
+structure of the target), `--fix` deletes the broken outputs and removes their originals from every
+video cache, `--run` regenerates them right away.
 
-## Configuration
+### The page
 
-A JSON file with only the keys you want to change, e.g.
-`~/.config/media-optimizer/config.json`:
+`media-optimizer DIR` asks for the settings in the browser and shows the run there. The page:
 
-```json
-{ "cpu_x265_params": "asm=avx512:aq-mode=3:no-sao=1", "png_mode": "lossy" }
-```
-
-[`config.example.json`](config.example.json) lists every setting with its
-default and a comment. Other places: `--config FILE`, `MO_CONFIG=FILE`, or
-`config.json` in the project folder when running from a checkout. Every key
-can also be set as an environment variable `MO_<KEY>` (`MO_MIN_SIZE_MB=0`).
-
-Precedence: **the page's form > command line > environment > config file >
-default.** Invalid values stop the program with exit code 2 and one
-`[SETTING]` line per value, whichever source they came from.
-
-`delete_original` and `rename_inplace` are `null` by default and follow the
-mode: with a target directory false, in place true — with a notice that shows
-the values.
-
-*Hardware tuning:* `asm=avx512` in `cpu_x265_params` helps on CPUs with a full
-512-bit datapath (Zen 5) and is ignored where AVX-512 is missing; remove it on
-chips that downclock for it (Skylake-X, Ice Lake server) and on Zen 4.
-`cjxl_threads` stays at 1, otherwise N workers start N threads each.
-
-## Things to know
-
-**A name that is already taken.** If `foo.jxl` exists when `foo.png` is converted,
-the two are compared. `foo.png`'s own output from an earlier run is recognised
-by its modification time; otherwise the pictures are compared, at any size. The
-same picture: `foo.png` stays as it is. A different one: the result becomes
-`foo_1.jxl`. This holds for images, GIFs and clips; of two videos with one output
-name only the first is converted.
-
-* **Atomic writes.** Output goes to a `.part` file with a unique name first
-  and is moved into place only after its check, never over an existing file.
-* **Trash.** Space is freed once the trash is emptied. If moving fails, the
-  paths collect in `.<stage>_pending_deletes.txt`, and `--force-delete` deletes
-  them.
-* **State files** live hidden in the working directory (the target directory,
-  or the source in place): `.img_stats.json`, `.gif_stats.json`,
-  `.clip_stats.json`, `.h265_stats.json` (counters of an interrupted run), the
-  caches, `.video_suspect.txt`, `.broken_videos.txt` and the pending lists.
-  The resume state of a full run is in `~/.local/state/media-optimizer/`, one
-  file per source folder: a run on another folder neither resumes nor
-  overwrites it. Without a source on the command line the most recent one is
-  offered; declined, it stays until a run on its own folder replaces it. A
-  dry run never removes it.
-* **Caches.** Each stage remembers the files that need no work next time:
-  `.img_cache.txt`, `.gif_cache.txt`, `.clip_cache.txt` keep results without
-  an output (discarded as larger, unsupported, clips not selected),
-  `.video_conversion_cache.txt` every handled video. Failures are never
-  cached. An entry only counts while the file's size and modification time
-  are unchanged and the settings it depends on are the same, so a replaced
-  file or a changed quality setting is handled again. Caches in subfolders
-  from earlier runs on a subfolder are taken over. `--no-cache-write` still
-  skips what the caches know but adds nothing of this run. `--no-cache`, or "Scan all
-  files again" on the page, checks everything again; deleting a cache
-  only costs time.
-* **Old video caches** from the Bash version (paths only) are detected at the start
-  and converted to the new format (`.v1.bak` keeps the old file). The Bash
-  scripts cannot read the converted format.
-* **Subfolders.** The page shows them as a tree with their image and video
-  counts. A left-out folder only loses its own files, its subfolders keep their
-  own state. With `-y` and in the stage commands subfolders are included. The
-  choice is saved with an interrupted run; `subfolders` and `exclude_folders` in
-  the config (or the options above) preset it.
-* **Hidden and system folders are skipped:** trash (`.Trash-*`,
-  `$RECYCLE.BIN`, `#recycle`), NAS folders (`@eaDir`, `#snapshot`),
-  `lost+found`, AppleDouble files (`._name`), and other hidden entries unless
-  `include_hidden` is true.
-* **One run per directory.** A second run on the same tree stops with `[BUSY]`.
-* **Stopping.** Ctrl+C and SIGTERM stop all running encoders at once and leave
-  the run resumable.
-* **Exit codes.** `0` done, `3` finished but some files failed (originals
-  kept), `2` invalid setting, `1` cannot start, `130` interrupted, `255` batch
-  aborted because an encoder vanished.
-* **Metadata.** Outputs keep the modification time of their source. JPEG → JXL
-  keeps everything (stored uncompressed, so ordinary readers see it); PNG
-  metadata is copied with exiftool; video keeps container metadata.
-
-### Logging
-
-Every run appends a block to `media-optimizer.log`: settings, one line per
-file, a summary per stage. It lives in the project folder of a checkout, or
-in `~/.local/state/media-optimizer/` when installed; `log_file` or `--log`
-choose another path. It is renamed to `.log.1` at the start of a run once it
-exceeds `log_max_kb`. A dry run writes no log.
-
-### Journal
-
-Besides the log for people, every run that changes files appends
-machine-readable events to `~/.local/state/media-optimizer/journal.jsonl`
-(`$XDG_STATE_HOME`, also from a checkout). picktag, an image and video tagger,
-reads it, so that tags follow a picture from `foo.png` to `foo.jxl` instead
-of being lost; keepbest writes the same format. `journal_file` (config,
-`MO_JOURNAL_FILE`, `--journal FILE`) chooses another file, `false` or
-`--no-journal` switches it off. It is independent of the log: either can be
-off.
-
-One JSON object per line (format version 1). Every line has `v`, `tool`,
-`tool_version`, `run` (one id per process), `ts` (local time with offset)
-and `event`:
-
-| Event | Fields | When |
-|---|---|---|
-| `run_start` | `source`, `target` (`null` in place), `pid` | a run begins; each directory of "process another directory" gets its own |
-| `run_end` | `code`, `interrupted` | the run ends, also after Ctrl+C or SIGTERM |
-| `converted` | `stage` (`img`, `gif`, `clips`, `video`), `src`, `src_size`, `src_mtime_ns`, `dest`, `dest_size`, `dest_mtime_ns`, `lossless`, `salvaged`/`suspect` when they apply | an output is in place |
-| `renamed` | `src`, `dest`, `size`, `mtime_ns`, `reason` (`extension`, `take_over`, `rename_inplace`) | a name was changed, the content not |
-| `copied` | `src`, `dest`, `size`, `mtime_ns`, `reason` (`take_over`) | a misnamed file was copied to the target under its right name |
-| `removed` | `path`, `size`, `mtime_ns`, `how` (`trash`, `permanent`), `reason` (`converted`, `broken_output`), `kept` | an original went after its conversion (`kept` = the output), or `verify --fix` deleted a broken output (`kept` = `null`) |
-
-`lossless` is `true` when the pixels are unchanged: JPEG → JXL, PNG → JXL
-lossless, PNG → lossless WebP (up to 8 bits per channel; WebP cannot store
-16), GIF → WebP. In place, a video appears as `converted` to
-`name_h265.mp4`, then `removed` (the original), then `renamed` to
-`name.mp4`. Paths are absolute with symlinked folders resolved; a file name
-that is not valid UTF-8 is written with `\udcXX` escapes
-(`os.fsencode(json.loads(line)["src"])` gives back the bytes). An original
-whose trash failed and that a later run deletes has
-`kept: null`; its `converted` event names the output.
-
-Events are written only after the action succeeded, never for skipped,
-discarded or failed files, and never in a dry run. The file is only ever
-appended to (one locked write per line) and never rotated, about 350 bytes
-per event. If it cannot be written, the run warns once and carries on.
-
-### Browser page
-
-Each stage says why files were left as they are, with a count per reason and
-the files behind it: too long or with sound for a short clip, the result already
-exists, a larger result, and so on.
-
-*Defaults* in its header bar shows every setting and saves it to the config
-file, so a change lasts for every later run; the form's own changes last for
-one run. The file keeps its comments, and the old one stays as `.bak`.
-
-`media-optimizer DIR` asks for the settings in the browser and shows the run
-there. *Browse* beside each folder opens a folder picker, which also comes up by
-itself when no folder was given.
-The page:
-
-* asks for the folder (preset with the current one, never the home folder),
-  the target folder or in place, and the subfolders as a checkbox tree with
-  their image and video counts; files a stage's cache already knows are
-  marked "done before: skipped" (for the settings in the form), unless
-  "Scan all files again" is chosen;
-* asks about the run's settings, the image and video ones behind *Show*, and every other setting folded away
-  with its description; a value from the
-  config file, the environment or the command line is marked as such and
-  checked by the same rules;
+* asks for the folder (preset with the current one, never the home folder), the target folder or
+  in place, and the subfolders as a checkbox tree with their image and video counts. *Browse*
+  beside each folder opens a folder picker, which also comes up by itself when no folder was
+  given. Files a stage's cache already knows are marked "done before: skipped" (for the settings
+  in the form), unless "Scan all files again" is chosen;
+* asks about the run's settings, the image and video ones behind *Show*, and every other setting
+  folded away with its description; a value from the config file, the environment or the command
+  line is marked as such and checked by the same rules;
 * offers "Resume" or "Start over" when the folder has an interrupted run;
-* runs the real program and shows it from top to bottom:
-  a section per stage with its progress, the video encodes, its warnings and
-  errors and its newest files; the stages are steps in the top bar, next to
-  *Stop* and the raw output with its colours under "Log". The page follows
-  the newest part while you are at its end. A finished stage folds its file
-  list away (the last 50; all of them are in the log), so even after many
-  thousand files the summary comes right after the stages;
-* ends with the summary in tiles (converted, space saved, skipped, failed,
-  time) and the outcome, with "Process another folder" and "Close".
+* runs the real program and shows it from top to bottom: a section per stage with its progress,
+  the video encodes, its warnings and errors, its newest files and why files were left as they are
+  (a count per reason, with the files behind it). The stages are steps in the top bar, next to
+  *Stop* and the raw output with its colours under "Log". The page follows the newest part while
+  you are at its end. A finished stage folds its file list away (the last 50; all of them are in
+  the log);
+* ends with the summary in tiles (converted, space saved, skipped, failed, time) and the outcome,
+  with "Process another folder" and "Close".
 
-Closing the tab during a run stops it like Ctrl+C: it saves its state, and
-the next start offers to resume. "Keep running in the background" lets the
-run go on without the page instead; reopening the printed address shows its
-progress, and at the end a desktop notification (`notify-send`, else
-`gdbus`) has an "Open" button. If the page is not opened again within 15
-minutes, media-optimizer ends with the run's exit code. The exit code is
-always the run's.
+The page calls a dry run a *preview*. After one it offers **Run it for real**, with the settings
+and folders the dry run used, and **Change settings or folder**, which goes back to the form with
+those values.
 
-The page listens on 127.0.0.1 only and needs the address with its token
-that media-optimizer prints. For other programs that hand a browser tab
-over (keepbest): `--no-browser` only prints the address
-(`media-optimizer is running at http://127.0.0.1:PORT/?token=…`),
-`--return-url URL` (a page on this computer) and `--return-name NAME` turn
-the last button into "Back to NAME". `-n` and `--reset` preset the dry run
-and "Start over".
+*Defaults* in the header bar shows every setting and saves it to the config file, so a change
+lasts for every later run; the form's own changes last for one run. The file keeps its comments,
+and the old one stays as `.bak`.
 
-After a preview the page offers **Run it for real**, with the settings and
-folders the preview used, and **Change settings or folder**, which goes back
-to the form with those values.
+Closing the tab during a run stops it like Ctrl+C: it saves its state, and the next start offers
+to resume. "Keep running in the background" lets the run go on without the page instead; reopening
+the printed address shows its progress, and at the end a desktop notification (`notify-send`, else
+`gdbus`) has an "Open" button. If the page is not opened again within 15 minutes, media-optimizer
+ends. The exit code is always the run's.
 
-**App menu:** `media-optimizer --install-desktop-entry` adds media-optimizer
-to the app menu of GNOME, KDE and other freedesktop.org desktops
-(`~/.local/share/applications/media-optimizer.desktop` and its icon under
-`~/.local/share/icons/`). It opens this page, and file managers offer
-*Open with media-optimizer* for folders. The entry starts the
-media-optimizer that wrote it — a pipx installation, or the Python and
-`run.py` of a checkout — so run the command again after installing it
-somewhere else. `--remove-desktop-entry` removes both files.
+The page listens on 127.0.0.1 only and needs the address with its token that media-optimizer
+prints. `--no-browser` only prints the address
+(`media-optimizer is running at http://127.0.0.1:PORT/?token=…`), `--return-url URL` (a page on
+this computer) and `--return-name NAME` turn the last button into "Back to NAME". `-n` and
+`--reset` preset the dry run and "Start over".
 
-### Started from keepbest
+### App menu
 
-[keepbest](https://github.com/sobakah/keepbest) removes duplicate pictures and videos. After a run, its end screen offers to run media-optimizer on the same folder: its page takes over keepbest's tab, and its last button leads back. keepbest passes its folder choice as `MO_SUBFOLDERS` and `MO_EXCLUDE_FOLDERS` (a JSON list), so the run covers the same folders, and `--results`, so it can show the run's numbers next to its own, with the space both freed together.
+`media-optimizer --install-desktop-entry` adds media-optimizer to the app menu of GNOME, KDE and
+other freedesktop.org desktops (`~/.local/share/applications/media-optimizer.desktop` and its icon
+under `~/.local/share/icons/`). It opens the page, and file managers offer *Open with
+media-optimizer* for folders. The entry starts the media-optimizer that wrote it (a pipx
+installation, or the Python and `run.py` of a checkout), so run the command again after installing
+it somewhere else. `--remove-desktop-entry` removes both files.
 
 ### Updates
 
-At every start media-optimizer looks for a newer release, in the background,
-so the start doesn't wait (it asks GitHub through git, so it has the same
-access as `pipx install`, and never asks for a password). The page then shows
-an *Update* button, when no run is going on, and reloads with the new version;
-from a checkout it shows the command. An install pinned to a release (`...media-optimizer@1.0`) moves
-to the new release and stays pinned. `-y` runs, pages started by keepbest and
-the stage commands (`images`, `video`, ...) don't check. pipx's output from the page is
-kept in `update.log` in the state folder. `"check_for_updates": false` turns
-this off.
+At every start the page looks for a newer release in the background, so the start doesn't wait.
+It asks GitHub through git, so it has the same access as `pipx install` and never asks for a
+password. The page then shows an *Update* button, when no run is going on, and reloads with the new
+version; from a checkout it shows the command. An install pinned to a release
+(`...media-optimizer.git@1.0.0`) moves to the new release and stays pinned. `-y` runs, pages
+started by keepbest and the stage commands (`images`, `video`, ...) don't check. pipx's output is
+kept in `update.log` in the state folder. `"check_for_updates": false` turns this off.
 
 ### Automated runs
 
@@ -465,7 +286,7 @@ A systemd user service and timer, e.g. for an ingest folder:
 ```ini
 # ~/.config/systemd/user/media-optimizer.service
 [Unit]
-Description=Media Optimizer batch processing
+Description=media-optimizer batch processing
 
 [Service]
 Type=oneshot
@@ -475,7 +296,7 @@ ExecStart=%h/.local/bin/media-optimizer --yes %h/Ingest %h/Optimized
 ```ini
 # ~/.config/systemd/user/media-optimizer.timer
 [Unit]
-Description=Run Media Optimizer nightly
+Description=Run media-optimizer nightly
 
 [Timer]
 OnCalendar=*-*-* 02:00:00
@@ -490,16 +311,132 @@ systemctl --user enable --now media-optimizer.timer
 loginctl enable-linger "$USER"    # run even while not logged in
 ```
 
-If the target is a network mount, guard the unit with
-`ConditionPathIsMountPoint=` so it does not run against an empty directory.
+If the target is a network mount, guard the unit with `ConditionPathIsMountPoint=` so it does not
+run against an empty folder.
 
-### Progress for other programs
+### Things to know
 
-`--events FILE` writes the run's progress to FILE while it goes on, one JSON
-object per line (`v` 1, `event`, `ts`), for a program that shows the run;
-the terminal output stays exactly the same. The file is replaced at the
-start, also written in a dry run, and a problem writing it changes nothing
-else.
+**A name that is already taken.** If `foo.jxl` exists when `foo.png` is converted, the two are
+compared. `foo.png`'s own output from an earlier run is recognised by its modification time;
+otherwise the pictures are compared, at any size. The same picture: `foo.png` stays as it is. A
+different one: the result becomes `foo_1.jxl`. This holds for images, GIFs and clips; of two videos
+with one output name only the first is converted.
+
+* **Atomic writes.** Output goes to a `.part` file with a unique name first and is moved into place
+  only after its check, never over an existing file.
+* **The trash.** Space is freed once the trash is emptied. If moving fails, the paths collect in
+  `.<stage>_pending_deletes.txt`, and `--force-delete` deletes them.
+* **State files** live hidden in the working folder (the target folder, or the source in place):
+  `.img_stats.json`, `.gif_stats.json`, `.clip_stats.json`, `.h265_stats.json` (counters of an
+  interrupted run), the caches, `.video_suspect.txt`, `.broken_videos.txt` and the pending lists.
+  The resume state of a full run is in `~/.local/state/media-optimizer/`, one file per source
+  folder: a run on another folder neither resumes nor overwrites it. Without a source on the
+  command line the most recent one is offered; declined, it stays until a run on its own folder
+  replaces it. A dry run never removes it.
+* **Caches.** Each stage remembers the files that need no work next time: `.img_cache.txt`,
+  `.gif_cache.txt`, `.clip_cache.txt` keep results without an output (discarded as larger,
+  unsupported, clips not selected), `.video_conversion_cache.txt` every handled video. Failures are
+  never cached. An entry only counts while the file's size and modification time are unchanged and
+  the settings it depends on are the same, so a replaced file or a changed quality setting is
+  handled again. Caches in subfolders from earlier runs on a subfolder are taken over.
+  `--no-cache-write` still skips what the caches know but adds nothing of this run. `--no-cache`, or
+  "Scan all files again" on the page, checks everything again; deleting a cache only costs time.
+* **Subfolders.** The page shows them as a tree with their image and video counts. A left-out
+  folder only loses its own files; its subfolders keep their own state. With `-y` and in the stage
+  commands subfolders are included. The choice is saved with an interrupted run; `subfolders` and
+  `exclude_folders` in the config (or the options above) preset it.
+* **Hidden and system folders are skipped:** the trash (`.Trash-*`, `$RECYCLE.BIN`, `#recycle`),
+  NAS folders (`@eaDir`, `#snapshot`), `lost+found`, AppleDouble files (`._name`), and other hidden
+  entries unless `include_hidden` is true.
+* **One run per folder.** A second run on the same tree stops with `[BUSY]`.
+* **Stopping.** Ctrl+C and SIGTERM stop all running encoders at once and leave the run resumable.
+* **Exit codes.** `0` done, `3` finished but some files failed (originals kept), `2` invalid
+  setting, `1` cannot start, `130` interrupted, `255` batch aborted because an encoder vanished.
+* **Metadata.** Outputs keep the modification time of their source. JPEG → JXL keeps everything
+  (stored uncompressed, so ordinary readers see it); PNG metadata is copied with exiftool; video
+  keeps container metadata, but not cover art or MKV attachments.
+
+### The log
+
+Every run appends a block to `media-optimizer.log`: settings, one line per file, a summary per
+stage. It lives in the project folder of a checkout, or in `~/.local/state/media-optimizer/` when
+installed; `log_file` or `--log` choose another path. It is renamed to `.log.1` at the start of a
+run once it exceeds `log_max_kb`. A dry run writes no log.
+
+## Settings
+
+A JSON file with only the keys you want to change, e.g. `~/.config/media-optimizer/config.json`:
+
+```json
+{ "cpu_x265_params": "asm=avx512:aq-mode=3:no-sao=1", "png_mode": "lossy" }
+```
+
+[`config.example.json`](config.example.json) lists every setting with its default and a comment.
+Other places: `--config FILE`, `MO_CONFIG=FILE`, or `config.json` in the project folder when
+running from a checkout. Every key can also be set as an environment variable `MO_<KEY>`
+(`MO_MIN_SIZE_MB=0`). The page's *Defaults* edit the config file.
+
+Precedence: **the page's form > command line > environment > config file > default.** Invalid
+values stop the program with exit code 2 and one `[SETTING]` line per value, whichever source they
+came from.
+
+`delete_original` and `rename_inplace` are `null` by default and follow the mode: with a target
+folder false, in place true, with a notice that shows the values.
+
+*Hardware tuning:* `asm=avx512` in `cpu_x265_params` helps on CPUs with a full 512-bit datapath
+(Zen 5) and is ignored where AVX-512 is missing; remove it on chips that downclock for it
+(Skylake-X, Ice Lake server) and on Zen 4. `cjxl_threads` stays at 1, otherwise N workers start N
+threads each.
+
+## Working with the other programs
+
+### keepbest
+
+[keepbest](https://github.com/sobakah/keepbest) removes duplicate pictures and videos. After a
+run, its end screen offers to run media-optimizer on the same folder: media-optimizer's page takes
+over keepbest's tab, and its last button leads back. keepbest passes its folder choice as
+`MO_SUBFOLDERS` and `MO_EXCLUDE_FOLDERS` (a JSON list), so the run covers the same folders, and
+`--results`, so it can show the run's numbers next to its own, with the space both freed together.
+
+### The journal
+
+Besides the log for people, every run that changes files appends machine-readable events to
+`~/.local/state/media-optimizer/journal.jsonl` (`$XDG_STATE_HOME`, also from a checkout).
+[picktag](https://github.com/sobakah/picktag), an image and video tagger, reads it, so that tags
+follow a picture from `foo.png` to `foo.jxl` instead of being lost; keepbest writes the same
+format. `journal_file` (config, `MO_JOURNAL_FILE`, `--journal FILE`) chooses another file, `false`
+or `--no-journal` switches it off. It is independent of the log: either can be off.
+
+One JSON object per line (format version 1). Every line has `v`, `tool`, `tool_version`, `run` (one
+id per process), `ts` (local time with offset) and `event`:
+
+| Event | Fields | When |
+|---|---|---|
+| `run_start` | `source`, `target` (`null` in place), `pid` | a run begins |
+| `run_end` | `code`, `interrupted` | the run ends, also after Ctrl+C or SIGTERM |
+| `converted` | `stage` (`img`, `gif`, `clips`, `video`), `src`, `src_size`, `src_mtime_ns`, `dest`, `dest_size`, `dest_mtime_ns`, `lossless`, `salvaged`/`suspect` when they apply | an output is in place |
+| `renamed` | `src`, `dest`, `size`, `mtime_ns`, `reason` (`extension`, `take_over`, `rename_inplace`) | a name was changed, the content not |
+| `copied` | `src`, `dest`, `size`, `mtime_ns`, `reason` (`take_over`) | a misnamed file was copied to the target under its right name |
+| `removed` | `path`, `size`, `mtime_ns`, `how` (`trash`, `permanent`), `reason` (`converted`, `broken_output`), `kept` | an original went after its conversion (`kept` = the output), or `verify --fix` deleted a broken output (`kept` = `null`) |
+
+`lossless` is `true` when the pixels are unchanged: JPEG → JXL, PNG → JXL lossless, PNG → lossless
+WebP (up to 8 bits per channel; WebP cannot store 16), GIF → WebP. In place, a video appears as
+`converted` to `name_h265.mp4`, then `removed` (the original), then `renamed` to `name.mp4`. Paths
+are absolute with symlinked folders resolved; a file name that is not valid UTF-8 is written with
+`\udcXX` escapes (`os.fsencode(json.loads(line)["src"])` gives back the bytes). An original whose
+trash failed and that a later run deletes has `kept: null`; its `converted` event names the
+output.
+
+Events are written only after the action succeeded, never for skipped, discarded or failed files,
+and never in a dry run. The file is only ever appended to (one locked write per line) and never
+rotated, about 350 bytes per event. If it cannot be written, the run warns once and carries on.
+
+### Progress: `--events`
+
+`--events FILE` writes the run's progress to FILE while it goes on, one JSON object per line (`v`
+1, `event`, `ts`), for a program that shows the run; the terminal output stays exactly the same.
+The file is replaced at the start, also written in a dry run, and a problem writing it changes
+nothing else.
 
 | Event | Fields |
 |---|---|
@@ -512,18 +449,17 @@ else.
 | `message` | `level` (`error`, `warning`, `info`), `tag`, `text` |
 | `run_end` | `code` (the exit code) |
 
-### Results for other programs
+### Results: `--results`
 
-`--results FILE` writes the run's numbers to FILE when it ends, for the
-program that started it (keepbest shows them next to its own). It is one
-JSON object, replaced in one step, also after a stop (exit code 130) or
-when some files failed; a run that never started writes nothing. The
+`--results FILE` writes the run's numbers to FILE when it ends, for the program that started it
+(keepbest shows them next to its own). It is one JSON object, replaced in one step, also after a
+stop (exit code 130) or when some files failed; a run that never started writes nothing. The
 terminal output and the exit code are the same with and without it.
 
 | Field | |
 |---|---|
 | `v`, `program`, `version` | `1`, `"media-optimizer"`, the version |
-| `code`, `dry_run`, `source`, `target` | the exit code, a preview or not, the folders (`target` is `null` in place) |
+| `code`, `dry_run`, `source`, `target` | the exit code, a dry run or not, the folders (`target` is `null` in place) |
 | `stages` | per stage: `stage`, `title`, `state` (`done`; `running`: stopped in it; `waiting`: not reached; `earlier`: finished by the interrupted run this one resumed), `code`, `total`, `done`, `outcomes` (files per outcome, as in the events), `before` and `after` (bytes of the converted files), `elapsed` (seconds) |
 | `converted`, `failed`, `before`, `after` | the sums over the stages |
 
@@ -531,20 +467,18 @@ terminal output and the exit code are the same with and without it.
 
 ### GPU encoding does not start
 
-`vaapi_device` `auto` tries every render node. If all fail, the actual ffmpeg
-error is shown. Common causes: the wrong node (`ls -l /dev/dri/by-path/`;
-with an iGPU, `renderD128` is often the integrated one), missing permissions
-(`id | grep render`), an old driver (RDNA 4 needs Mesa 25.0+ and kernel
-6.13+), ffmpeg without VAAPI, or on Fedora the stripped VA drivers
-(`sudo dnf swap mesa-va-drivers mesa-va-drivers-freeworld`). With
-`--encoder gpu` the run stops instead of falling back to the CPU.
+`vaapi_device` `auto` tries every render node. If all fail, the actual ffmpeg error is shown.
+Common causes: the wrong node (`ls -l /dev/dri/by-path/`; with an iGPU, `renderD128` is often the
+integrated one), missing permissions (`id | grep render`), an old driver (RDNA 4 needs Mesa 25.0+
+and kernel 6.13+), ffmpeg without VAAPI, or on Fedora the stripped VA drivers
+(`sudo dnf swap mesa-va-drivers mesa-va-drivers-freeworld`). With `--encoder gpu` the run stops
+instead of falling back to the CPU.
 
 ### GPU runs but the picture is broken
 
-A VAAPI encoder can produce unusable pictures without any error (typically:
-fragments at the top, the rest green). `media-optimizer gpu-selftest FILE`
-runs option variants against a real file and rates each by picture
-comparison:
+A VAAPI encoder can produce unusable pictures without any error (typically: fragments at the top,
+the rest green). `media-optimizer gpu-selftest FILE` runs option variants against a real file and
+rates each by picture comparison:
 
 ```
   Variant       Description                        Result     PSNR
@@ -553,47 +487,22 @@ comparison:
   av1           av1_vaapi instead of hevc_vaapi    usable     57 dB
 ```
 
-Known pitfalls: `hevc_tag hvc1` (incomplete `hvcC` box, measured 5 dB here),
-a negotiated pixel format (fixed to nv12, 10 bit only with `gpu_allow_10bit`),
-B-frames (`gpu_bf 0`), rate control (`gpu_rc_mode VBR`), or another encoder
-(`gpu_codec av1_vaapi` or `hevc_vulkan`).
+Known pitfalls: `hevc_tag hvc1` (an incomplete `hvcC` box), a negotiated pixel format (fixed to
+nv12, 10 bit only with `gpu_allow_10bit`), B-frames (`gpu_bf 0`), rate control
+(`gpu_rc_mode VBR`), or another encoder (`gpu_codec av1_vaapi` or `hevc_vulkan`).
 
-## Known limits
+## Limits
 
-* The PSNR comparison is a heuristic: only the best of several samples counts.
-  Measured separation: sound re-encodes 31–38 dB, even CRF 51 still 24 dB,
-  broken colour formats 9–12 dB; threshold 18 dB.
-* The probe over-predicts savings for sources with long keyframe intervals,
-  because the reference slice starts at the previous keyframe.
+* The PSNR comparison is a heuristic: only the best of several samples counts. Sound re-encodes
+  measure 31–38 dB, even CRF 51 still 24 dB, broken colour formats 9–12 dB; the threshold is 18 dB.
+* The probe over-predicts savings for sources with long keyframe intervals, because the reference
+  slice starts at the previous keyframe.
 * `--verify-deep` fully decodes every image output and costs noticeable time.
-* SVT-AV1 3.1.2 hangs forever on frames narrower than about 31 px. Such GIFs
-  and clips are encoded with libaom-av1 instead (reported as unsupported if
-  that is missing), and every AV1 encode of a GIF or clip is stopped after
-  10 minutes.
+* SVT-AV1 hangs forever on frames narrower than about 31 px. Such GIFs and clips are encoded with
+  libaom-av1 instead (reported as unsupported if that is missing), and every AV1 encode of a GIF or
+  clip is stopped after 10 minutes.
+* The GIF stage's AVIF output loses transparency; the GIF is still replaced.
 
-## Tests
+## License
 
-```bash
-python3 -m pytest                 # about 300 tests, 3.5 minutes
-python3 -m pytest -m "not slow"   # without the signal tests
-```
-
-Needs the tools above plus `pytest`. Every test runs with its own home,
-config and state folder; the trash is switched off. The browser page is
-tested without a browser; clicking through it with headless Chrome
-(Playwright) happens outside the suite, on generated files.
-
-## History
-
-Up to pre-release 0.3.1 this was a set of Bash scripts (`media-optimizer.sh` and
-`scripts/`), first written with **Google Gemini**, later revised with
-**Claude (Anthropic)**. Pre-release 0.4 replaced them with this Python version;
-the last commit with the scripts is `4d3a676`. Settings from the old
-`media-optimizer.conf` translate one to one into lower case
-(`CPU_CRF` → `cpu_crf`), except `COMPRESSION_METHOD` → `gif_method`,
-`CHECK_EXTENSIONS_PREFLIGHT` → `preflight` and `ENABLE_AVIF_STAGE`,
-`AVIF_MAX_SECONDS`, `AVIF_REQUIRE_SILENT`, `AVIF_SOURCE_CODECS` →
-`clip_stage`, `clip_max_seconds`, `clip_require_silent`, `clip_source_codecs`.
-Folders processed by the scripts continue seamlessly: caches, lists and
-leftovers use the same names. Development history, fixed bugs and
-measurements are in [CHANGELOG.md](CHANGELOG.md).
+MIT, see [LICENSE](LICENSE).

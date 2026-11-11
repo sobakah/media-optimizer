@@ -1,6 +1,6 @@
 """The run log: one block per run with settings, one line per file, summaries.
 
-Same format as the former Bash version (up to 0.3.1), so an existing log just
+Same format as the former Bash version, so an existing log just
 continues. Lines are written under a lock, so parallel workers never interleave (the Bash
 version had to keep lines short for O_APPEND atomicity instead).
 

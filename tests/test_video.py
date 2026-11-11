@@ -202,7 +202,7 @@ def test_selftest_uses_the_device_the_run_would_use(tmp_path, monkeypatch):
     assert gpu.selftest_device(Settings(vaapi_device="/dev/x")) == "/dev/x"
 
 
-# ffmpeg 9.0.2 with Fedora's Mesa (no H.265) on an RX 9070 XT, verbatim.
+# ffmpeg 9.0.2 with Fedora's Mesa (no H.265), verbatim.
 _NO_HEVC_PROFILE = """\
 [hevc_vaapi @ 0x55b0eb1f9bc0] No usable encoding profile found.
 [vost#0:0/hevc_vaapi @ 0x55b0eb1f9680] [enc:hevc_vaapi @ 0x55b0eb1f9b40] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.

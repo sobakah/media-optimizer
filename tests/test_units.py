@@ -229,7 +229,6 @@ def test_old_command_name_is_explained(run_cli, tmp_path):
 def test_progress_line_is_cut_by_display_width():
     """CJK and emoji take two columns; cut by characters, the progress line
     wrapped and every update left a line behind."""
-    from media_optimizer import ui
     assert ui.fit_width("abc", 2) == "ab"
     assert ui.fit_width("20歳を掘って", 6) == "20歳を"
     assert ui.fit_width("a🔥b", 3) == "a🔥"
@@ -287,7 +286,6 @@ def test_timeout_applies_with_streamed_output():
 
 
 def test_box_frame_with_wide_characters(capsys):
-    from media_optimizer import ui
     ui.box("RESULT", [("File:", "日本の動画.mp4"), ("Emoji:", "🎬 clip"), ("Plain:", "x")], "")
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
     assert len({ui.visible_width(line) for line in lines}) == 1, lines

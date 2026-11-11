@@ -4,7 +4,7 @@ The main thread walks the files and decides (cache, size, codec, existing
 output, encoder). The work runs in two lanes at the same time: up to
 gpu_workers GPU encodes and one CPU encode (x265 already uses every core).
 Each job: probe slices, encode, runtime check, picture check, size check,
-deletion. Measured on an RX 9070 XT with six 1080p clips: plain ffmpeg
+deletion. Measured on a VAAPI GPU with six 1080p clips: plain ffmpeg
 encodes 8.2 s one at a time, 6.1 s two, 5.9 s three; the whole stage
 including the picture checks 17.6 s, 12.2 s and 10.9 s.
 
@@ -24,7 +24,7 @@ INVARIANTS
   - With a target directory no state files are written to the source.
 
 The cache file (.video_conversion_cache.txt), the lists and their names are
-the same as in the former Bash version (up to 0.3.1), so its caches and lists
+the same as in the former Bash version, so its caches and lists
 are still used.
 """
 

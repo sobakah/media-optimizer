@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.4.0"
+__version__ = "1.0.0"
 NAME = "media-optimizer"
 PROJECT_URL = "https://github.com/sobakah/media-optimizer"
 ENV_PREFIX = "MO_"
@@ -238,7 +238,7 @@ class Settings:
         "Run the clip stage (short silent videos to AVIF or WebP) in a full run.")
     clip_format: str = _setting("avif", ("choice", "avif", "webp"),
         "Format for short silent videos. avif is about a third of the size, but GNOME's image "
-        "viewer (glycin 2.1, Fedora 44) shows only its first frame; webp animates everywhere, "
+        "viewer (glycin before 2.2) shows only its first frame; webp animates everywhere, "
         "and is often larger than an H.264 source.")
     clip_max_seconds: float = _setting(10.0, ("num", 0.1, 86400),
         "Only videos shorter than this go to the clip stage.")
@@ -273,8 +273,7 @@ class Settings:
         "In auto mode the GPU always encodes from this frame size on. 0 disables it.")
     gpu_workers: int = _setting(2, ("int", 1, 8),
         "GPU encodes running at the same time; a CPU encode runs alongside in any case. "
-        "Measured on an RX 9070 XT, six 1080p clips including the picture check: 1 = 17.6 s, "
-        "2 = 12.2 s, 3 = 10.9 s.")
+        "Two are clearly faster than one, a third adds little.")
     gpu_qp: int = _setting(26, ("int", 0, 255), "GPU quality, lower is better.")
     cpu_crf: float = _setting(22, ("num", 0, 51), "libx265 CRF, lower is better.")
     cpu_preset: str = _setting("medium", ("choice", *CPU_PRESETS), "libx265 preset.")

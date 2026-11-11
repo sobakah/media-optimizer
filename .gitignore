@@ -11,3 +11,6 @@ dist/
 /config.json
 /media-optimizer.log
 /media-optimizer.log.1
+
+# Notes on the owner's machine for Claude Code
+/CLAUDE.local.md

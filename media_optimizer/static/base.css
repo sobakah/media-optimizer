@@ -1,5 +1,6 @@
-/* The look lyrembed and cdimport share: libadwaita's design language in CSS.
-   This file is the same in both programs (a copy, like vendor/): change both.
+/* The look of the family's pages: libadwaita's design language in CSS.
+   lyrembed's file, copied unchanged into cdport, keepbest and media-optimizer
+   (like vendor/): change it here and copy it there.
    A program's own style.css sets its accent and whatever only it has. */
 :root {
   color-scheme: light dark;
@@ -90,6 +91,9 @@ input[type=text], textarea, select {
   padding: 7px 10px; outline-offset: -2px;
 }
 input[type=text]:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); }
+/* The list is the browser's own window: the select's see-through background
+   does not reach it, and in dark mode its light text stood on white. */
+option { background: var(--surface); color: var(--ink); }
 input[type=checkbox], input[type=radio], input[type=range] { accent-color: var(--accent); }
 textarea { font-size: 13px; }
 .switch { appearance: none; position: relative; flex-shrink: 0; width: 44px; height: 24px; margin: 0; border-radius: 12px;

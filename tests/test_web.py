@@ -1,4 +1,4 @@
-"""The browser page's server: the security rules copied from cdimport and
+"""The browser page's server: the security rules copied from cdport and
 lyrembed, the options keepbest's hand-off relies on, and the address line
 it reads. No browser here; the page itself is clicked through outside the
 suite."""
@@ -23,7 +23,7 @@ from media_optimizer import web
 from media_optimizer.config import Settings
 
 TOKEN = "test-token"
-# cdimport/web.py's _HANDOFF, verbatim: keepbest reads the address the same way.
+# cdport/web.py's _HANDOFF, verbatim: keepbest reads the address the same way.
 HANDOFF = re.compile(r"is running at (http://(?:127\.0\.0\.1|localhost):\d+/\?token=[A-Za-z0-9_-]+)")
 
 
@@ -157,7 +157,7 @@ def test_web_option_rules(run_cli, tmp_path, args, message):
 
 
 def test_help_lists_the_return_url():
-    """keepbest decides by this whether to hand its tab over (cdimport's can_return)."""
+    """The options keepbest hands its tab over with."""
     out = subprocess.run([sys.executable, "-m", "media_optimizer", "--help"], capture_output=True, text=True,
                          env=_env(None, None))
     assert out.returncode == 0

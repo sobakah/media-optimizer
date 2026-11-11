@@ -1,6 +1,6 @@
-// The action icons of lyrembed's and cdimport's pages, drawn after Lucide (ISC,
-// see vendor/LICENSES.txt). This file is the same in both programs (a copy,
-// like vendor/): change both.
+// The action icons of the family's pages, drawn after Lucide (ISC, see
+// vendor/LICENSES.txt). lyrembed's file, copied unchanged into cdport, keepbest
+// and media-optimizer (like vendor/): change it here and copy it there.
 import { html } from '/static/vendor/preact-htm.js';
 
 const SHAPES = {
