@@ -4,7 +4,7 @@ All notable changes to media-optimizer are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.0.1] — 2026-11-14
 
 ### Added
 
@@ -63,5 +63,5 @@ the run there; `-y`, the single stages and `verify` run in the terminal for scri
 - **Install** with `pipx install git+https://github.com/sobakah/media-optimizer.git`; needs Python
   3.10 or newer, ffmpeg, cjxl, cwebp and gif2webp (exiftool optional).
 
-[Unreleased]: https://github.com/sobakah/media-optimizer/compare/1.0.0...HEAD
+[1.0.1]: https://github.com/sobakah/media-optimizer/compare/1.0.0...1.0.1
 [1.0.0]: https://github.com/sobakah/media-optimizer/releases/tag/1.0.0
