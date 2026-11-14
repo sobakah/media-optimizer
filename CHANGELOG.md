@@ -6,6 +6,17 @@ All notable changes to media-optimizer are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Fedora Silverblue, Bluefin and other image-based systems:** media-optimizer runs in a toolbox
+  or distrobox too: its app menu entry starts it in the container, and the page opens in the
+  host's browser. The README's section for these systems covers both ways.
+
+### Fixed
+
+- The README's command for swapping in RPM Fusion's ffmpeg on Silverblue names every library it
+  replaces; the GPU driver hint uses `rpm-ostree` on an image-based system.
+
 ## [1.0.0] — 2026-11-11
 
 The first release. media-optimizer converts pictures, GIFs and videos to more efficient formats

@@ -22,7 +22,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import media, proc, ui
+from . import container, media, proc, ui
 from .config import Settings
 from .ui import StyleUI as S
 
@@ -156,7 +156,11 @@ def driver_hint(reason: str) -> list[str]:
         return []
     lines = [f"      {S.BOLD}The video driver offers no HEVC encoder.{S.RESET} Distributions that build",
              "      Mesa without patented codecs need a separate driver package."]
-    if _distro() == "fedora" and "No usable encoding profile" in reason:
+    if _distro() == "fedora" and "No usable encoding profile" in reason and container.image_based_host():
+        lines += ["      Fedora Silverblue and other image-based systems (RPM Fusion):",
+                  "        rpm-ostree install mesa-va-drivers-freeworld    # then restart the computer",
+                  "        rpm -q mesa-va-drivers-freeworld    # removed by a release upgrade?"]
+    elif _distro() == "fedora" and "No usable encoding profile" in reason:
         lines += ["      Fedora (RPM Fusion):",
                   "        sudo dnf install mesa-va-drivers-freeworld",
                   "        rpm -q mesa-va-drivers-freeworld    # removed by a release upgrade?",

@@ -37,15 +37,7 @@ sudo dnf install ffmpeg libjxl-utils libwebp-tools perl-Image-ExifTool pipx
 sudo apt install ffmpeg libjxl-tools webp libimage-exiftool-perl pipx
 ```
 
-**Fedora Silverblue / Bazzite / Bluefin**
-```bash
-rpm-ostree install libjxl-utils libwebp-tools perl-Image-ExifTool
-systemctl reboot
-```
-
-`ffmpeg` is part of these images. Bazzite ships the full ffmpeg, Silverblue and Bluefin the
-stripped `ffmpeg-free`, which has no HEVC encoder: swap it with
-`rpm-ostree override remove ffmpeg-free --install ffmpeg` from RPM Fusion.
+**Fedora Silverblue, Bluefin and other image-based systems**: see [below](#fedora-silverblue-bluefin-and-other-image-based-systems).
 
 `exiftool` is optional and only carries metadata out of PNG sources. `libva-utils` (`vainfo`)
 helps when GPU encoding fails. AVIF output needs an AV1 encoder in ffmpeg (`libsvtav1` or
@@ -259,6 +251,38 @@ prints. `--no-browser` only prints the address
 (`media-optimizer is running at http://127.0.0.1:PORT/?token=…`), `--return-url URL` (a page on
 this computer) and `--return-name NAME` turn the last button into "Back to NAME". `-n` and
 `--reset` preset the dry run and "Start over".
+
+### Fedora Silverblue, Bluefin and other image-based systems
+
+media-optimizer runs on the host. Silverblue's image has Python, `ffmpeg-free` and `gio`, but not
+pipx, the JPEG XL and WebP tools, or exiftool; these come in one layer:
+
+```bash
+rpm-ostree install pipx libjxl-utils libwebp-tools perl-Image-ExifTool
+systemctl reboot
+pipx install git+https://github.com/sobakah/media-optimizer.git
+```
+
+- **ffmpeg**: the image's `ffmpeg-free` has no HEVC encoder and decodes H.264 only with
+  `openh264`, which the image leaves out. RPM Fusion's ffmpeg replaces it and its libraries
+  (after `rpm-ostree install` of RPM Fusion's `rpmfusion-free-release` package and a restart):
+
+  ```bash
+  rpm-ostree override remove ffmpeg-free libavcodec-free libavdevice-free libavfilter-free \
+      libavformat-free libavutil-free libswresample-free libswscale-free --install ffmpeg
+  ```
+
+  For GPU encoding on AMD and Intel, also `rpm-ostree install mesa-va-drivers-freeworld`.
+- **In a toolbox** (or a distrobox) instead, `sudo dnf install pipx ffmpeg-free libjxl-utils
+  libwebp-tools perl-Image-ExifTool` in it, RPM Fusion's `ffmpeg` and
+  `mesa-va-drivers-freeworld` in it for HEVC: the container brings its own video driver. The
+  app menu entry made there starts media-optimizer in the container (`toolbox run --container
+  NAME …`), and the page opens in the host's browser. A systemd unit (see
+  [Automated runs](#automated-runs)) enters it the same way:
+  `ExecStart=/usr/bin/toolbox run --container NAME %h/.local/bin/media-optimizer --yes …`.
+- pipx's folders are in the home folder, which the host and its toolboxes share: a program
+  installed in one is on `PATH` in the other, and it runs where it is started. keepbest starts
+  media-optimizer, so run both on the host or both in the same toolbox.
 
 ### App menu
 

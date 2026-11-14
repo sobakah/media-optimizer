@@ -39,13 +39,12 @@ import tempfile
 import termios
 import threading
 import time
-import webbrowser
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import files, folders, questions, selfupdate
+from . import container, files, folders, questions, selfupdate
 from .results import Tally
 from .config import (FOLDER_CHOICE, NAME, PROJECT_URL, RC_OK, RULES, Settings, SettingsError, __version__,
                      check_value, config_file, load_settings, save_config, state_dir, to_env)
@@ -981,7 +980,7 @@ class Watch:
         send = self.notify or notify.notify
         title = "media-optimizer finished" if self.session.code in (0, 3) else "media-optimizer stopped"
         send(title, self.session.summary(), icon=str(STATIC_DIR / "icon.svg"), action="Open",
-             on_action=lambda: webbrowser.open(self.url))
+             on_action=lambda: container.open_url(self.url))
 
 
 def _check_for_update(session: Session) -> None:
@@ -1015,7 +1014,7 @@ def serve(session: Session, open_browser: bool = True, port: int = 0, check_upda
     thread = threading.Thread(target=server.serve_forever, name="media-optimizer-web", daemon=True)
     thread.start()
     _say(ADDRESS_LINE.format(url=url))
-    opened = open_browser and webbrowser.open(url)
+    opened = open_browser and container.open_url(url)
     if session.back_url:
         _say(f"When the run is done, its page leads back to {session.back_name or 'the previous page'}.")
     else:

@@ -30,6 +30,16 @@ share its look (libadwaita's design language): `static/base.css` and `static/ico
 lyrembed's, copied unchanged into cdport, keepbest and media-optimizer; change them in lyrembed and
 copy them back. Setup details of the owner's machine are in `CLAUDE.local.md` (not in git).
 
+On image-based systems (Fedora Silverblue, Bluefin) the programs run on the host where the image
+has what they need (pipx from its zipapp, or layered with `rpm-ostree`); cdport runs in a toolbox,
+where cyanrip can be built, and Jewelcase comes as a Flatpak bundle on its releases. In a toolbox
+or distrobox, what the host starts (app-menu entry, D-Bus service) enters the container, and what
+a program opens in other apps (browser, Flatpaks, file manager) leaves it: `container.py`,
+lyrembed's, copied unchanged into cdport, keepbest and media-optimizer; picktag's
+`core/desktop.py`. The suites of the four make no container unless a test asks (an autouse
+fixture), so they run alike in a toolbox. Each README has a section *Fedora Silverblue, Bluefin
+and other image-based systems* under its installation.
+
 ### Working rules
 
 - **Commits**: commit finished work once its tests pass, locally, on the default branch;
@@ -126,6 +136,7 @@ animated_webp.py media-optimizer-webp, its own command: animated WebPs from GIFs
 static/          the page: app.js, style.css, base.css and icons.js (lyrembed's), logo.svg,
                  icon.svg, index.html, vendor/ with LICENSES.txt
 desktop.py       the app-menu entry (--install-desktop-entry), as in keepbest and lyrembed
+container.py     toolbox and distrobox (lyrembed's, unchanged; see the family block)
 notify.py        a desktop notification (notify-send with an "Open" button, else gdbus)
 selfupdate.py    a newer release: git ls-remote tags, at every start in a thread (known: the last
                  answer), pipx commands, restart (exec)
